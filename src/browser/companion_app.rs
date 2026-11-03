@@ -1037,49 +1037,63 @@ impl Launcher {
 }
 
 // ---------------------------------------------------------------------------
-// Errors (exact texts: the design's §2.2)
+// Errors (exact texts: the design's §2.2). `user`: the user's own call (the
+// TUI, the CLI from a plain terminal) is told what to run; an agent is told
+// to ask the user.
 
-fn install_error(problem: InstallProblem) -> BrowserError {
+fn run_it(user: bool) -> &'static str {
+    if user {
+        "run"
+    } else {
+        "ask the user to run"
+    }
+}
+
+fn install_error(problem: InstallProblem, user: bool) -> BrowserError {
+    let run = run_it(user);
     BrowserError::new(
         "host_unavailable",
         match problem {
             InstallProblem::NotInstalled => format!(
-                "the companion browser is not installed; ask the user to run \"herdr browser setup --companion\" (downloads Electron, {})",
+                "the companion browser is not installed; {run} \"herdr browser setup --companion\" (downloads Electron, {})",
                 companion_install::DOWNLOAD_SIZE
             ),
-            InstallProblem::NoElectron => "the companion browser is installed without Electron; ask the user to run \"herdr browser setup --companion\" in a terminal".to_string(),
+            InstallProblem::NoElectron => format!("the companion browser is installed without Electron; {run} \"herdr browser setup --companion\" in a terminal"),
             InstallProblem::Unsupported(why) => format!("{why}; set [browser] window = true to use the herdr+ window"),
         },
     )
 }
 
-fn failed_error(last: Option<&str>) -> BrowserError {
+fn failed_error(last: Option<&str>, user: bool) -> BrowserError {
     BrowserError::new(
         "host_unavailable",
         format!(
-            "the companion browser crashed {CRASH_LIMIT} times in 5 minutes and herdr stopped restarting it (last error: {}); ask the user to run \"herdr browser companion restart\"",
-            last.unwrap_or("unknown")
+            "the companion browser crashed {CRASH_LIMIT} times in 5 minutes and herdr stopped restarting it (last error: {}); {} \"herdr browser companion restart\"",
+            last.unwrap_or("unknown"),
+            run_it(user)
         ),
     )
 }
 
-fn timeout_error(log: &Path, waited: Duration) -> BrowserError {
+fn timeout_error(log: &Path, waited: Duration, user: bool) -> BrowserError {
     BrowserError::new(
         "host_unavailable",
         format!(
-            "the companion browser did not start within {} s (log: {}); retry once, then ask the user to run \"herdr browser companion status\"",
+            "the companion browser did not start within {} s (log: {}); retry once, then {} \"herdr browser companion status\"",
             waited.as_secs(),
-            log.display()
+            log.display(),
+            run_it(user)
         ),
     )
 }
 
-fn exited_error(log: &Path) -> BrowserError {
+fn exited_error(log: &Path, user: bool) -> BrowserError {
     BrowserError::new(
         "host_unavailable",
         format!(
-            "the companion browser exited before it registered (log: {}); retry once, then ask the user to run \"herdr browser companion status\"",
-            log.display()
+            "the companion browser exited before it registered (log: {}); retry once, then {} \"herdr browser companion status\"",
+            log.display(),
+            run_it(user)
         ),
     )
 }
@@ -1197,8 +1211,9 @@ impl BrowserHub {
     /// `[browser] host` routed an `open` / `show` to the companion and no
     /// lease lives: start it (one launch for every caller) and wait for its
     /// registration, at most `wait`. On the caller's connection thread;
-    /// never with a hub, profile or host lock held.
-    pub fn ensure_companion(&self, wait: Duration) -> Result<(), BrowserError> {
+    /// never with a hub, profile or host lock held. `user`: the user's own
+    /// call (its errors say what to run; an agent's say to ask the user).
+    pub fn ensure_companion(&self, wait: Duration, user: bool) -> Result<(), BrowserError> {
         if self.companion_live() {
             return Ok(());
         }
@@ -1227,13 +1242,14 @@ impl BrowserHub {
                 ));
             }
             match phase {
-                Phase::Failed => return Err(failed_error(last_error.as_deref())),
+                Phase::Failed => return Err(failed_error(last_error.as_deref(), user)),
                 Phase::Stopped if !spawning => {
                     if launched == Some(generation) {
-                        return Err(exited_error(&companion_install::log_path(&home)));
+                        return Err(exited_error(&companion_install::log_path(&home), user));
                     }
                     // checked before each launch, never under the core's lock
-                    companion_install::resolve(&home).map_err(install_error)?;
+                    companion_install::resolve(&home)
+                        .map_err(|problem| install_error(problem, user))?;
                     if let Some(socket) = self.companion_other_session(&home) {
                         return Err(other_session_error(&socket));
                     }
@@ -1253,7 +1269,11 @@ impl BrowserHub {
             }
             let now = Instant::now();
             if now >= deadline {
-                return Err(timeout_error(&companion_install::log_path(&home), wait));
+                return Err(timeout_error(
+                    &companion_install::log_path(&home),
+                    wait,
+                    user,
+                ));
             }
             let core = launcher.lock();
             if core.generation == generation && core.phase == phase {
@@ -1274,7 +1294,8 @@ impl BrowserHub {
             return Ok(()); // a companion started by hand runs: nothing to start
         }
         let home = self.companion_home();
-        companion_install::resolve(&home).map_err(install_error)?;
+        companion_install::resolve(&home)
+            .map_err(|problem| install_error(problem, reason == StartReason::User))?;
         if let Some(socket) = self.companion_other_session(&home) {
             return Err(other_session_error(&socket));
         }
@@ -1319,7 +1340,8 @@ impl BrowserHub {
             return Ok(Some(EXTERNAL_NOTE.into()));
         }
         let home = self.companion_home();
-        companion_install::resolve(&home).map_err(install_error)?;
+        companion_install::resolve(&home)
+            .map_err(|problem| install_error(problem, reason == StartReason::User))?;
         let hub = self.clone();
         std::thread::Builder::new()
             .name("herdr-companion-restart".into())
@@ -1413,7 +1435,7 @@ impl BrowserHub {
         }
         let install = match companion_install::resolve(&home) {
             Ok(install) => install,
-            Err(problem) => return fail(self, install_error(problem).message),
+            Err(problem) => return fail(self, install_error(problem, !ticket.background).message),
         };
         let socket = self.launcher().socket();
         let mut args = vec![

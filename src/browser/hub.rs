@@ -1258,7 +1258,7 @@ impl BrowserHub {
         // follows `[browser] host`; everything else the pane's cursor.
         let profile = match explicit_profile {
             None if params.tab.is_none() && Self::op_follows_host(&params.op) => {
-                self.host_profile(&config)?
+                self.host_profile(&config, actor.is_user())?
             }
             _ => self.profile_name(explicit_profile, pane.as_deref(), &config)?,
         };
@@ -1269,7 +1269,7 @@ impl BrowserHub {
         // companion (`--profile companion`, a `companion:` tab) starts it on
         // demand too, like one routed there by `[browser] host`.
         if is_companion(&profile) && Self::op_follows_host(&params.op) && !self.companion_live() {
-            self.ensure_companion(self.companion_register_wait())?;
+            self.ensure_companion(self.companion_register_wait(), actor.is_user())?;
         }
         self.ensure_running(&profile)?;
         let deadline = Duration::from_millis(match &params.op {

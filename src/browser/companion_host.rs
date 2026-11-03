@@ -356,8 +356,13 @@ impl BrowserHub {
 
     /// The profile `open` / `show` without `--profile` use (`[browser] host`).
     /// Fork (companion launcher): the companion without a live lease is
-    /// started and waited for (on the caller's connection thread).
-    pub(super) fn host_profile(&self, config: &BrowserConfig) -> Result<String, BrowserError> {
+    /// started and waited for (on the caller's connection thread); `user`:
+    /// the user's own call (errors say what to run).
+    pub(super) fn host_profile(
+        &self,
+        config: &BrowserConfig,
+        user: bool,
+    ) -> Result<String, BrowserError> {
         // Fork (companion launcher): with the herdr+ window off every page
         // goes to the companion (`auto` falls back only to an enabled window).
         if !config.window {
@@ -365,7 +370,7 @@ impl BrowserHub {
                 return Err(window_disabled());
             }
             if !self.companion_live() {
-                self.ensure_companion(self.companion_register_wait())?;
+                self.ensure_companion(self.companion_register_wait(), user)?;
             }
             return Ok(COMPANION_PROFILE.into());
         }
@@ -375,7 +380,7 @@ impl BrowserHub {
             BrowserHostMode::Auto => Ok(config.default_profile().to_string()),
             BrowserHostMode::Companion if self.companion_live() => Ok(COMPANION_PROFILE.into()),
             BrowserHostMode::Companion => {
-                self.ensure_companion(self.companion_register_wait())?;
+                self.ensure_companion(self.companion_register_wait(), user)?;
                 Ok(COMPANION_PROFILE.into())
             }
         }

@@ -768,7 +768,7 @@ fn fork_smoke_a_new_server_adopts_the_running_companion_from_its_run_record() {
     other.adopt_companion();
     assert_eq!(other.companion_app_info().state, "stopped");
     let err = other
-        .ensure_companion(Duration::from_millis(200))
+        .ensure_companion(Duration::from_millis(200), false)
         .expect_err("another session's");
     assert_eq!(
         err.message,
@@ -1296,5 +1296,70 @@ fn a_launch_keeps_the_app_files_a_companion_still_runs_from() {
         "a running companion's directory stays"
     );
     assert!(!root.join("bbbbbbbbbbbb").exists(), "older ones go");
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn the_users_own_start_says_what_to_run_an_agents_says_to_ask_the_user() {
+    let (hub, home, _) = companion_hub("user-wording", false);
+    let spawner = FakeSpawner::new(&hub, true);
+    let not_installed = |run: &str| {
+        format!("the companion browser is not installed; {run} \"herdr browser setup --companion\" (downloads Electron, about 115 MB)")
+    };
+    // the TUI, the CLI from a plain terminal, the user's own open
+    assert_eq!(
+        hub.companion_start(StartReason::User).unwrap_err().message,
+        not_installed("run")
+    );
+    assert_eq!(
+        hub.companion_focus(true).unwrap_err().message,
+        not_installed("run")
+    );
+    assert_eq!(
+        hub.companion_restart(StartReason::User)
+            .unwrap_err()
+            .message,
+        not_installed("run")
+    );
+    assert_eq!(
+        hub.run(&BrowserActor::User, open("https://example.test/"))
+            .unwrap_err()
+            .message,
+        not_installed("run")
+    );
+    // an agent (the CLI in a pane, an MCP tool) asks the user
+    assert_eq!(
+        hub.companion_start(StartReason::Agent).unwrap_err().message,
+        not_installed("ask the user to run")
+    );
+    assert_eq!(
+        hub.run(&pane("w1:p1"), open("https://example.test/"))
+            .unwrap_err()
+            .message,
+        not_installed("ask the user to run")
+    );
+    // it gave up: the restart to run, or to ask for
+    install(&home);
+    {
+        let mut core = hub.launcher().lock();
+        core.phase = Phase::Failed;
+        core.last_error = Some("boom".into());
+    }
+    let failed = |run: &str| {
+        format!("the companion browser crashed 5 times in 5 minutes and herdr stopped restarting it (last error: boom); {run} \"herdr browser companion restart\"")
+    };
+    assert_eq!(
+        hub.run(&BrowserActor::User, open("https://example.test/"))
+            .unwrap_err()
+            .message,
+        failed("run")
+    );
+    assert_eq!(
+        hub.run(&pane("w1:p1"), open("https://example.test/"))
+            .unwrap_err()
+            .message,
+        failed("ask the user to run")
+    );
+    assert_eq!(spawner.spawns(), 0);
     let _ = std::fs::remove_dir_all(&home);
 }
