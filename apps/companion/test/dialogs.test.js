@@ -141,3 +141,39 @@ test('the seq moves on every change (herdr reconciles by it)', () => {
   b.answer('v1', { accept: true });
   assert.ok(s1 > s0 && b.seq > s1);
 });
+
+test('a navigation of a frame cancels the dialogs of the frames inside it too', () => {
+  const { b } = book();
+  const inner = recorder();
+  const other = recorder();
+  b.open('v1', { type: 'prompt', message: 'inner' }, inner, { frame: 'f3', ancestors: ['f2', 'f1'] });
+  b.open('v1', { type: 'alert', message: 'other' }, other, { frame: 'f4', ancestors: ['f1'] });
+  assert.equal(b.dismissView('v1', { frame: 'f2' }), 1, 'the frame between them navigates');
+  assert.deepEqual(inner.got, [null]);
+  assert.equal(b.top('v1').message, 'other');
+  assert.equal(b.dismissView('v1', { frame: 'f1' }), 1);
+  assert.deepEqual(other.got, [null]);
+});
+
+test('prune cancels the dialogs of frames that went away without navigating', () => {
+  const { b, changes } = book();
+  let gone = false;
+  const removed = recorder();
+  const kept = recorder();
+  const removedD = b.open('v1', { type: 'confirm', message: 'removed iframe' }, removed, { frame: 'f2', alive: () => !gone });
+  b.open('v1', { type: 'prompt', message: 'kept' }, kept, { frame: 'f1', alive: () => true });
+  b.open('v2', { type: 'alert', message: 'no frame object' }, recorder());
+  b.open('v3', { type: 'alert', message: 'throws' }, recorder(), { alive: () => { throw new Error('Render frame was disposed'); } });
+  assert.equal(b.top('v1'), removedD);
+  const before = changes();
+  assert.equal(b.prune(), 1, 'a frame whose check throws is gone');
+  assert.equal(b.has('v3'), false);
+  assert.equal(b.prune(), 0);
+  gone = true;
+  assert.equal(b.prune(), 1);
+  assert.deepEqual(removed.got, [false]);
+  assert.equal(b.top('v1').message, 'kept', 'the page\'s own dialog comes forward');
+  assert.equal(b.has('v2'), true, 'a dialog without a frame check stays');
+  assert.equal(b.size, 2);
+  assert.ok(changes() > before);
+});

@@ -6,7 +6,8 @@
 // Semantics (as a browser): the page is blocked until the dialog is answered; alert returns
 // nothing, confirm a boolean, prompt the text or null (cancel). One dialog at a time per view:
 // another one asked meanwhile (a cross-origin frame runs in its own process) waits behind it.
-// A navigation of the frame that asked, a closed view or a quit cancels it (null / false).
+// A navigation of the frame that asked (or of a frame it is in), the frame going away (an
+// iframe removed, a crash, a page replaced), a closed view or a quit cancels it (null / false).
 'use strict';
 
 const TYPES = new Set(['alert', 'confirm', 'prompt']);
@@ -42,15 +43,16 @@ class DialogBook {
   }
 
   // A page asked. `reply(value)` answers its blocked call exactly once. `frame`: who asked
-  // (its navigation cancels it); `info`: shown with it (origin, embedded). Returns the dialog,
-  // or null for a request that is not a dialog (answered at once).
-  open(viewId, req, reply, { frame = null, info = {} } = {}) {
+  // (its navigation cancels it); `ancestors`: the frames it is in (theirs too); `alive()`:
+  // false once the frame is gone (prune()); `info`: shown with it (origin, embedded).
+  // Returns the dialog, or null for a request that is not a dialog (answered at once).
+  open(viewId, req, reply, { frame = null, ancestors = [], alive = null, info = {} } = {}) {
     const n = normalizeRequest(req);
     if (!n || !viewId) {
       safeReply(reply, n && n.type === 'confirm' ? false : null);
       return null;
     }
-    const dialog = { ...info, id: `d${this.nextId++}`, view_id: viewId, ...n, value: n.default_value, frame, reply, opened_at: Date.now() };
+    const dialog = { ...info, id: `d${this.nextId++}`, view_id: viewId, ...n, value: n.default_value, frame, ancestors, alive, reply, opened_at: Date.now() };
     const q = this.queues.get(viewId) || [];
     q.push(dialog);
     this.queues.set(viewId, q);
@@ -94,19 +96,36 @@ class DialogBook {
     return d;
   }
 
-  // Cancels the view's dialogs (all of them, or only those `frame` asked): a navigation, a
-  // closed view. Returns how many.
+  // Cancels the view's dialogs (all of them, or only those `frame` or a frame inside it
+  // asked): a navigation, a closed view. Returns how many.
   dismissView(viewId, { frame = null } = {}) {
+    if (frame == null) return this.cancelWhere(viewId, () => true);
+    return this.cancelWhere(viewId, (d) => d.frame === frame || (d.ancestors || []).includes(frame));
+  }
+
+  // Cancels the dialogs whose frame is gone without a navigation of its own (an iframe
+  // removed, a crashed frame process, a document replaced): nothing else would. Returns how many.
+  prune() {
+    let n = 0;
+    for (const viewId of [...this.queues.keys()]) n += this.cancelWhere(viewId, (d) => !isAlive(d));
+    return n;
+  }
+
+  get size() {
+    return this.queues.size;
+  }
+
+  cancelWhere(viewId, gone) {
     const q = this.queues.get(viewId);
     if (!q) return 0;
-    const gone = frame == null ? q : q.filter((d) => d.frame === frame);
-    if (!gone.length) return 0;
-    const keep = frame == null ? [] : q.filter((d) => d.frame !== frame);
+    const out = q.filter(gone);
+    if (!out.length) return 0;
+    const keep = q.filter((d) => !out.includes(d));
     if (keep.length) this.queues.set(viewId, keep);
     else this.queues.delete(viewId);
-    for (const d of gone) safeReply(d.reply, replyFor(d, false));
+    for (const d of out) safeReply(d.reply, replyFor(d, false));
     this.changed();
-    return gone.length;
+    return out.length;
   }
 
   // Every view's (the companion quits).
@@ -131,6 +150,15 @@ class DialogBook {
     try {
       this.onChange();
     } catch {}
+  }
+}
+
+function isAlive(d) {
+  if (typeof d.alive !== 'function') return true;
+  try {
+    return d.alive() !== false;
+  } catch {
+    return false;
   }
 }
 

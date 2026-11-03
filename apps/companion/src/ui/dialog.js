@@ -5,6 +5,7 @@
 const $ = (id) => document.getElementById(id);
 const bridge = window.dialogBridge;
 let current = null;
+let space = 0; // the height the card may take (main.js); a long message scrolls to fit it
 
 function report() {
   const card = $('card');
@@ -12,8 +13,20 @@ function report() {
   bridge.size(h);
 }
 
+// The message gets what the rest of the card leaves of the space (at most 240px), so the
+// field and the buttons stay on screen in a short window. Measured without the message, so
+// its own cap never feeds back into it.
+function fit() {
+  const card = $('card');
+  const msg = $('message');
+  if (card.hidden || !space) return;
+  const rest = card.getBoundingClientRect().height - msg.getBoundingClientRect().height + 14;
+  msg.style.maxHeight = `${Math.max(24, Math.min(240, Math.floor(space - rest)))}px`;
+}
+
 function show(d) {
   current = d;
+  if (d && d.space) space = d.space;
   const card = $('card');
   document.body.classList.toggle('docked', !!(d && d.docked));
   if (!d) {
@@ -30,6 +43,7 @@ function show(d) {
   field.value = d.type === 'prompt' ? d.value : '';
   field.setSelectionRange(0, field.value.length); // selected even before the keyboard comes
   $('cancel').hidden = d.type === 'alert';
+  fit();
   report();
   if (d.focus) focusCard();
 }
@@ -80,4 +94,8 @@ document.addEventListener('keydown', (e) => {
 new ResizeObserver(report).observe($('card'));
 bridge.onShow(show);
 bridge.onFocus(focusCard);
+bridge.onSpace((h) => {
+  space = Number(h) || 0;
+  fit();
+});
 bridge.ready();

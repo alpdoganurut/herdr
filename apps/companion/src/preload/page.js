@@ -13,26 +13,64 @@ const ask = (type, message, defaultValue) => ipcRenderer.sendSync('herdr-compani
 
 contextBridge.executeInMainWorld({
   func: (ask, noNetwork) => {
-    // WebIDL DOMString: undefined is the default (""), anything else is converted (a Symbol throws)
-    const text = (v) => (v === undefined ? '' : `${v}`);
-    const define = (name, fn) => {
+    // WebIDL DOMString: undefined is the default (""), anything else is converted (a Symbol
+    // throws); cut here, so a huge string never crosses the sync call (dialogs.js TEXT_MAX)
+    const text = (v) => (v === undefined ? '' : `${v}`.slice(0, 100000));
+    // A page that is leaving gets the dialogs asked in its beforeunload, pagehide or unload
+    // handlers answered at once and never shown, as Chromium does: nothing would cancel them
+    // once its navigation started. Read from the event being dispatched (window.event, its
+    // getter taken now), not from listeners of our own: a beforeunload listener in every frame
+    // would make Chromium ask a frame blocked in a dialog before navigating it, which never
+    // answers. isTrusted: an event the page dispatches itself is not a leave.
+    const LEAVING = new Set(['beforeunload', 'pagehide', 'unload']);
+    let eventGetter = null;
+    try {
+      const d = Object.getOwnPropertyDescriptor(globalThis, 'event');
+      eventGetter = d && d.get ? d.get : null;
+    } catch {}
+    const leaving = () => {
       try {
-        Object.defineProperty(globalThis, name, { value: fn, writable: true, enumerable: true, configurable: true });
+        const e = eventGetter ? eventGetter.call(globalThis) : undefined;
+        return !!(e && e.isTrusted === true && LEAVING.has(e.type));
+      } catch {
+        return false;
+      }
+    };
+    const asked = (type, message, defaultValue) => (leaving() ? null : ask(type, message, defaultValue));
+    // Electron assigns its own prompt() (which throws) in subframes after their preload, so each
+    // starts as an accessor: an assignment of a native function (Electron's) keeps ours, the
+    // page's own assignment wins; either way it is a plain data property from then on.
+    const isNative = (v) => {
+      try {
+        return typeof v === 'function' && /\[native code\]\s*\}$/.test(Function.prototype.toString.call(v));
+      } catch {
+        return false;
+      }
+    };
+    const define = (name, fn) => {
+      const data = (value) => Object.defineProperty(globalThis, name, { value, writable: true, enumerable: true, configurable: true });
+      try {
+        Object.defineProperty(globalThis, name, {
+          get: () => fn,
+          set: (v) => data(isNative(v) ? fn : v),
+          enumerable: true,
+          configurable: true,
+        });
       } catch {}
     };
     define('alert', {
       alert(message) {
-        ask('alert', text(message), '');
+        asked('alert', text(message), '');
       },
     }.alert);
     define('confirm', {
       confirm(message) {
-        return ask('confirm', text(message), '') === true;
+        return asked('confirm', text(message), '') === true;
       },
     }.confirm);
     define('prompt', {
       prompt(message, defaultValue) {
-        const out = ask('prompt', text(message), text(defaultValue));
+        const out = asked('prompt', text(message), text(defaultValue));
         return typeof out === 'string' ? out : null;
       },
     }.prompt);

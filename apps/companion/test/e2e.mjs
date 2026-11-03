@@ -120,6 +120,30 @@ const web = http.createServer((req, res) => {
 await new Promise((r) => web.listen(0, '127.0.0.1', r));
 const webPort = web.address().port;
 
+// pages for the frame dialogs (127.0.0.1 and localhost are two sites: their frames run in
+// processes of their own)
+const dlgWeb = http.createServer((req, res) => {
+  const P = dlgWeb.address().port;
+  const pages = {
+    '/top': `<title>top</title><iframe id=x src="http://localhost:${P}/inner"></iframe>`,
+    '/nest': `<title>nest</title><iframe id=a src="http://localhost:${P}/mid"></iframe>`,
+    '/mid': `<title>mid</title><iframe id=b src="http://localhost:${P}/inner"></iframe>`,
+    '/inner': '<title>inner</title><p>inner</p>',
+    '/opaque': '<title>opaque</title><iframe sandbox="allow-scripts allow-modals" src="/inner"></iframe>',
+    '/srcdoc': '<title>srcdoc</title><iframe sandbox="allow-scripts allow-modals" srcdoc="<p>sandboxed</p>"></iframe><iframe id=d src="data:text/html,<p>data</p>"></iframe>',
+    '/leave':
+      '<title>leave</title><script>' +
+      "addEventListener('beforeunload', () => { localStorage.bu = String(prompt('leaving?', 'x')); });" +
+      "addEventListener('pagehide', () => { localStorage.ph = String(confirm('really?')); alert('bye'); });" +
+      '</script>',
+    '/landed': '<title>landed</title><p>landed</p>',
+  };
+  res.setHeader('content-type', 'text/html');
+  res.end(pages[req.url.split('?')[0]] || '<title>other</title>other');
+});
+await new Promise((r) => dlgWeb.listen(0, r));
+const dlgPort = dlgWeb.address().port;
+
 try {
   startCompanion();
   const lease = await waitFor(() => mock.state.lease, 40000);
@@ -284,14 +308,131 @@ try {
     await stripPage().evaluate(() => window.stripBridge.action('reload'));
     got = await settle(r);
     check('a reload while a prompt is open cancels it', !got.timeout && (await dialogs()).length === 0, got);
-    const alive = await settle(pw.waitForLoadState('load').then(() => pw.evaluate(() => 1 + 1)));
-    check('… and the same-origin reload completes', alive.v === 2, alive);
+    const alive = await waitFor(async () => ((x) => (x.v === 2 ? x : null))(await settle(pw.waitForLoadState('load').then(() => pw.evaluate(() => 1 + 1)))), 5000);
+    check('… and the same-origin reload completes', alive && alive.v === 2, alive);
     r = pw.evaluate(() => prompt('close me'));
     await open();
     await ctl(`__herdrCompanion.close(${JSON.stringify(ow.view_id)})`);
     got = await settle(r);
     check('closing the page while a prompt is open answers it (no hang)', !got.timeout && (await dialogs()).length === 0, got);
     await api('mock.focus_tab', { tab_id: 'w1:t2' });
+
+    // a long message scrolls inside the card: the field and the buttons stay in the view
+    {
+      const ol = await ctl(`__herdrCompanion.open({tab_id:'w1:t2', url:'data:text/html,<title>long</title>long', background:false})`);
+      const pl = await waitFor(() => pageForTarget(ol.target_id), 5000);
+      r = pl.evaluate(() => prompt(Array.from({ length: 400 }, (_, i) => `line ${i}`).join('\n'), 'd'));
+      r.catch(() => {});
+      await open();
+      await waitFor(async () => !(await card()).hidden, 3000);
+      await sleep(300);
+      const fit = await cardPage().evaluate(() => {
+        const m = document.getElementById('message');
+        const ok = document.getElementById('ok').getBoundingClientRect();
+        return { scrolls: m.scrollHeight > m.clientHeight, max: m.style.maxHeight, okBottom: Math.round(ok.bottom), inner: innerHeight };
+      });
+      check('a long message scrolls in the card and OK stays in view', fit.scrolls && fit.okBottom <= fit.inner, fit);
+      await ctl(`__herdrCompanion.close(${JSON.stringify(ol.view_id)})`);
+      await settle(r);
+    }
+
+    // frames: an embedded page's dialog says so, a frame that goes away takes its dialog along
+    const D = `http://127.0.0.1:${dlgPort}`;
+    const openPage = async (url) => {
+      const o = await ctl(`__herdrCompanion.open({tab_id:'w1:t2', url:${JSON.stringify(url)}, background:false})`);
+      const pg = await waitFor(() => pageForTarget(o.target_id), 5000);
+      await pg.waitForLoadState('load').catch(() => {});
+      return { o, pg };
+    };
+    const frameOf = (pg, pred) => waitFor(async () => pg.frames().find((f) => f !== pg.mainFrame() && pred(f)) || null, 5000);
+    const cardShows = (message) => waitFor(async () => ((x) => (!x.hidden && x.message === message ? x : null))(await card()), 3000);
+    const answerShown = (viewId) => ctl(`__herdrCompanion.dialog({view_id:${JSON.stringify(viewId)}, accept:false})`);
+    let fo = await openPage(`${D}/opaque`);
+    let fr = await frameOf(fo.pg, () => true);
+    r = fr.evaluate(() => prompt('from a sandboxed frame'));
+    r.catch(() => {}); // the frame may go with its call
+    await open();
+    c = await cardShows('from a sandboxed frame');
+    check('an opaque-origin frame\'s dialog reads as an embedded page, never as the page', c && c.origin === 'An embedded page says', c);
+    await answerShown(fo.o.view_id);
+    got = await settle(r);
+    check('… and is answered', got.v === null, got);
+    r = fo.pg.evaluate(() => prompt('from the page itself'));
+    await open();
+    c = await cardShows('from the page itself');
+    check('the page\'s own dialog names its origin', c && c.origin === `${D} says`, c);
+    await answerShown(fo.o.view_id);
+    await settle(r);
+    await ctl(`__herdrCompanion.close(${JSON.stringify(fo.o.view_id)})`);
+    {
+      // every frame's prompt is the companion's (Electron re-assigns its own in subframes)
+      const sp = await openPage(`${D}/srcdoc`);
+      await sleep(300);
+      const kinds = [];
+      for (const f of sp.pg.frames()) kinds.push(`${f.url().slice(0, 20)}: ${await f.evaluate(() => (/native code/.test(String(prompt)) ? 'native' : 'companion')).catch((e) => String(e.message).split('\n')[0])}`);
+      check('every frame (cross-site, srcdoc, data:) has the companion\'s prompt', kinds.length === 3 && kinds.every((k) => k.endsWith(': companion')), kinds);
+      await ctl(`__herdrCompanion.close(${JSON.stringify(sp.o.view_id)})`);
+    }
+
+    fo = await openPage(`${D}/top`);
+    fr = await frameOf(fo.pg, (f) => f.url().includes('/inner'));
+    r = fr.evaluate(() => prompt('from a removed frame'));
+    r.catch(() => {}); // the frame may go with its call
+    await open();
+    c = await cardShows('from a removed frame');
+    check('a cross-site frame\'s dialog names it as embedded', c && c.origin === `An embedded page at http://localhost:${dlgPort} says`, c);
+    const removed = await settle(fo.pg.evaluate(() => (document.getElementById('x').remove(), 'removed')));
+    check('the page removes the frame while its dialog is open (its own process is free)', removed.v === 'removed', removed);
+    let t0 = Date.now();
+    let left = await waitFor(async () => (await dialogs()).length === 0, 5000);
+    check('the removed frame\'s dialog is cancelled (no stale card)', left && (await card()).hidden, { ms: Date.now() - t0 });
+    r = fo.pg.evaluate(() => prompt('after the removal', 'p'));
+    ds = await open();
+    check('… and the page\'s own dialogs are not stuck behind it', ds && ds[0].message === 'after the removal', ds);
+    await answerShown(fo.o.view_id);
+    await settle(r);
+    await ctl(`__herdrCompanion.close(${JSON.stringify(fo.o.view_id)})`);
+
+    fo = await openPage(`${D}/nest`);
+    fr = await frameOf(fo.pg, (f) => f.url().includes('/inner') && f.parentFrame() !== fo.pg.mainFrame());
+    r = fr.evaluate(() => prompt('from a nested frame'));
+    r.catch(() => {}); // the frame may go with its call
+    await open();
+    t0 = Date.now();
+    const moved = await settle(fo.pg.evaluate((u) => ((document.getElementById('a').src = u), 'moved'), `http://localhost:${dlgPort}/landed`));
+    left = await waitFor(async () => (await dialogs()).length === 0, 8000);
+    check('a navigation of the frame around the one that asked cancels its dialog', moved.v === 'moved' && left, { moved, ms: Date.now() - t0 });
+    got = await settle(r);
+    check('… and nothing hangs', !got.timeout, got);
+    await ctl(`__herdrCompanion.close(${JSON.stringify(fo.o.view_id)})`);
+
+    // dialogs of a leaving page (beforeunload, pagehide) are answered at once and never shown
+    fo = await openPage(`${D}/landed`);
+    r = fo.pg.evaluate(() => {
+      addEventListener('pagehide', () => { window.__got = prompt('a page event is not a leave', 's'); });
+      dispatchEvent(new Event('pagehide'));
+      return window.__got;
+    });
+    ds = await open();
+    check('a pagehide the page dispatches itself does not silence its dialogs', ds && ds[0].message === 'a page event is not a leave', ds);
+    await answerShown(fo.o.view_id);
+    await settle(r);
+    await ctl(`__herdrCompanion.close(${JSON.stringify(fo.o.view_id)})`);
+    fo = await openPage(`${D}/leave`);
+    let seen = 0;
+    const watch = setInterval(async () => {
+      try {
+        if ((await dialogs()).length) seen++;
+      } catch {}
+    }, 50);
+    await settle(fo.pg.evaluate((u) => ((location.href = u), 'go'), `${D}/landed`));
+    const landed = await waitFor(async () => (fo.pg.url().endsWith('/landed') && (await fo.pg.title()) === 'landed') || null, 8000);
+    await sleep(300);
+    clearInterval(watch);
+    const stored = landed && (await fo.pg.evaluate(() => ({ bu: localStorage.bu, ph: localStorage.ph })));
+    check('a leaving page\'s prompt / confirm / alert return at once, never shown', landed && seen === 0 && stored && stored.bu === 'null' && stored.ph === 'false' && (await card()).hidden, { landed: !!landed, seen, stored });
+    await fo.pg.evaluate(() => localStorage.clear());
+    await ctl(`__herdrCompanion.close(${JSON.stringify(fo.o.view_id)})`);
   }
 
   // strip actions through the strip page (same IPC the buttons use)
@@ -525,6 +666,7 @@ try {
 } finally {
   await mock.close();
   web.close();
+  dlgWeb.close();
   console.log(`\n${results.length - failed}/${results.length} passed; log ${logFile}`);
   if (!failed) fs.rmSync(tmp, { recursive: true, force: true });
   process.exit(failed ? 1 : 0);

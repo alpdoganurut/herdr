@@ -28,6 +28,7 @@ const chromeBackground = () => (nativeTheme.shouldUseDarkColors ? '#1b1c23' : '#
 // The docked bar is always Dusk (it sits in herdr's dark window); pages keep the system look.
 const DOCK_BACKGROUND = '#1b1c23';
 const SCHEME = 'herdr-companion';
+const DIALOG_SWEEP_MS = 1000; // how soon a dialog of a frame that went away is cancelled
 const SYNC_MIN_INTERVAL_MS = 250; // ≤ 4 syncs/s (contract §2.3)
 const SYNC_MAX_BYTES = 256 * 1024; // herdr's cap on a sync's groups
 const SYNC_BUDGET_BYTES = Number(process.env.HERDR_COMPANION_SYNC_BUDGET) || SYNC_MAX_BYTES - 8 * 1024;
@@ -144,6 +145,8 @@ class Companion {
     this.dialogView = null;
     this.dialogShown = null; // {id, host, focus} of the card on screen
     this.dialogHeight = 150; // the card's height (it reports it)
+    this.dialogSpace = 0; // the height the card may take (below the bar)
+    this.dialogSweep = null; // the frame check while a dialog is open
     this.prompts = []; // pending permission prompts {id, view_id, permission, label, origin, dones[], timer}
     this.nextPrompt = 1;
     // Docked mode (launcher design §3.4): a frameless window over herdr's band.
@@ -229,17 +232,25 @@ class Companion {
     this.link = new HerdrLink({
       socketPath: SOCKET,
       log,
-      register: () => ({
-        kind: 'companion',
-        instance: this.instance,
-        pid: process.pid,
-        cdp: { host: '127.0.0.1', port: this.port },
-        nonce: this.nonce,
-        version: VERSION,
-        protocol: 1,
-        capabilities: ['views', 'html_view', 'send_page', 'user_actions'],
-        ...registerFields(MANAGED),
-      }),
+      register: () => {
+        // herdr attaches its sidecar before it answers, and the attach stalls on a page blocked
+        // in its dialog call (its renderer answers no CDP until then): open dialogs are
+        // cancelled first, as a navigation would (null / false)
+        const n = this.dialogs.dismissAll();
+        if (n) log('dialogs cancelled before herdr attaches', n);
+        return this.registerParams();
+      },
+    });
+    this.registerParams = () => ({
+      kind: 'companion',
+      instance: this.instance,
+      pid: process.pid,
+      cdp: { host: '127.0.0.1', port: this.port },
+      nonce: this.nonce,
+      version: VERSION,
+      protocol: 1,
+      capabilities: ['views', 'html_view', 'send_page', 'user_actions'],
+      ...registerFields(MANAGED),
     });
     this.link.on('status', (s) => {
       log('status', s.state, s.text);
@@ -774,11 +785,19 @@ class Companion {
     let frame = null;
     let origin = '';
     let embedded = false;
+    const ancestors = []; // a navigation of any of them cancels it too
+    let alive = null;
     try {
       const f = e.senderFrame;
       frame = frameKey(f);
       origin = f ? f.origin : '';
       embedded = !!(f && f.parent);
+      for (let p = f && f.parent; p; p = p.parent) {
+        const k = frameKey(p);
+        if (k) ancestors.push(k);
+      }
+      // gone without navigating: an iframe removed, its process crashed, its document replaced
+      if (f) alive = () => !f.isDestroyed() && !f.detached;
     } catch {}
     let answered = false;
     const reply = (value) => {
@@ -789,7 +808,7 @@ class Companion {
       } catch {}
     };
     if (!viewId || !this.store.findView(viewId)) return reply(null);
-    const d = this.dialogs.open(viewId, req, reply, { frame, info: { origin: origin && origin !== 'null' ? origin : '', embedded } });
+    const d = this.dialogs.open(viewId, req, reply, { frame, ancestors, alive, info: { origin: origin && origin !== 'null' ? origin : '', embedded } });
     if (!d) return;
     log('dialog', d.id, d.type, viewId);
     const hit = this.store.findView(viewId);
@@ -803,6 +822,12 @@ class Companion {
   onDialogsChanged() {
     this.layoutDialog();
     this.pushDialogs();
+    // while any is open: a frame that goes away without navigating fires nothing, so check
+    if (this.dialogs.size && !this.dialogSweep) this.dialogSweep = setInterval(() => this.dialogs.prune(), DIALOG_SWEEP_MS);
+    else if (!this.dialogs.size && this.dialogSweep) {
+      clearInterval(this.dialogSweep);
+      this.dialogSweep = null;
+    }
   }
 
   // herdr's sidecar follows the open dialogs (its dialog events, `browser dialog`): the whole
@@ -839,22 +864,29 @@ class Companion {
     const [w, h] = host.getContentSize();
     const top = host === this.dockWin ? this.dockChromeHeight : this.chromeHeight;
     const width = Math.max(200, Math.min(480, w - 24));
-    const height = Math.max(60, Math.min(this.dialogHeight, h - top));
+    const space = Math.max(60, h - top); // the card's message scrolls to fit it (ui/dialog.js)
+    const height = Math.max(60, Math.min(this.dialogHeight, space));
     view.setBounds({ x: Math.round((w - width) / 2), y: top, width, height });
     const fresh = !this.dialogShown || this.dialogShown.id !== d.id || this.dialogShown.host !== host;
     const focus = !HEADLESS && host.isFocused();
     if (fresh) {
       this.dialogShown = { id: d.id, host };
+      this.dialogSpace = space;
       view.webContents.send('dialog:show', {
         id: d.id,
         type: d.type,
         message: d.message,
         value: d.value,
-        origin: d.origin ? (d.embedded ? `An embedded page at ${d.origin}` : d.origin) : '',
+        // a frame's never reads as the page's own (an opaque origin: sandboxed, data:, srcdoc)
+        origin: d.embedded ? (d.origin ? `An embedded page at ${d.origin}` : 'An embedded page') : d.origin,
         docked: host === this.dockWin,
+        space,
         focus,
       });
       this.views.raiseOverlays(host);
+    } else if (space !== this.dialogSpace) {
+      this.dialogSpace = space;
+      view.webContents.send('dialog:space', space);
     }
     view.setVisible(true);
     if (fresh && focus) view.webContents.focus();

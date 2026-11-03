@@ -317,10 +317,13 @@ class ViewManager {
       if (this.hooks.onDialogsEnd) this.hooks.onDialogsEnd(id, null);
       this.hooks.onError(id, 'crashed', d.reason);
     });
-    // a frame leaving its document cancels its dialogs (the main frame: every one of the view)
+    // a frame leaving its document cancels its dialogs and those of the frames inside it (the
+    // main frame: every one of the view)
     wc.on('did-start-navigation', (d) => {
       if (!d || d.isSameDocument || !this.hooks.onDialogsEnd) return;
-      this.hooks.onDialogsEnd(id, d.isMainFrame ? null : frameKey(d.frame));
+      if (d.isMainFrame) return this.hooks.onDialogsEnd(id, null);
+      const key = frameKey(d.frame);
+      if (key) this.hooks.onDialogsEnd(id, key); // no frame: nothing to match (never all of them)
     });
     wc.on('before-input-event', (e, input) => {
       if (this.hooks.onKey(input)) e.preventDefault();
