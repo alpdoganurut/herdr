@@ -108,6 +108,8 @@ function render() {
   } else st.hidden = true;
   const up = $('update');
   up.hidden = !state.update;
+  // disabled only while its restart request runs (main.js clears it when that fails)
+  up.disabled = !!(state.update && state.update.restarting);
   if (state.update) up.title = `herdr installed companion ${state.update.version}; Restart applies it (your pages come back)`;
   $('empty').hidden = !!state.active;
   $('emptytext').textContent = state.session ? 'No pages in this session.' : 'Waiting for herdr…';
@@ -174,10 +176,7 @@ $('note').addEventListener('keydown', (e) => {
     reportHeight();
   }
 });
-$('update').addEventListener('click', () => {
-  $('update').disabled = true;
-  act('restart_update');
-});
+$('update').addEventListener('click', () => act('restart_update'));
 $('permallow').addEventListener('click', () => act('permission', { id: $('permbar').dataset.id, allow: true }));
 $('permdeny').addEventListener('click', () => act('permission', { id: $('permbar').dataset.id, allow: false }));
 // Shortcuts (⌘T/W/L/R/[/]) are application-menu accelerators in main.js.

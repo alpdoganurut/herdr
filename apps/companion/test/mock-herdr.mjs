@@ -32,6 +32,9 @@ export function createMockHerdr({ socketPath, verifyCdp = false, log = () => {},
     sockets: new Set(),
     subscribers: new Set(),
     browser: null, // playwright Browser when verifyCdp
+    update: null, // an installed update the lease answer names, as herdr's launcher does
+    companionCalls: [], // browser.companion requests (the update chip's restart)
+    companionDelayMs: 0, // their (failing) answer comes this late
   };
   const mintKey = () => 'g-' + crypto.randomBytes(8).toString('hex');
   const now = () => Math.floor(Date.now() / 1000);
@@ -192,6 +195,11 @@ export function createMockHerdr({ socketPath, verifyCdp = false, log = () => {},
         emit('tab.renamed', { type: 'tab_renamed', tab_id: params.tab_id, workspace_id: t ? t.workspace_id : 'w1', label: params.label });
         return ok(id, { type: 'ok' });
       }
+      case 'browser.companion':
+        // no launcher here: the restart fails (after companionDelayMs)
+        state.companionCalls.push(params || {});
+        await new Promise((r) => setTimeout(r, state.companionDelayMs));
+        return err(id, 'host_unavailable', 'the mock herdr runs no launcher');
       case 'mock.restart':
         setTimeout(() => restart(), 10);
         return ok(id, { type: 'ok' });
@@ -210,7 +218,7 @@ export function createMockHerdr({ socketPath, verifyCdp = false, log = () => {},
   }
 
   function leaseBody() {
-    return { lease_id: state.lease.lease_id, profile: 'companion', state: 'attached', heartbeat_ms: heartbeatMs, ttl_ms: ttlMs, expires_unix: now() + Math.round(ttlMs / 1000), host_protocol: 1, server_features: ['host_sync', 'host_report', 'send_page', 'show', 'page_errors'] };
+    return { lease_id: state.lease.lease_id, profile: 'companion', state: 'attached', heartbeat_ms: heartbeatMs, ttl_ms: ttlMs, expires_unix: now() + Math.round(ttlMs / 1000), host_protocol: 1, server_features: ['host_sync', 'host_report', 'send_page', 'show', 'page_errors'], ...(state.update ? { update: state.update } : {}) };
   }
 
   function focus(tab_id) {

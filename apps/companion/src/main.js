@@ -109,6 +109,7 @@ class Companion {
     this.chromeHeight = CHROME_HEIGHT;
     this.shownTab = null;
     this.flash = null; // transient strip message
+    this.restarting = false; // the update chip's restart request is under way
     this.syncTimer = null;
     this.syncing = false;
     this.lastSyncAt = 0;
@@ -831,15 +832,31 @@ class Companion {
     }
   }
 
-  // The bar's update chip: herdr restarts this process with the installed app files.
+  // The bar's update chip: herdr restarts this process with the installed app files. One
+  // request at a time: the chip is disabled while it runs and comes back when it fails, when
+  // herdr answers without restarting (a note), or when this process is still here 30 s later.
   async restartForUpdate() {
-    if (!this.link) return;
+    if (!this.link || this.restarting) return;
+    this.setRestarting(true);
     this.say('ok', `Restarting into ${this.update || 'the new version'}…`, 15000);
     try {
-      await this.link.request('browser.companion', { action: 'restart' });
+      const res = await this.link.request('browser.companion', { action: 'restart' });
+      if (res && res.note) {
+        this.setRestarting(false);
+        this.say('warn', res.note);
+        return;
+      }
+      setTimeout(() => this.setRestarting(false), 30000).unref();
     } catch (e) {
+      this.setRestarting(false);
       this.say('warn', e.code === 'unknown_method' ? 'This herdr cannot restart the companion' : `Restart failed: ${e.message}`);
     }
+  }
+
+  setRestarting(on) {
+    if (this.restarting === on) return;
+    this.restarting = on;
+    this.pushStrip();
   }
 
   stripState() {
@@ -878,7 +895,7 @@ class Companion {
       })(),
       attached: status.state === 'registered',
       status: line,
-      update: this.update ? { version: this.update } : null,
+      update: this.update ? { version: this.update, restarting: this.restarting } : null,
     };
   }
 

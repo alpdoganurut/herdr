@@ -17,11 +17,13 @@ set -euo pipefail
 
 APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 REPO="$(cd "$APP_DIR/../.." && pwd)"
-HERDR_BIN="${HERDR_BIN:-$REPO/target/release/herdr}"
+# BIN, not HERDR_BIN: the loop below drops every inherited HERDR_* variable (an exported
+# HERDR_BIN with them).
+BIN="${HERDR_BIN:-$REPO/target/release/herdr}"
 KEEP=0
 [[ "${1:-}" == "--keep" ]] && KEEP=1
 
-[[ -x "$HERDR_BIN" ]] || { echo "no herdr binary at $HERDR_BIN (cargo build --release, or set HERDR_BIN)" >&2; exit 2; }
+[[ -x "$BIN" ]] || { echo "no herdr binary at $BIN (cargo build --release, or set HERDR_BIN)" >&2; exit 2; }
 [[ -d "$APP_DIR/node_modules/playwright-core" && -d "$APP_DIR/node_modules/electron/dist" ]] || {
   echo "run npm ci in $APP_DIR first (and node node_modules/electron/install.js if node_modules/electron/dist is missing)" >&2
   exit 2
@@ -35,7 +37,7 @@ mkdir -p "$T/home" "$T/config/herdr" "$T/state" "$T/data" "$T/cache"
 
 for v in $(env | sed -n 's/^\(HERDR_[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done
 export HOME="$T/home" XDG_CONFIG_HOME="$T/config" XDG_STATE_HOME="$T/state" XDG_DATA_HOME="$T/data" XDG_CACHE_HOME="$T/cache"
-export HERDR_E2E_TMP="$T" HERDR_E2E_BIN="$HERDR_BIN" HERDR_E2E_SOCKET="$T/config/herdr/herdr.sock"
+export HERDR_E2E_TMP="$T" HERDR_E2E_BIN="$BIN" HERDR_E2E_SOCKET="$T/config/herdr/herdr.sock"
 # Inherited by the companion the server launches.
 export HERDR_COMPANION_HEADLESS=1 HERDR_COMPANION_TEST_HOOKS=1
 export HERDR_COMPANION_ELECTRON_DIST="$APP_DIR/node_modules/electron/dist"
@@ -58,7 +60,7 @@ printf '{"version":1,"node":"%s","playwright_core":"1.63.0","assets_sha256":"","
 
 cleanup() {
   local code=$?
-  "$HERDR_BIN" server stop >/dev/null 2>&1 || true
+  "$BIN" server stop >/dev/null 2>&1 || true
   sleep 1
   local left=""
   for p in $(cat "$T/server.pids" 2>/dev/null); do ps -p "$p" >/dev/null 2>&1 && left="$left $p"; done
@@ -67,13 +69,13 @@ cleanup() {
     companion="$(sed -n 's/.*"pid": *\([0-9]*\).*/\1/p' "$T/state/herdr/browser/companion-app/run.json" | head -1)"
     [[ -n "$companion" ]] && ! ps -p "$companion" >/dev/null 2>&1 && companion=""
   fi
-  [[ -n "$left" ]] && echo "herdr server pid(s) still running:$left (not killed; stop them with HOME=$T/home XDG_CONFIG_HOME=$T/config $HERDR_BIN server stop)" >&2
+  [[ -n "$left" ]] && echo "herdr server pid(s) still running:$left (not killed; stop them with HOME=$T/home XDG_CONFIG_HOME=$T/config $BIN server stop)" >&2
   [[ -n "$companion" ]] && echo "companion pid $companion still running (not killed)" >&2
   if [[ $code -eq 0 && $KEEP -eq 0 && -z "$left" && -z "$companion" ]]; then rm -rf "$T"; else echo "kept $T"; fi
   exit $code
 }
 trap cleanup EXIT
 
-echo "isolated herdr: $HERDR_BIN  socket: $HERDR_E2E_SOCKET  tmp: $T"
+echo "isolated herdr: $BIN  socket: $HERDR_E2E_SOCKET  tmp: $T"
 cd "$APP_DIR"
 "$NODE" test/e2e-launcher.mjs
