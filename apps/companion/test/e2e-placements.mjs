@@ -7,7 +7,8 @@
 // binds the terminal window, covers the band where the geometry model puts it and reports
 // `covering` (herdr's browser.get shows it); a window that no longer fits the grid is
 // `unsupported` with the reason; off screen is `hidden`; Browser view (prefix+Z) is a `full`
-// placement over the pane area; undocking clears it and the companion leaves docked mode.
+// placement over the pane area; undocking clears it and the companion leaves docked mode;
+// docking again is reported anew.
 import { spawn, execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import fs from 'node:fs';
@@ -221,6 +222,16 @@ if (covering) {
   }, 15000);
   check('prefix+B again: the placement is cleared and the companion leaves docked mode', !!undocked);
   check('the report goes with the placement', !(await statusOf(target.id)));
+
+  // ---------- docked again: the same placement id, reported anew ----------
+  type('02 42');
+  const redocked = await waitFor(async () => ((await statusOf(target.id)) || {}).state === 'covering', 20000);
+  check('docked again: the companion reports on the placement anew', !!redocked, redocked ? undefined : await debug().catch((e) => e.message));
+  type('02 42');
+  await waitFor(async () => {
+    const d = await debug();
+    return d && !d.docked;
+  }, 15000);
 }
 
 // ---------- done ----------

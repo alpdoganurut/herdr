@@ -6,11 +6,9 @@
 //   above       the windows above it, front to back: [number, pid, layer]
 //   candidates  every N samples (and while nothing is bound): on-screen layer-0 windows of
 //               `pids`, front to back
-//   front       the frontmost application's pid
 // Samples come every <ms>, every <fast ms> while the target's frame keeps changing. The
 // probe ends when its reader goes away (the next write fails).
 ObjC.import('CoreGraphics');
-ObjC.import('AppKit');
 ObjC.import('Foundation');
 
 // Every bridged call costs: read a window's bounds only when they are needed.
@@ -76,8 +74,6 @@ function run(argv) {
         sample.candidates.push({ num: d.objectForKey('kCGWindowNumber').js, pid, ...bounds(d) });
       }
     }
-    const front = $.NSWorkspace.sharedWorkspace.frontmostApplication;
-    sample.front = front.isNil() ? 0 : front.processIdentifier;
     emit(sample);
     const t = sample.target;
     const moving = !!(t && last && (t.x !== last.x || t.y !== last.y || t.w !== last.w || t.h !== last.h));

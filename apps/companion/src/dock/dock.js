@@ -4,8 +4,9 @@
 // herdr publishes placements (dock/placements.js); the window probe (dock/window-probe.js)
 // says where the terminal windows are. The core binds the target placement to its terminal
 // window (the client's process ancestry owns it; with several, the frontmost when the
-// client's focus flips or the user clicks the "unbound" placeholder), follows it, and says
-// when the dock window shows and where (dock/geometry.js), and what to report to herdr:
+// client's focus flips or the user clicks the "unbound" placeholder, from a window list
+// newer than that), follows it, and says when the dock window shows and where
+// (dock/geometry.js), and what to report to herdr:
 //   covering    over the area
 //   hidden      not now (the placement is not shown, or the window is off screen)
 //   moving      the window moves or resizes: hidden until it settles (120 ms)
@@ -17,8 +18,10 @@
 
 'use strict';
 
+const { execFile } = require('node:child_process');
 const { placementRect, isFullScreen, REASONS } = require('./geometry.js');
 const { chooseTarget, anyDockPlacement } = require('./placements.js');
+const { readGhosttyConfig } = require('./ghostty-config.js');
 
 const SETTLE_MS = 120;
 // Right after a move or resize herdr's placement may still describe the old size: a
@@ -26,6 +29,11 @@ const SETTLE_MS = 120;
 const RESETTLE_MS = 1500;
 // The Dock icon comes back this long after the last placement went.
 const POLICY_GRACE_MS = 2000;
+// `configFor` while a terminal's settings are still being read: the dock waits (hidden).
+const CONFIG_PENDING = Symbol('config pending');
+// A geometry that reads as a split may be a settings change instead (a Ghostty config reload
+// changes the padding): the settings are read again, at most this often per terminal.
+const CONFIG_RECHECK_MS = 5000;
 
 const NO_WINDOW = 'Docking needs herdr directly in a terminal window (not inside tmux or ssh)';
 const NOT_MAC = 'Docking is macOS only for now';
@@ -34,15 +42,19 @@ const sameFrame = (a, b) => !!a && !!b && a.x === b.x && a.y === b.y && a.w === 
 
 class DockCore {
   // env: {platform, scaleFor(frame) -> number, displayFor(frame) -> {x,y,width,height},
-  //       configFor(pid) -> ghostty config}
+  //       configFor(pid) -> ghostty config | CONFIG_PENDING,
+  //       configSuspect?(pid, updatedUnix) -> whether the settings are being read again}
   constructor(env) {
     this.env = env;
     this.placements = [];
     this.bound = null; // {wid, pid, placementId}
     this.seen = new Map(); // placement id -> {focused, nudge}
-    this.rebind = new Set(); // placement ids whose focus flipped or nudge changed
+    // placement id -> the candidate list count when its focus flipped or its nudge changed:
+    // the rebind waits for a newer list (the one before the click has the old window in front)
+    this.rebind = new Map();
     this.sample = null;
     this.candidates = null; // last candidate list (null: none seen yet)
+    this.candidatesSeq = 0; // candidate lists seen
     this.frame = null; // the bound window's last frame
     this.frameSince = 0; // when it last changed
     this.movedAt = 0; // the last change (for RESETTLE_MS)
@@ -58,16 +70,20 @@ class DockCore {
       ids.add(id);
       const was = this.seen.get(id) || { focused: false, nudge: 0 };
       const nudge = p.placement.nudge || 0;
-      if ((p.focused && !was.focused) || nudge !== was.nudge) this.rebind.add(id);
+      if ((p.focused && !was.focused) || nudge !== was.nudge) this.rebind.set(id, this.candidatesSeq);
       this.seen.set(id, { focused: !!p.focused, nudge });
     }
     for (const id of [...this.seen.keys()]) if (!ids.has(id)) this.seen.delete(id);
+    for (const id of [...this.rebind.keys()]) if (!ids.has(id)) this.rebind.delete(id);
     if (this.bound && !ids.has(this.bound.placementId)) this.bound = null;
   }
 
   onSample(sample, now) {
     this.sample = sample;
-    if (sample.candidates) this.candidates = sample.candidates;
+    if (sample.candidates) {
+      this.candidates = sample.candidates;
+      this.candidatesSeq += 1;
+    }
     const t = sample.target;
     if (this.bound && t && t.num === this.bound.wid) {
       if (!sameFrame(t, this.frame)) {
@@ -78,49 +94,60 @@ class DockCore {
     }
   }
 
-  // The geometry of `placement` over the window `win` (a probe window record).
+  // The geometry of `placement` over the window `win` (a probe window record); `pending`
+  // while the window's terminal settings are still being read.
   rectFor(placement, win) {
+    const config = this.env.configFor(win.pid);
+    if (config === CONFIG_PENDING) return { ok: false, pending: true, model: {} };
     const frame = { x: win.x, y: win.y, w: win.w, h: win.h };
-    return placementRect({
-      placement,
-      frame,
-      scale: this.env.scaleFor(frame),
-      config: this.env.configFor(win.pid),
-    });
+    return placementRect({ placement, frame, scale: this.env.scaleFor(frame), config });
+  }
+
+  // A split reason may be stale settings: whether they are being read again for `pid`.
+  _rechecking(pid, target) {
+    return !!(this.env.configSuspect && this.env.configSuspect(pid, target.updated_unix || 0));
   }
 
   // Bind the target to its window; returns {state, reason} when it cannot.
   _bind(target) {
     const placement = target.placement;
     const pids = placement.pids || [];
+    // A rebind asked for (the focus flipped, a nudge) is answered from a candidate list
+    // newer than the ask: the one from before the click still has the old window in front.
+    const asked = this.rebind.has(placement.id);
+    const fresh = asked && this.candidatesSeq > this.rebind.get(placement.id);
     if (this.bound && this.bound.placementId === placement.id) {
       const cand = (this.candidates || []).find((w) => w.num === this.bound.wid);
       const t = this.sample && this.sample.target;
       const live = cand || (t && t.num === this.bound.wid);
       // Keep the window until it leaves the list or another one is asked for.
-      if (live && !this.rebind.has(placement.id)) return null;
+      if (live && !fresh) return null;
     }
     if (this.candidates === null) return { state: 'hidden' }; // nothing seen yet
-    const fits = this.candidates.filter((w) => pids.includes(w.pid) && this.rectFor(placement, w).ok);
     const mine = this.candidates.filter((w) => pids.includes(w.pid));
     if (!mine.length) {
       this.bound = null;
       return { state: 'unsupported', reason: NO_WINDOW };
     }
+    const geos = mine.map((w) => this.rectFor(placement, w));
+    if (geos.some((g) => g.pending)) return { state: 'hidden' }; // reading the terminal's settings
+    const fits = mine.filter((w, i) => geos[i].ok);
     if (!fits.length) {
       // the client's windows exist but none matches its grid: say why
-      const why = this.rectFor(placement, mine[0]);
+      const reason = geos[0].reason || REASONS.split;
+      if (reason === REASONS.split && this._rechecking(mine[0].pid, target)) return { state: 'moving' };
       this.bound = null;
-      return { state: 'unsupported', reason: why.reason || REASONS.split };
+      return { state: 'unsupported', reason };
     }
     let pick = null;
-    if (fits.length === 1) pick = fits[0];
-    else if (this.rebind.has(placement.id)) pick = fits[0]; // front to back: the frontmost
-    this.rebind.delete(placement.id);
+    if (fresh) pick = fits[0]; // front to back: the frontmost
+    else if (fits.length === 1) pick = fits[0];
+    if (fresh) this.rebind.delete(placement.id);
     if (!pick) {
       if (this.bound && fits.some((w) => w.num === this.bound.wid)) return null;
       this.bound = null;
-      return { state: 'unbound' };
+      // waiting for the list that answers the ask: calm, not "click here"
+      return { state: asked ? 'hidden' : 'unbound' };
     }
     if (!this.bound || this.bound.wid !== pick.num) {
       this.bound = { wid: pick.num, pid: pick.pid, placementId: placement.id };
@@ -132,9 +159,11 @@ class DockCore {
 
   // What to do now. Returns
   //   {docked, show, rect, fullScreen, raise, target, tabId, watch: {pids, wid},
-  //    reports: [{id, state, reason}]}
+  //    reports: [{id, state, reason}], recheckAt}
+  // `recheckAt`: while the dock waits for a window to settle, when the decision changes
+  // without a new sample or placement (null otherwise).
   decide(now) {
-    const out = { docked: anyDockPlacement(this.placements), show: false, rect: null, fullScreen: false, raise: false, target: null, tabId: null, watch: { pids: [], wid: 0 }, reports: [] };
+    const out = { docked: anyDockPlacement(this.placements), show: false, rect: null, fullScreen: false, raise: false, target: null, tabId: null, watch: { pids: [], wid: 0 }, reports: [], recheckAt: null };
     const target = chooseTarget(this.placements);
     out.target = target;
     for (const p of this.placements) {
@@ -157,11 +186,19 @@ class DockCore {
     const t = this.sample && this.sample.target;
     if (t && t.num === this.bound.wid && t.on === false) return say('hidden');
     if (!this.frame) return say('hidden');
-    if (this.frameSince && now - this.frameSince < SETTLE_MS) return say('moving');
+    if (this.frameSince && now - this.frameSince < SETTLE_MS) {
+      out.recheckAt = this.frameSince + SETTLE_MS;
+      return say('moving');
+    }
     const win = { ...this.frame, pid: this.bound.pid };
     const geo = this.rectFor(placement, win);
+    if (geo.pending) return say('hidden');
     if (!geo.ok) {
-      if (this.movedAt && now - this.movedAt < RESETTLE_MS) return say('moving');
+      if (this.movedAt && now - this.movedAt < RESETTLE_MS) {
+        out.recheckAt = this.movedAt + RESETTLE_MS;
+        return say('moving');
+      }
+      if (geo.reason === REASONS.split && this._rechecking(this.bound.pid, target)) return say('moving');
       return say('unsupported', geo.reason);
     }
     out.show = true;
@@ -186,7 +223,7 @@ class DockController {
     this.headless = headless;
     this.electron = electron;
     const { screen } = electron;
-    this.configs = new Map(); // pid -> ghostty config
+    this.configs = new Map(); // pid -> {cfg, at, reading}: the terminal's geometry settings
     this.core = new DockCore({
       platform,
       fake: !!probe.fakeFile,
@@ -206,12 +243,15 @@ class DockController {
         }
       },
       configFor: (pid) => this.configFor(pid),
+      configSuspect: (pid, updatedUnix) => this.configSuspect(pid, updatedUnix),
     });
     this.docked = false;
     this.shown = false;
+    this.stopped = false;
     this.last = null; // the last decision
     this.fullScreen = false;
     this.policyTimer = null;
+    this.settleTimer = null;
     this.accessory = false;
     feed.on('placements', (list) => {
       this.core.setPlacements(list);
@@ -221,28 +261,52 @@ class DockController {
       this.core.onSample(s, Date.now());
       this.apply();
     });
-    // Settling needs a decision after the frame stops changing even without a sample.
-    this.tick = setInterval(() => this.docked && this.apply(), 60);
-    this.tick.unref();
   }
 
   // The terminal's geometry settings: Ghostty's config files and its own flags (they win;
-  // `ps`, no permission); another terminal is read as evenly padded (best effort).
+  // `ps`, no permission); another terminal is read as evenly padded (best effort). Read
+  // in the background: CONFIG_PENDING until then (the dock waits).
   configFor(pid) {
-    if (this.configs.has(pid)) return this.configs.get(pid);
-    let args = '';
-    try {
-      args = require('node:child_process').execFileSync('/bin/ps', ['-o', 'args=', '-p', String(pid)], { encoding: 'utf8', timeout: 1000 }).trim();
-    } catch {}
-    let cfg;
-    if (this.probe.fakeFile || /ghostty/i.test(args.split(/\s+/)[0] || '')) {
-      cfg = require('./ghostty-config.js').readGhosttyConfig({ argv: args.split(/\s+/).slice(1) });
-    } else cfg = { symmetric: true, sources: [] };
-    this.configs.set(pid, cfg);
-    return cfg;
+    const entry = this.configs.get(pid);
+    if (entry && entry.cfg) return entry.cfg;
+    this.readConfig(pid);
+    return CONFIG_PENDING;
+  }
+
+  // A split reason for `pid`'s window: when the placement changed after the settings were
+  // read (a Ghostty config reload changes the extent), read them again, at most every
+  // CONFIG_RECHECK_MS. Returns whether a read runs (the old settings stay until it lands).
+  configSuspect(pid, updatedUnix) {
+    const entry = this.configs.get(pid);
+    if (!entry || !entry.cfg) return false;
+    if (entry.reading) return true;
+    const now = Date.now();
+    if (entry.at >= updatedUnix * 1000 || now - entry.at < CONFIG_RECHECK_MS) return false;
+    this.readConfig(pid);
+    return entry.reading;
+  }
+
+  readConfig(pid) {
+    let entry = this.configs.get(pid);
+    if (!entry) {
+      entry = { cfg: null, at: 0, reading: false };
+      this.configs.set(pid, entry);
+    }
+    if (entry.reading) return;
+    entry.reading = true;
+    execFile('/bin/ps', ['-o', 'args=', '-p', String(pid)], { encoding: 'utf8', timeout: 2000 }, (err, stdout) => {
+      entry.reading = false;
+      if (this.stopped || this.configs.get(pid) !== entry) return;
+      const args = err ? '' : String(stdout || '').trim();
+      const ghostty = this.probe.fakeFile || /ghostty/i.test(args.split(/\s+/)[0] || '');
+      entry.cfg = ghostty ? readGhosttyConfig({ argv: args.split(/\s+/).slice(1) }) : { symmetric: true, sources: [] };
+      entry.at = Date.now();
+      this.apply();
+    });
   }
 
   apply() {
+    if (this.stopped) return;
     const now = Date.now();
     const d = this.core.decide(now);
     this.last = d;
@@ -250,6 +314,16 @@ class DockController {
     if (!d.docked && this.docked) this.leave();
     this.probe.watch(d.docked ? d.watch : {});
     for (const r of d.reports) this.feed.report(r.id, r.state, r.reason);
+    // Settling: a decision once the window stopped moving, even without a sample.
+    clearTimeout(this.settleTimer);
+    this.settleTimer = null;
+    if (typeof d.recheckAt === 'number') {
+      this.settleTimer = setTimeout(() => {
+        this.settleTimer = null;
+        this.apply();
+      }, Math.max(1, d.recheckAt - now));
+      if (this.settleTimer.unref) this.settleTimer.unref();
+    }
     if (!this.docked) return;
     if (d.tabId) this.host.dockShowsTab(d.tabId);
     const win = this.host.dockWindow();
@@ -341,10 +415,11 @@ class DockController {
   }
 
   stop() {
-    clearInterval(this.tick);
+    this.stopped = true;
+    clearTimeout(this.settleTimer);
     clearTimeout(this.policyTimer);
     this.probe.stop();
   }
 }
 
-module.exports = { DockCore, DockController, SETTLE_MS, RESETTLE_MS, NO_WINDOW, NOT_MAC };
+module.exports = { DockCore, DockController, SETTLE_MS, RESETTLE_MS, NO_WINDOW, NOT_MAC, CONFIG_PENDING };

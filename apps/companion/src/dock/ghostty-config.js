@@ -4,9 +4,11 @@
 // `config-file`, a leading `?` marks an optional one) and the Ghostty process's own
 // command line (`--window-padding-x=10`, which wins over the files):
 //   window-padding-x / window-padding-y   "2" or "2,4" (points; left,right / top,bottom)
-//   window-padding-balance                true | false
+//   window-padding-balance                true | false (also t, 1 / f, 0)
 //   macos-titlebar-style                  transparent | native | hidden | tabs
-// Everything else is ignored. Unknown or malformed values keep the default.
+// Everything else is ignored. As in Ghostty (a file line is read as the flag `--key=value`):
+// an empty value resets the key to its default, a key without `=` (a bare flag) means true,
+// and a malformed value keeps what was set before.
 
 'use strict';
 
@@ -26,36 +28,44 @@ function unquote(v) {
   return t;
 }
 
+// "2" or "2,4": whole points, as Ghostty's WindowPadding reads them.
 function parsePair(value) {
   const parts = unquote(value).split(',').map((p) => p.trim());
+  if (!parts.length || parts.length > 2 || parts.some((p) => !/^\d+$/.test(p))) return null;
   const nums = parts.map(Number);
-  if (!parts.length || parts.length > 2 || nums.some((n) => !Number.isFinite(n) || n < 0)) return null;
   return nums.length === 1 ? [nums[0], nums[0]] : nums;
 }
 
-// Apply one `key = value` to `cfg` (in place). Returns whether the key was one of ours.
+// Ghostty's booleans (cli/args.zig parseBool).
+const TRUE = new Set(['1', 't', 'T', 'true']);
+const FALSE = new Set(['0', 'f', 'F', 'false']);
+
+// Apply one `key = value` to `cfg` (in place): an empty value resets the key to its
+// default. Returns whether the key was one of ours.
 function applySetting(cfg, key, value) {
   if (!KEYS.has(key)) return false;
+  const v = unquote(String(value));
+  const base = defaults();
   switch (key) {
     case 'window-padding-x': {
-      const pair = parsePair(value);
+      const pair = v === '' ? base.paddingX : parsePair(v);
       if (pair) cfg.paddingX = pair;
       break;
     }
     case 'window-padding-y': {
-      const pair = parsePair(value);
+      const pair = v === '' ? base.paddingY : parsePair(v);
       if (pair) cfg.paddingY = pair;
       break;
     }
     case 'window-padding-balance': {
-      const v = unquote(value).toLowerCase();
-      if (v === 'true' || v === '') cfg.balance = true;
-      else if (v === 'false') cfg.balance = false;
+      if (v === '') cfg.balance = base.balance;
+      else if (TRUE.has(v)) cfg.balance = true;
+      else if (FALSE.has(v)) cfg.balance = false;
       break;
     }
     case 'macos-titlebar-style': {
-      const v = unquote(value).toLowerCase();
-      if (['transparent', 'native', 'hidden', 'tabs'].includes(v)) cfg.titlebarStyle = v;
+      if (v === '') cfg.titlebarStyle = base.titlebarStyle;
+      else if (['transparent', 'native', 'hidden', 'tabs'].includes(v)) cfg.titlebarStyle = v;
       break;
     }
     default:
@@ -70,7 +80,10 @@ function parseText(cfg, text) {
     const line = raw.trim();
     if (!line || line.startsWith('#')) continue;
     const eq = line.indexOf('=');
-    if (eq < 0) continue;
+    if (eq < 0) {
+      applySetting(cfg, line, 'true'); // `key` alone is the bare flag `--key`
+      continue;
+    }
     const key = line.slice(0, eq).trim();
     const value = line.slice(eq + 1);
     if (key === 'config-file') {

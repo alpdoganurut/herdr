@@ -4,6 +4,12 @@
 // Every herdr client that keeps an area for the browser publishes a placement: the herdr
 // tab, the cells, its terminal's pixel geometry and its process ancestry. herdr adds its
 // facts about the client (focused, foreground). The companion covers one: the target.
+//
+// A report is sent when it changes. herdr drops its report with the placement (a client
+// that undocks), so the companion forgets what it sent about a placement that left the
+// board, and about every placement when the board moved on by more than one change between
+// two answers (it may have left and come back unseen): a placement that comes back is
+// reported anew.
 
 'use strict';
 
@@ -45,6 +51,9 @@ class PlacementFeed extends EventEmitter {
     this.reports = new Map(); // id -> "state|reason" last sent
     this.unsupported = false; // herdr without browser.placements
     this.timer = null;
+    this.polling = false;
+    // Bumped by stop() and reset(): an answer to a poll from before them is dropped.
+    this.gen = 0;
   }
 
   start() {
@@ -55,11 +64,13 @@ class PlacementFeed extends EventEmitter {
 
   stop() {
     this.running = false;
+    this.gen += 1;
     clearTimeout(this.timer);
   }
 
   // A new lease (a server restart or handoff): start over.
   reset() {
+    this.gen += 1;
     this.bootId = null;
     this.rev = null;
     this.reports.clear();
@@ -72,6 +83,10 @@ class PlacementFeed extends EventEmitter {
     this.timer = setTimeout(() => this._loop(), ms);
   }
 
+  _again() {
+    if (this.running) setImmediate(() => this._loop());
+  }
+
   async _loop() {
     if (!this.running || this.polling) return;
     if (!this.link.lease) return this._later(RETRY_MS);
@@ -82,6 +97,7 @@ class PlacementFeed extends EventEmitter {
       return this._later(5000);
     }
     this.polling = true;
+    const gen = this.gen;
     let res;
     try {
       const params = { wait_ms: WAIT_MS };
@@ -89,6 +105,7 @@ class PlacementFeed extends EventEmitter {
       res = await this.link.call('browser.placements', params, { timeoutMs: WAIT_MS + 10000 });
     } catch (e) {
       this.polling = false;
+      if (gen !== this.gen) return this._again(); // asked before a stop or a new lease
       if (e.code === 'unknown_method') {
         this.unsupported = true;
         return this._later(30000);
@@ -96,14 +113,20 @@ class PlacementFeed extends EventEmitter {
       return this._later(RETRY_MS);
     }
     this.polling = false;
+    // An answer to a poll from before a stop or a new lease: nothing of it is kept.
+    if (gen !== this.gen) return this._again();
     if (res.boot_id !== this.bootId) {
       this.bootId = res.boot_id;
       this.reports.clear();
+    } else if (this.rev !== null && res.rev > this.rev + 1) {
+      this.reports.clear(); // changes between two answers were missed
     }
     this.rev = res.rev;
     this.placements = res.placements || [];
+    const ids = new Set(this.placements.map((p) => p && p.placement && p.placement.id).filter(Boolean));
+    for (const id of [...this.reports.keys()]) if (!ids.has(id)) this.reports.delete(id);
     this.emit('placements', this.placements);
-    if (this.running) setImmediate(() => this._loop());
+    this._again();
   }
 
   // Tell herdr what the dock does with placement `id` (only when it changed).

@@ -3,8 +3,10 @@
 // z-order upkeep and what it reports to herdr (pure: fake samples, fake clock).
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { DockCore, SETTLE_MS, NO_WINDOW, NOT_MAC } = require('../src/dock/dock.js');
+const { EventEmitter } = require('node:events');
+const { DockCore, DockController, SETTLE_MS, RESETTLE_MS, NO_WINDOW, NOT_MAC, CONFIG_PENDING } = require('../src/dock/dock.js');
 const { chooseTarget, anyDockPlacement } = require('../src/dock/placements.js');
+const { REASONS } = require('../src/dock/geometry.js');
 
 const GHOSTTY = 700;
 // A 120x36 Ghostty window at (100, 200): frame 968x652, extent 1928x1240, cell 16x34.
@@ -27,8 +29,8 @@ const placement = (id, extra = {}) => ({
   updated_unix: 10,
 });
 
-function core(platform = 'darwin') {
-  return new DockCore({ platform, scaleFor: () => 2, displayFor: () => ({ x: 0, y: 0, width: 2056, height: 1329 }), configFor: () => null });
+function core(platform = 'darwin', env = {}) {
+  return new DockCore({ platform, scaleFor: () => 2, displayFor: () => ({ x: 0, y: 0, width: 2056, height: 1329 }), configFor: () => null, ...env });
 }
 
 const report = (d, id) => d.reports.find((r) => r.id === id);
@@ -40,7 +42,7 @@ test('one terminal window: bound at once, the dock covers the band', () => {
   assert.equal(d.docked, true);
   assert.equal(report(d, 'p1').state, 'hidden'); // no windows seen yet
   assert.deepEqual(d.watch, { pids: [4242, 4100, GHOSTTY], wid: 0 });
-  c.onSample({ t: 1, candidates: [win(11)], front: GHOSTTY }, 1);
+  c.onSample({ t: 1, candidates: [win(11)] }, 1);
   d = c.decide(2);
   assert.equal(report(d, 'p1').state, 'covering');
   assert.equal(d.show, true);
@@ -60,12 +62,15 @@ test('a move hides the dock until the window settles; off screen hides it', () =
   c.setPlacements([placement('p1')]);
   c.onSample({ t: 0, candidates: [win(11)] }, 0);
   assert.equal(c.decide(1).show, true);
+  assert.equal(c.decide(1).recheckAt, null, 'settled: nothing to wait for');
   c.onSample({ t: 100, target: win(11, 140, 210, { on: true }), above: [] }, 100);
   let d = c.decide(110);
   assert.equal(d.show, false);
   assert.equal(report(d, 'p1').state, 'moving');
+  assert.equal(d.recheckAt, 100 + SETTLE_MS, 'decided again once it settled, sample or not');
   d = c.decide(100 + SETTLE_MS + 1);
   assert.equal(d.show, true);
+  assert.equal(d.recheckAt, null);
   assert.equal(d.rect.x, 638 + 40);
   c.onSample({ t: 400, target: win(11, 140, 210, { on: false }), above: [] }, 400);
   d = c.decide(401);
@@ -82,15 +87,51 @@ test('several same-size windows: unbound until the client focuses or the user cl
   let d = c.decide(1);
   assert.equal(report(d, 'p1').state, 'unbound');
   assert.equal(d.show, false);
-  // the client's terminal gets the focus: the frontmost window (listed first) is it
+  // the client's terminal gets the focus: the frontmost window of the next list is it
   c.setPlacements([{ ...p, focused: true }]);
-  d = c.decide(2);
+  c.onSample({ t: 2, candidates: [win(21, 300, 100), win(22, 100, 200)] }, 2);
+  d = c.decide(3);
   assert.equal(report(d, 'p1').state, 'covering');
   assert.equal(c.bound.wid, 21);
-  // a nudge (the user clicked the placeholder) binds the frontmost again
-  c.onSample({ t: 3, candidates: [win(22, 100, 200), win(21, 300, 100)] }, 3);
+  // a nudge (the user clicked the placeholder): the list from before it keeps the binding
   c.setPlacements([placement('p1', { nudge: 1 })]);
   c.decide(4);
+  assert.equal(c.bound.wid, 21);
+  // the next list has the clicked window in front: bound to it
+  c.onSample({ t: 5, candidates: [win(22, 100, 200), win(21, 300, 100)] }, 5);
+  d = c.decide(6);
+  assert.equal(c.bound.wid, 22);
+  assert.equal(report(d, 'p1').state, 'covering');
+  // answered: later lists keep it, whatever their order
+  c.onSample({ t: 7, candidates: [win(21, 300, 100), win(22, 100, 200)] }, 7);
+  c.decide(8);
+  assert.equal(c.bound.wid, 22);
+});
+
+test('a focus flip binds from a window list newer than the flip, not the one from before the click', () => {
+  const c = core();
+  const p = { ...placement('p1'), focused: false };
+  c.setPlacements([p]);
+  // two same-size windows of the one Ghostty process; 21 is in front, herdr runs in 22
+  c.onSample({ t: 0, candidates: [win(21, 300, 100), win(22, 100, 200)] }, 0);
+  assert.equal(report(c.decide(1), 'p1').state, 'unbound');
+  // the user clicks 22: herdr says focused before the probe's next list
+  c.setPlacements([{ ...p, focused: true }]);
+  let d = c.decide(2);
+  assert.equal(c.bound, null, 'the list from before the click does not bind');
+  assert.equal(report(d, 'p1').state, 'hidden', 'calm while it waits, not "click here"');
+  c.onSample({ t: 3, target: null }, 3); // a sample without a list changes nothing
+  assert.equal(c.decide(4).show, false);
+  c.onSample({ t: 5, candidates: [win(22, 100, 200), win(21, 300, 100)] }, 5);
+  d = c.decide(6);
+  assert.equal(c.bound.wid, 22);
+  assert.equal(report(d, 'p1').state, 'covering');
+  // bound to 22, the focus goes and comes back (another app, then 22 again): until a newer
+  // list arrives the binding stays
+  c.setPlacements([{ ...p, focused: false }]);
+  c.decide(7);
+  c.setPlacements([{ ...p, focused: true }]);
+  c.decide(8);
   assert.equal(c.bound.wid, 22);
 });
 
@@ -152,4 +193,83 @@ test('full screen: a frame equal to its display', () => {
   c.setPlacements([placement('p1')]);
   c.onSample({ t: 0, candidates: [win(11, 0, 0)] }, 0);
   assert.equal(c.decide(1).fullScreen, true);
+});
+
+test('while the terminal settings are read the dock waits calmly; a split reason waits for a re-read', () => {
+  let cfg = CONFIG_PENDING;
+  const suspects = [];
+  let rereading = false;
+  const c = core('darwin', {
+    configFor: () => cfg,
+    configSuspect: (pid, updated) => {
+      suspects.push([pid, updated]);
+      return rereading;
+    },
+  });
+  c.setPlacements([placement('p1')]);
+  c.onSample({ t: 0, candidates: [win(11)] }, 0);
+  let d = c.decide(1);
+  assert.equal(report(d, 'p1').state, 'hidden', 'not unsupported before the settings are known');
+  assert.equal(c.bound, null);
+  cfg = null; // read: the defaults
+  d = c.decide(2);
+  assert.equal(report(d, 'p1').state, 'covering');
+  // the padding changed under it (the extent no longer matches): a re-read runs -> moving
+  const wider = placement('p1', { extent_px: { width: 1928 - 40, height: 1240 } });
+  wider.updated_unix = 20;
+  c.setPlacements([wider]);
+  rereading = true;
+  d = c.decide(3);
+  assert.equal(report(d, 'p1').state, 'moving');
+  assert.deepEqual(suspects.at(-1), [GHOSTTY, 20]);
+  // nothing to re-read (or the read agrees): the reason
+  rereading = false;
+  d = c.decide(4);
+  assert.deepEqual(report(d, 'p1'), { id: 'p1', state: 'unsupported', reason: REASONS.split });
+});
+
+test('a geometry that does not fit right after a move stays moving until RESETTLE_MS', () => {
+  const c = core();
+  c.setPlacements([placement('p1')]);
+  c.onSample({ t: 0, candidates: [win(11)] }, 0);
+  c.decide(1);
+  // the window grew; herdr's placement still describes the old size
+  c.onSample({ t: 100, target: win(11, 100, 200, { w: 1200, on: true }), above: [] }, 100);
+  let d = c.decide(100 + SETTLE_MS + 1);
+  assert.equal(report(d, 'p1').state, 'moving');
+  assert.equal(d.recheckAt, 100 + RESETTLE_MS);
+  d = c.decide(100 + RESETTLE_MS);
+  assert.equal(report(d, 'p1').state, 'unsupported');
+  assert.equal(d.recheckAt, null);
+});
+
+// The Electron side with stand-ins: a decision while the window settles arms one timer; no
+// periodic decisions otherwise, none after stop().
+test('the controller decides again once a moving window settled, and only then', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1000 });
+  const feed = Object.assign(new EventEmitter(), { report() {} });
+  const probe = Object.assign(new EventEmitter(), { watch() {}, stop() {}, fakeFile: null });
+  const host = { dockWindow: () => null, dockShowsTab() {}, enterDocked() {}, leaveDocked() {}, layout() {} };
+  const electron = { screen: { getDisplayMatching: () => ({ scaleFactor: 2, bounds: { x: 0, y: 0, width: 100, height: 100 } }) }, app: {} };
+  const ctl = new DockController({ host, feed, probe, headless: true, platform: 'darwin', electron });
+  let decisions = 0;
+  let next = { docked: true, watch: {}, reports: [], recheckAt: 1000 + SETTLE_MS };
+  ctl.core = { decide: () => ((decisions += 1), next), setPlacements() {}, onSample() {}, bound: null, dockWid: null };
+  ctl.apply();
+  assert.equal(decisions, 1);
+  next = { docked: true, watch: {}, reports: [], recheckAt: null };
+  t.mock.timers.tick(SETTLE_MS - 1);
+  assert.equal(decisions, 1);
+  t.mock.timers.tick(1);
+  assert.equal(decisions, 2, 'once it settled');
+  t.mock.timers.tick(60000);
+  assert.equal(decisions, 2, 'nothing periodic while it rests');
+  next = { docked: true, watch: {}, reports: [], recheckAt: 70000 };
+  ctl.apply();
+  ctl.stop();
+  t.mock.timers.tick(60000);
+  assert.equal(decisions, 3, 'stop() cancels the settle timer');
+  feed.emit('placements', []);
+  probe.emit('sample', {});
+  assert.equal(decisions, 3, 'and nothing decides after stop()');
 });
