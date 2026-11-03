@@ -717,3 +717,27 @@ fn the_swallowed_key_toast_follows_what_covers_the_tab() {
         "{covering}"
     );
 }
+
+/// Fork (companion launcher, audit 2): a dock opened and closed again
+/// inside the send gap after a clear leaves nothing waiting (no tick every
+/// 33 ms until the next dock).
+#[test]
+fn a_dock_closed_inside_the_send_gap_leaves_nothing_pending() {
+    let mut state = dock_state();
+    let start = std::time::Instant::now();
+    let at = |ms: u64| start + std::time::Duration::from_millis(ms);
+    toggle_dock(&mut state);
+    sent_placement(&mut state, at(0))
+        .expect("sent")
+        .expect("a placement");
+    toggle_dock(&mut state);
+    assert_eq!(sent_placement(&mut state, at(40)), Some(None), "the clear");
+    // docked again inside the gap: it waits
+    toggle_dock(&mut state);
+    assert!(state.take_browser_placement_request(at(50)).is_none());
+    assert!(state.next_browser_dock_deadline(at(50)).is_some());
+    // and closed before the gap is over: nothing to send, nothing waiting
+    toggle_dock(&mut state);
+    assert!(state.take_browser_placement_request(at(60)).is_none());
+    assert_eq!(state.next_browser_dock_deadline(at(60)), None);
+}

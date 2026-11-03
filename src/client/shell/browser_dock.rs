@@ -1217,7 +1217,7 @@ impl ClientShellState {
         now: Instant,
     ) -> Option<crate::protocol::ClientMessage> {
         // Nothing docked and nothing left to clear: nothing to do (this runs
-        // after every input event).
+        // after every input event), nothing waits for the gap either.
         let in_use = self.browser_dock_in_use();
         if !in_use
             && self
@@ -1226,6 +1226,7 @@ impl ClientShellState {
                 .as_ref()
                 .is_none_or(|sent| sent.spec.is_none())
         {
+            self.browser_dock.pending = false;
             return None;
         }
         if in_use && self.browser_dock.terminal_extent.is_none() {
