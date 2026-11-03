@@ -753,6 +753,11 @@ impl ClientShellState {
         self.hits.notification_toast_action = Rect::default();
         self.hits.notification_toasts.clear();
         let mut notification_stack_bounds = Rect::default();
+        // Fork (companion launcher): in Browser view the companion covers
+        // the tab; the notice, a toast or the agent cards show as one line
+        // on the view strip instead (else the tab bar).
+        let browser_banner =
+            super::browser_dock::banner_area(&layout, browser_view, &self.hits.browser_dock);
         let has_config_diagnostic = self.config_diagnostic.is_some();
         let active_lifecycle = self
             .endpoints
@@ -793,7 +798,15 @@ impl ClientShellState {
                 1
             });
             if let Some(notice) = self.visible_endpoint_notice.as_ref() {
-                self.hits.notification_toast = if layout.mobile_header.is_empty() {
+                self.hits.notification_toast = if let Some(banner) = browser_banner {
+                    endpoint_notices::render_mobile_banner(
+                        &mut composed,
+                        banner,
+                        notice,
+                        false,
+                        &self.config.palette,
+                    )
+                } else if layout.mobile_header.is_empty() {
                     endpoint_notices::render_notice(
                         &mut composed,
                         Rect::new(0, 0, cols, rows),
@@ -812,7 +825,10 @@ impl ClientShellState {
                         &self.config.palette,
                     )
                 };
-            } else if self.config.toast_sticky && layout.mobile_header.is_empty() {
+            } else if self.config.toast_sticky
+                && layout.mobile_header.is_empty()
+                && browser_banner.is_none()
+            {
                 self.hits.notification_toasts = notifications::render_notification_stack(
                     &mut composed,
                     Rect::new(0, 0, cols, rows),
@@ -829,7 +845,15 @@ impl ClientShellState {
                 }
             } else if let Some(index) = self.primary_notification_index() {
                 let notification = &self.visible_notifications[index];
-                self.hits.notification_toast = if layout.mobile_header.is_empty() {
+                self.hits.notification_toast = if let Some(banner) = browser_banner {
+                    notifications::render_mobile_notification_banner(
+                        &mut composed,
+                        banner,
+                        notification,
+                        false,
+                        &self.config.palette,
+                    )
+                } else if layout.mobile_header.is_empty() {
                     notifications::render_visible_notification(
                         &mut composed,
                         Rect::new(0, 0, cols, rows),
@@ -865,7 +889,20 @@ impl ClientShellState {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |elapsed| elapsed.as_secs());
             let cards = self.agent_card_views();
-            let hits = if layout.mobile_header.is_empty() {
+            let hits = if let Some(banner) = browser_banner {
+                // Browser view: the strip's line, once no notice or toast holds it
+                if self.hits.notification_toast.is_empty() {
+                    agent_cards::render_agent_card_banner(
+                        &mut composed,
+                        banner,
+                        &cards,
+                        false,
+                        &self.config.palette,
+                    )
+                } else {
+                    Vec::new()
+                }
+            } else if layout.mobile_header.is_empty() {
                 let area = layout.pane_surface;
                 let toasts = if notification_stack_bounds.is_empty() {
                     self.hits.notification_toast

@@ -389,6 +389,47 @@ fn keys_typed_in_browser_view_never_reach_the_hidden_panes() {
         .any(|request| matches!(request, ClientMessage::ClientShellPaneInput { .. })));
 }
 
+/// Fork (companion launcher, audit 3): nor does a paste (a shell would run
+/// its line), an IME or compose commit, or an image paste; the first says
+/// how to type into the page, like a key.
+#[test]
+fn fork_smoke_pastes_and_text_commits_in_browser_view_never_reach_the_hidden_panes() {
+    let pane_input = |outcome: &ClientShellInput| {
+        outcome
+            .requests
+            .iter()
+            .any(|request| matches!(request, ClientMessage::ClientShellPaneInput { .. }))
+    };
+    let mut state = dock_state();
+    assert!(state.clipboard_image_target().is_some());
+    toggle_view(&mut state);
+    let outcome = state.handle_raw_events(vec![RawInputEvent::Paste("rm -rf build\n".into())]);
+    assert!(!pane_input(&outcome), "{:?}", outcome.requests);
+    let notice = state
+        .visible_endpoint_notice
+        .as_ref()
+        .expect("the paste says how to type");
+    assert!(notice.body.contains("Click the page"), "{}", notice.body);
+    let outcome = state.handle_raw_events(vec![RawInputEvent::Text(
+        crate::input::TextCommit::new("şğü"),
+    )]);
+    assert!(!pane_input(&outcome), "{:?}", outcome.requests);
+    assert_eq!(
+        state.clipboard_image_target(),
+        None,
+        "no image paste either"
+    );
+    // the terminal again: pastes and commits reach the pane
+    toggle_view(&mut state);
+    let outcome = state.handle_raw_events(vec![RawInputEvent::Paste("echo hi".into())]);
+    assert!(pane_input(&outcome));
+    let outcome = state.handle_raw_events(vec![RawInputEvent::Text(
+        crate::input::TextCommit::new("ş"),
+    )]);
+    assert!(pane_input(&outcome));
+    assert!(state.clipboard_image_target().is_some());
+}
+
 #[test]
 fn the_view_strip_shows_only_for_tabs_with_pages_or_a_browser_view() {
     let mut state = dock_state();
@@ -814,4 +855,147 @@ fn fork_smoke_without_the_companion_nothing_docks_and_the_notice_says_why() {
     state.browser.info = None;
     toggle_dock(&mut state);
     assert!(state.browser_dock_open_for("tab_2"));
+}
+
+/// Fork (companion launcher, audit 3): in Browser view the companion covers
+/// the whole tab, so herdr's notice (the guard's "click the page"), a toast
+/// (an agent finished) and the agent cards show as one line on the view
+/// strip, between its switch and its `◨`: never inside the area the
+/// placement publishes. With the strip off, the tab bar's right half (with
+/// neither row they stay where they are).
+#[test]
+fn fork_smoke_browser_view_shows_notices_and_toasts_on_its_strip_not_under_the_page() {
+    let full_area =
+        |state: &ClientShellState| super::super::browser_dock::full_area(&state.layout(COLS, ROWS));
+    let mut state = dock_state();
+    toggle_view(&mut state);
+    let now = std::time::Instant::now();
+    let spec = sent_placement(&mut state, now)
+        .expect("sent")
+        .expect("a placement");
+    let published = Rect::new(spec.area.x, spec.area.y, spec.area.width, spec.area.height);
+    assert_eq!(published, full_area(&state));
+    // the guard's notice
+    state.handle_raw_events(vec![RawInputEvent::Key(TerminalKey::new(
+        KeyCode::Char('x'),
+        KeyModifiers::empty(),
+    ))]);
+    let frame = recompose(&mut state).expect("frame");
+    let strip = state.layout(COLS, ROWS).view_strip;
+    let toast = state.hits.notification_toast;
+    assert!(!toast.is_empty(), "drawn");
+    assert_eq!((toast.y, toast.height), (strip.y, 1), "on the strip");
+    assert!(
+        !toast.intersects(published),
+        "{toast:?} under {published:?}"
+    );
+    let line = row_text(&frame, strip.y);
+    assert!(line.contains("Click the page to type there"), "{line}");
+    assert!(
+        line.contains("Terminal") && line.contains("Browser") && line.contains("◨"),
+        "the switch and the dock toggle stay: {line}"
+    );
+    // a toast (an agent finished): the strip's line too, clickable
+    state.visible_endpoint_notice = None;
+    state
+        .visible_notifications
+        .push_back(ClientVisibleNotification {
+            endpoint_id: ClientEndpointId::Local,
+            event: SemanticNotification {
+                kind: SemanticNotificationKind::Finished,
+                title: "claude finished".into(),
+                body: Some("planner".into()),
+                sound: None,
+                agent: None,
+                workspace_id: None,
+                tab_id: None,
+                pane_id: None,
+                position: None,
+            },
+            deadline: now + std::time::Duration::from_secs(60),
+            reminder: None,
+        });
+    let frame = recompose(&mut state).expect("frame");
+    let toast = state.hits.notification_toast;
+    assert_eq!(toast.y, strip.y);
+    assert!(!toast.intersects(published));
+    assert_eq!(state.hits.notification_toasts, vec![(toast, Some(0))]);
+    assert!(row_text(&frame, strip.y).contains("claude done"));
+    // the agent cards once the line is free
+    state.visible_notifications.clear();
+    let card = crate::api::schema::AgentNoticeInfo {
+        id: "n1".into(),
+        kind: crate::api::schema::AgentNoticeKind::Question,
+        title: "which port?".into(),
+        body: None,
+        agent: Some("claude".into()),
+        name: "builder".into(),
+        pane_id: "pane_9".into(),
+        tab_id: Some("tab_2".into()),
+        tab_label: Some("scratch".into()),
+        workspace_id: Some("ws_1".into()),
+        workspace_label: None,
+        unix: 1,
+        team: None,
+        role: None,
+    };
+    state.receive_agent_notices(
+        &ClientEndpointId::Local,
+        crate::server::headless::agent_notices::AgentNoticesPayload {
+            boot_id: "boot-1".into(),
+            revision: 1,
+            notices: vec![card],
+            initial: false,
+        },
+    );
+    let frame = recompose(&mut state).expect("frame");
+    let (rect, _) = state.hits.agent_cards.first().expect("a card hit");
+    assert_eq!(rect.y, strip.y);
+    assert!(!rect.intersects(published));
+    assert!(row_text(&frame, strip.y).contains("which port?"));
+    // the terminal again: a notice is a card at the top right again
+    toggle_view(&mut state);
+    state.receive_agent_notices(
+        &ClientEndpointId::Local,
+        crate::server::headless::agent_notices::AgentNoticesPayload {
+            boot_id: "boot-1".into(),
+            revision: 2,
+            notices: Vec::new(),
+            initial: false,
+        },
+    );
+    state.push_endpoint_notice(
+        ClientEndpointNoticeKind::Rejected,
+        "test",
+        "Notice",
+        "a body",
+    );
+    recompose(&mut state);
+    let toast = state.hits.notification_toast;
+    assert!(toast.height > 1, "a card: {toast:?}");
+    assert!(toast.intersects(state.layout(COLS, ROWS).pane_surface));
+    // the strip off (and a tab bar: the spaces layout): the tab bar's right
+    // half, still outside the page
+    let mut config = Config::default();
+    config.ui.browser_view_strip = "off".into();
+    config.ui.sidebar_layout = crate::config::SidebarLayoutConfig::Spaces;
+    let mut off = ClientShellState::new(ClientShellConfig::from_config(&config));
+    off.set_snapshot(Box::new(two_tab_snapshot("tab_1")));
+    off.set_pane_surface(surface());
+    off.browser.info = Some(companion("running"));
+    off.browser_dock.extent_for_test = Some((COLS, ROWS, 1600, 900));
+    off.compose(COLS, ROWS);
+    toggle_view(&mut off);
+    off.push_endpoint_notice(
+        ClientEndpointNoticeKind::Rejected,
+        "test",
+        "Notice",
+        "a body",
+    );
+    recompose(&mut off);
+    let layout = off.layout(COLS, ROWS);
+    assert!(layout.view_strip.is_empty());
+    let toast = off.hits.notification_toast;
+    assert_eq!(toast.y, layout.tab_bar.y, "{toast:?}");
+    assert!(!toast.intersects(full_area(&off)));
 }

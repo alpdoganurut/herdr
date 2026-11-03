@@ -281,10 +281,15 @@ impl ClientShellState {
                             self.info_dock_insert_text(&text);
                             outcome.repaint = true;
                         } else if self.overlay.is_none() && self.mode == ClientShellMode::Terminal {
-                            self.push_focused_pane_event(
-                                ClientPaneInputEvent::TextCommit(text),
-                                &mut outcome,
-                            );
+                            // Fork (companion launcher): Browser view hides
+                            // the panes; an IME or compose commit never
+                            // reaches them.
+                            if !self.browser_view_swallows_key(&mut outcome) {
+                                self.push_focused_pane_event(
+                                    ClientPaneInputEvent::TextCommit(text),
+                                    &mut outcome,
+                                );
+                            }
                         }
                     }
                 }
@@ -323,10 +328,14 @@ impl ClientShellState {
                             self.info_dock_insert_text(&text);
                             outcome.repaint = true;
                         } else if self.overlay.is_none() && self.mode == ClientShellMode::Terminal {
-                            self.push_focused_pane_event(
-                                ClientPaneInputEvent::Paste(text),
-                                &mut outcome,
-                            );
+                            // Fork (companion launcher): Browser view hides
+                            // the panes; a paste never runs in one.
+                            if !self.browser_view_swallows_key(&mut outcome) {
+                                self.push_focused_pane_event(
+                                    ClientPaneInputEvent::Paste(text),
+                                    &mut outcome,
+                                );
+                            }
                         }
                     }
                 }
@@ -1161,6 +1170,11 @@ impl ClientShellState {
             ));
         }
         if self.popup_pending || self.overlay.is_some() || self.mode != ClientShellMode::Terminal {
+            return None;
+        }
+        // Fork (companion launcher): Browser view hides the panes; an image
+        // paste is a paste (swallowed with the guard's toast).
+        if self.browser_view_open_for_focused_tab() {
             return None;
         }
         self.focused_pane_id()

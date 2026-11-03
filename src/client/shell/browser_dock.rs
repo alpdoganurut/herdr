@@ -378,6 +378,49 @@ pub(super) fn compose(
     view.browser_view
 }
 
+/// The narrowest line a notice gets in Browser view.
+const BANNER_MIN: u16 = 16;
+
+/// Where herdr's notice, toast or agent cards show while the focused tab is
+/// in Browser view (the companion covers the whole tab, cards drawn there
+/// would be under it): one line on the view strip, between its switch and
+/// its `◨` (as composed into `hits`), else the right half of the tab bar.
+/// `None` outside Browser view, or with neither row (the cards stay where
+/// they are, under the browser).
+pub(super) fn banner_area(
+    layout: &ClientShellLayout,
+    browser_view: bool,
+    hits: &BrowserDockHits,
+) -> Option<Rect> {
+    if !browser_view {
+        return None;
+    }
+    let strip = layout.view_strip;
+    if !strip.is_empty() {
+        let on_strip = |rect: &Rect| rect.y == strip.y && rect.height == 1;
+        let start = hits
+            .targets
+            .iter()
+            .filter(|(rect, target)| on_strip(rect) && *target != BrowserDockTarget::ToggleDock)
+            .map(|(rect, _)| rect.right())
+            .max()
+            .unwrap_or(strip.x)
+            .saturating_add(1);
+        let end = hits
+            .targets
+            .iter()
+            .find(|(rect, target)| on_strip(rect) && *target == BrowserDockTarget::ToggleDock)
+            .map_or(strip.right(), |(rect, _)| rect.x)
+            .saturating_sub(1);
+        if end >= start.saturating_add(BANNER_MIN) {
+            return Some(Rect::new(start, strip.y, end - start, 1));
+        }
+    }
+    let bar = layout.tab_bar;
+    let half = bar.width / 2;
+    (!bar.is_empty() && half >= BANNER_MIN).then(|| Rect::new(bar.right() - half, bar.y, half, 1))
+}
+
 /// What right-anchored toasts keep left of: the info dock and the band.
 pub(super) fn toast_dock(layout: &ClientShellLayout) -> Rect {
     match (layout.info_dock.is_empty(), layout.browser_band.is_empty()) {
