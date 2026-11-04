@@ -344,6 +344,10 @@ mod tests {
 
     /// Run one of the JS-level checks under scripts/ with the node on PATH; skipped without one.
     fn run_node_check(script: &str) {
+        run_node_check_with(script, &[]);
+    }
+
+    fn run_node_check_with(script: &str, envs: &[(&str, &str)]) {
         let node = std::env::var_os("PATH").and_then(|path| {
             std::env::split_paths(&path)
                 .map(|dir| dir.join("node"))
@@ -356,6 +360,7 @@ mod tests {
         let script = Path::new(env!("CARGO_MANIFEST_DIR")).join(script);
         let output = std::process::Command::new(node)
             .arg(&script)
+            .envs(envs.iter().copied())
             .output()
             .expect("run node");
         assert!(
@@ -384,6 +389,17 @@ mod tests {
     #[test]
     fn companion_host_control_page_and_view_watches() {
         run_node_check("scripts/test_browser_companion_host.mjs");
+    }
+
+    /// The act's change report (an in-page modal, the title, the focus) and
+    /// its action_timeout message (scripts/test_browser_tools.mjs; its
+    /// headless-browser part runs by hand, not here).
+    #[test]
+    fn fork_smoke_the_act_reports_a_modal_and_tells_a_timeout_from_a_stale_ref() {
+        run_node_check_with(
+            "scripts/test_browser_tools.mjs",
+            &[("HERDR_BROWSER_TOOLS_NO_BROWSER", "1")],
+        );
     }
 
     #[test]
