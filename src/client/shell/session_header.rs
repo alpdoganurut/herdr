@@ -48,6 +48,63 @@ pub(crate) const MIN_NAME: u16 = 8;
 /// The narrowest notice line on the header (Browser view).
 const BANNER_MIN: u16 = 16;
 
+/// Where the desktop toasts, endpoint notices, the lifecycle banner and the
+/// config diagnostic stack: the frame below the header row while the header
+/// is drawn (so they never cover it), else the whole frame (upstream). Only
+/// the top moves; bottom-anchored toasts keep the frame's bottom.
+pub(crate) fn toast_area(layout: &ClientShellLayout, cols: u16, rows: u16) -> Rect {
+    let top = if layout.session_header.is_empty() {
+        0
+    } else {
+        layout.session_header.bottom().min(rows)
+    };
+    Rect::new(0, top, cols, rows - top)
+}
+
+/// Where the config diagnostic and the endpoint status banner go while the
+/// header is drawn (they right-align and get no dock rect of their own):
+/// in Browser view the header's banner slot (`browser_banner`; the
+/// companion covers the rest of the tab, and the slot keeps the view tabs
+/// and dock toggles clickable), else `toast_area` left of the info dock or
+/// the browser band with one blank column, like a right-anchored toast (the
+/// companion's window covers the band). Without the header: `toast_area`
+/// (upstream).
+pub(crate) fn status_banner_area(
+    layout: &ClientShellLayout,
+    toast_area: Rect,
+    browser_banner: Option<Rect>,
+) -> Rect {
+    if layout.session_header.is_empty() {
+        return toast_area;
+    }
+    if let Some(slot) = browser_banner {
+        return slot;
+    }
+    let dock = super::browser_dock::toast_dock(layout);
+    if dock.is_empty() || dock.x <= toast_area.x.saturating_add(1) {
+        return toast_area;
+    }
+    Rect::new(
+        toast_area.x,
+        toast_area.y,
+        dock.x - 1 - toast_area.x,
+        toast_area.height,
+    )
+}
+
+/// The header's banner slot left of `left` (where a status banner starts),
+/// one blank column before it, for the notice or toast; the whole slot (the
+/// notice drawn over the banners) when fewer than `BANNER_MIN` cells are
+/// left.
+pub(crate) fn slot_left_of(slot: Rect, left: u16) -> Rect {
+    let width = left.saturating_sub(1).saturating_sub(slot.x);
+    if width >= BANNER_MIN {
+        Rect::new(slot.x, slot.y, width, slot.height)
+    } else {
+        slot
+    }
+}
+
 /// A click target of the header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HeaderTarget {

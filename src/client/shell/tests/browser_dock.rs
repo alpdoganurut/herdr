@@ -1029,3 +1029,67 @@ fn fork_smoke_browser_view_shows_notices_and_toasts_on_its_strip_not_under_the_p
     assert_eq!(toast.y, layout.tab_bar.y, "{toast:?}");
     assert!(!toast.intersects(full_area(&off)));
 }
+
+/// Where `needle` is drawn on `frame` (one row, one cell per char).
+fn find_text(frame: &FrameData, needle: &str) -> Option<Rect> {
+    let chars: Vec<String> = needle.chars().map(String::from).collect();
+    let width = u16::try_from(chars.len()).ok()?;
+    (0..frame.height).find_map(|y| {
+        (0..frame.width.saturating_sub(width)).find_map(|x| {
+            chars
+                .iter()
+                .enumerate()
+                .all(|(i, ch)| frame.cells[(y * frame.width + x + i as u16) as usize].symbol == *ch)
+                .then(|| Rect::new(x, y, width, 1))
+        })
+    })
+}
+
+// Fork (toast below header): the config diagnostic and the endpoint status
+// banner start below the header, so with the browser docked they keep left
+// of its band (the companion's window covers it) and in Browser view they
+// take the header's banner slot, beside the view tabs.
+#[test]
+fn fork_smoke_status_banners_keep_clear_of_the_docked_band_and_the_browser_view() {
+    let mut state = dock_state();
+    state.config_diagnostic = Some("bad config key".into());
+    let active = state.active_endpoint_id.clone();
+    let endpoint = state
+        .endpoints
+        .iter_mut()
+        .find(|endpoint| endpoint.endpoint_id == active)
+        .expect("the active endpoint");
+    endpoint.status = ClientEndpointStatus::Connecting;
+    let lifecycle = format!("{} · connecting", endpoint.label);
+    let needles = ["bad config key", lifecycle.as_str()];
+
+    toggle_dock(&mut state);
+    let frame = recompose(&mut state).expect("frame");
+    let layout = state.layout(COLS, ROWS);
+    let band = layout.browser_band;
+    assert!(!band.is_empty(), "docked");
+    for needle in needles {
+        let rect = find_text(&frame, needle).unwrap_or_else(|| panic!("{needle:?} drawn"));
+        assert!(!rect.intersects(band), "{needle:?} {rect:?} under {band:?}");
+        assert!(
+            !rect.intersects(layout.session_header),
+            "{needle:?} {rect:?} on the header"
+        );
+    }
+
+    toggle_view(&mut state);
+    let frame = recompose(&mut state).expect("frame");
+    let layout = state.layout(COLS, ROWS);
+    let full = super::super::browser_dock::full_area(&layout);
+    let header = layout.session_header;
+    for needle in needles {
+        let rect = find_text(&frame, needle).unwrap_or_else(|| panic!("{needle:?} drawn"));
+        assert!(!rect.intersects(full), "{needle:?} {rect:?} under {full:?}");
+        assert_eq!(rect.y, header.y, "{needle:?} on the header's slot");
+    }
+    let line = row_text(&frame, header.y);
+    assert!(
+        line.contains("Terminal") && line.contains("Browser") && line.contains("◧"),
+        "the view tabs and the dock toggle stay: {line}"
+    );
+}
