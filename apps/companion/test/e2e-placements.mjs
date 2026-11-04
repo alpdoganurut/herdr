@@ -277,6 +277,8 @@ if (covering) {
       return b.dockBar && b.dockBar.height >= 28 ? b : null;
     }, 3000, 30);
     check('a dwell at the top reveals the bar over the page (the page does not move)', over && over.layout.top === 0, over || (await barDbg()));
+    // a synthetic mouseleave: it covers the bar's leave handler only, not the real pointer
+    // moving from the bar's view down into the page view (a live check)
     await dockBar.evaluate(() => document.documentElement.dispatchEvent(new MouseEvent('mouseleave')));
     check('and it hides once the pointer leaves', !!(await waitFor(async () => ((await barDbg()).dockBar || {}).height === 6 || null, 3000, 30)));
     check('herdr advertises placement_actions: the bar has expand and close', await dockBar.evaluate(() => !document.getElementById('expand').hidden && !document.getElementById('dockclose').hidden));

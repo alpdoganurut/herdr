@@ -48,7 +48,9 @@ function loadBarPins() {
     const out = {};
     for (const mode of Object.keys(bar.PIN_DEFAULTS)) if (doc && doc.pinned && typeof doc.pinned[mode] === 'boolean') out[mode] = doc.pinned[mode];
     return out;
-  } catch {
+  } catch (e) {
+    // no file yet: the defaults; anything else is worth a line in the log
+    if (e.code !== 'ENOENT') log('bar pins unreadable', e.message);
     return {};
   }
 }
@@ -685,10 +687,10 @@ class Companion {
   // dock.js: the target placement's herdr tab shows in the dock; its id and kind (side or
   // full) pick the bar's window actions.
   dockShowsTab(tabId, placement = null) {
-    const next = placement && placement.id ? { id: placement.id, kind: placement.kind === 'full' ? 'full' : 'side' } : null;
+    const next = placement && placement.id ? { id: placement.id, kind: placement.kind === 'full' ? 'full' : 'side', actions: !!placement.actions } : null;
     const was = this.dockPlacement;
     this.dockPlacement = next;
-    if (!was !== !next || (was && next && (was.id !== next.id || was.kind !== next.kind))) this.pushStrip();
+    if (!was !== !next || (was && next && (was.id !== next.id || was.kind !== next.kind || was.actions !== next.actions))) this.pushStrip();
     this.dockTab = tabId;
     if (tabId && tabId !== this.shownTab && this.store.tabs.has(tabId)) this.showGroup(tabId, { reason: 'follow', focusMoved: true });
   }
@@ -1557,10 +1559,10 @@ class Companion {
   }
 
   // Tests (strip_preview): the floating bar's state as `dock` / `kind` / `features` would make it.
-  previewState({ dock = false, kind = 'side', features = [] } = {}) {
+  previewState({ dock = false, kind = 'side', features = [], clientTakes = true } = {}) {
     const saved = { features: this.features, placement: this.dockPlacement };
     this.features = new Set(features);
-    this.dockPlacement = dock ? { id: 'pl-preview', kind: kind === 'full' ? 'full' : 'side' } : null;
+    this.dockPlacement = dock ? { id: 'pl-preview', kind: kind === 'full' ? 'full' : 'side', actions: clientTakes } : null;
     try {
       return { ...this.stripState(), bar: this.barState(dock) };
     } finally {
@@ -1579,7 +1581,7 @@ class Companion {
       pinned: bar.pinnedFor(this.barPins, mode),
       pulse: this.barPulse,
       menu: this.barMenuOpen,
-      actions: bar.windowActions({ docked: dock, kind, features: this.features || null, placementId: placement && placement.id }),
+      actions: bar.windowActions({ docked: dock, kind, features: this.features || null, placementId: placement && placement.id, clientTakes: !!(placement && placement.actions) }),
     };
   }
 

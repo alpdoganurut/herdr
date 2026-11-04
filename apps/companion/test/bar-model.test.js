@@ -56,17 +56,23 @@ test('the surface and its pin: docked and Browser view unpinned, floating pinned
 
 test('expand / restore and close only docked, only with placement_actions', () => {
   const features = new Set(['placements', 'placement_actions']);
-  assert.deepEqual(bar.windowActions({ docked: true, kind: 'side', features, placementId: 'pl-1' }), { expand: 'promote', close: true });
-  assert.deepEqual(bar.windowActions({ docked: true, kind: 'full', features, placementId: 'pl-1' }), { expand: 'restore', close: true });
+  assert.deepEqual(bar.windowActions({ docked: true, kind: 'side', features, placementId: 'pl-1', clientTakes: true }), { expand: 'promote', close: true });
+  assert.deepEqual(bar.windowActions({ docked: true, kind: 'full', features, placementId: 'pl-1', clientTakes: true }), { expand: 'restore', close: true });
   const none = { expand: null, close: false };
-  assert.deepEqual(bar.windowActions({ docked: false, kind: 'side', features, placementId: 'pl-1' }), none, 'floating: the traffic lights');
-  assert.deepEqual(bar.windowActions({ docked: true, kind: 'side', features: new Set(['placements']), placementId: 'pl-1' }), none, 'an older herdr');
-  assert.deepEqual(bar.windowActions({ docked: true, kind: 'side', features: null, placementId: 'pl-1' }), none);
-  assert.deepEqual(bar.windowActions({ docked: true, kind: 'side', features, placementId: null }), none);
-  assert.deepEqual(bar.windowActions({ docked: true, kind: 'side', features: ['placement_actions'], placementId: 'pl-1' }), { expand: 'promote', close: true });
+  assert.deepEqual(bar.windowActions({ docked: false, kind: 'side', features, placementId: 'pl-1', clientTakes: true }), none, 'floating: the traffic lights');
+  assert.deepEqual(bar.windowActions({ docked: true, kind: 'side', features: new Set(['placements']), placementId: 'pl-1', clientTakes: true }), none, 'an older herdr');
+  assert.deepEqual(bar.windowActions({ docked: true, kind: 'side', features: null, placementId: 'pl-1', clientTakes: true }), none);
+  assert.deepEqual(bar.windowActions({ docked: true, kind: 'side', features, placementId: null, clientTakes: true }), none);
+  assert.deepEqual(bar.windowActions({ docked: true, kind: 'side', features: ['placement_actions'], placementId: 'pl-1', clientTakes: true }), { expand: 'promote', close: true });
+});
+
+test('an older herdr client (it ignores the actions): neither button', () => {
+  const features = new Set(['placements', 'placement_actions']);
+  assert.deepEqual(bar.windowActions({ docked: true, kind: 'side', features, placementId: 'pl-1', clientTakes: false }), { expand: null, close: false });
+  assert.deepEqual(bar.windowActions({ docked: true, kind: 'side', features, placementId: 'pl-1' }), { expand: null, close: false });
 });
 
 test('the hidden bar is held open by what needs the user', () => {
   assert.equal(bar.held({}), false);
-  for (const k of ['urlFocus', 'menu', 'sendbar', 'permbar', 'needsYou', 'empty']) assert.equal(bar.held({ [k]: true }), true, k);
+  for (const k of ['urlFocus', 'menu', 'sendbar', 'permbar', 'status', 'needsYou', 'empty']) assert.equal(bar.held({ [k]: true }), true, k);
 });

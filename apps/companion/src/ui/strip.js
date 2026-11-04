@@ -41,6 +41,7 @@ function barHeld() {
     menu: !!(state.bar && state.bar.menu),
     sendbar: !$('sendbar').hidden,
     permbar: !!state.prompt,
+    status: !!(state.status && state.status.text),
     needsYou: (state.tabs || []).some((t) => t.needs_you),
     empty: !state.active,
   });
@@ -290,11 +291,13 @@ $('pin').addEventListener('click', () => {
   act('pin', { mode: state.bar.mode, pinned: !state.bar.pinned });
 });
 $('dockclose').addEventListener('click', () => act('placement', 'close'));
+// ⌘⇧S clicks this too: the note bar holds the bar open, so it shows before the note takes
+// the keyboard (a field under visibility: hidden takes no focus).
 $('send').addEventListener('click', () => {
   $('sendbar').hidden = false;
+  applyReveal();
   $('note').value = '';
   $('note').focus();
-  applyReveal();
 });
 $('sendcancel').addEventListener('click', () => {
   $('sendbar').hidden = true;

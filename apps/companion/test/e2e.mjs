@@ -523,21 +523,30 @@ try {
     return b.action === 'restore' ? b : null;
   }, 2000);
   check('in herdr\'s Browser view: restore and close', full && full.expand && full.close, full);
+  await ctl(`__herdrCompanion.strip_preview({dock: true, kind: 'side', features: ['placements', 'placement_actions'], clientTakes: false})`);
+  await sleep(300);
+  const olderClient = await winButtons();
+  check('docked over an older herdr client (it ignores the actions): no expand, no close', !olderClient.expand && !olderClient.close, olderClient);
   await ctl('__herdrCompanion.strip_preview(null)');
   check('back to the floating bar: neither', await waitFor(async () => !(await winButtons()).expand || null, 2000));
-  // auto-hide and the pin, per surface (the floating window: pinned by default)
+  // auto-hide and the pin, per surface (the floating window: pinned by default). The pointer
+  // moves are CDP events into the strip page alone: they cover the strip's hover handler, not
+  // the pointer crossing from the bar's view into a page view (a live check).
   const barInfo = () => ctl('__herdrCompanion.bar_debug()');
   const hiddenNow = () => strip.evaluate(() => document.documentElement.classList.contains('bar-hidden'));
   await strip.mouse.move(300, 500); // the pointer below the bar
-  await sleep(500);
+  // a status message holds the hidden bar open (the send above flashed one for 6 s)
+  check('a status message clears in time', await waitFor(() => strip.evaluate(() => document.getElementById('status').hidden || null), 9000, 100));
+  await sleep(300);
   let bd = await barInfo();
   check('the floating bar is pinned by default: the page starts below it', bd && bd.layout.pinned && bd.layout.top === bd.report.win.height && bd.report.win.height >= 28 && !(await hiddenNow()), bd);
   await strip.evaluate(() => document.getElementById('pin').click());
+  // the strip hides, then reports it: wait for main's layout too (the page below the zone)
   const unpinned = await waitFor(async () => {
     const b = await barInfo();
-    return !b.layout.pinned && (await hiddenNow()) ? b : null;
-  }, 4000);
-  check('unpinned, the bar hides to its hint line: the page starts below the 6 px hit zone', unpinned && unpinned.layout.top === 6 && unpinned.pins.floating === false, unpinned || (await barInfo()));
+    return !b.layout.pinned && b.layout.top === 6 && (await hiddenNow()) ? b : null;
+  }, 9000);
+  check('unpinned, the bar hides to its hint line: the page starts below the 6 px hit zone', unpinned && unpinned.pins.floating === false, unpinned || (await barInfo()));
   const hint = await strip.evaluate(() => Math.round(document.getElementById('hint').getBoundingClientRect().height));
   check('the hint line is 2 px', hint === 2, hint);
   await strip.mouse.move(300, 3);
@@ -564,6 +573,23 @@ try {
   await strip.evaluate((u) => window.stripBridge.action('navigate', u), `127.0.0.1:${webPort}/pulse`);
   check('a navigation shows the hidden bar for a moment', await waitFor(async () => !(await hiddenNow()) || null, 3000, 30));
   check('then it hides again', await waitFor(hiddenNow, 4000, 50));
+  // ⌘⇧S (main clicks #send) with the bar hidden: the note bar shows it, then takes the keyboard
+  await strip.evaluate(() => document.getElementById('send').click());
+  const noted = await strip.evaluate(() => ({
+    focused: document.activeElement && document.activeElement.id,
+    hidden: document.documentElement.classList.contains('bar-hidden'),
+  }));
+  check('send with the bar hidden: the bar shows and the note field has the keyboard', noted.focused === 'note' && !noted.hidden, noted);
+  await strip.evaluate(() => document.getElementById('sendcancel').click());
+  check('cancelled, it hides again', await waitFor(hiddenNow, 2000, 30));
+  // a status message (here: sent) shows in the bar: it holds the hidden bar open until it goes
+  await strip.evaluate(() => window.stripBridge.action('send_page', { note: 'held' }));
+  const held = await waitFor(async () => {
+    const v = await strip.evaluate(() => ({ status: !document.getElementById('status').hidden, hidden: document.documentElement.classList.contains('bar-hidden') }));
+    return v.status && !v.hidden ? v : null;
+  }, 3000, 50);
+  check('a status message holds the hidden bar open', !!held, held);
+  check('and it hides once the message goes', await waitFor(hiddenNow, 9000, 100));
   // the pin is per surface: docked keeps its own (unpinned by default)
   await ctl(`__herdrCompanion.strip_preview({dock: true, kind: 'side', features: ['placements', 'placement_actions']})`);
   const dockPin = await waitFor(async () => {

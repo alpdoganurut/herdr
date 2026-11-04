@@ -81,18 +81,20 @@
   }
 
   // The bar's window actions: docked, `expand` (promote) and close; in the Browser view,
-  // `restore` (back to the dock) and close (back to the terminal). Only while docked, and
-  // only when herdr advertises `placement_actions` (an older herdr: neither button).
-  function windowActions({ docked, kind, features, placementId }) {
+  // `restore` (back to the dock) and close (back to the terminal). Only while docked, only
+  // when herdr advertises `placement_actions` (an older herdr: neither button), and only when
+  // the herdr client that owns the placement takes them (an older client: neither).
+  function windowActions({ docked, kind, features, placementId, clientTakes }) {
     const has = features && (typeof features.has === 'function' ? features.has('placement_actions') : features.includes('placement_actions'));
-    if (!docked || !has || !placementId) return { expand: null, close: false };
+    if (!docked || !has || !placementId || !clientTakes) return { expand: null, close: false };
     return { expand: kind === 'full' ? 'restore' : 'promote', close: true };
   }
 
   // The hidden bar stays shown while something in it needs the user: the URL field or a menu
-  // is open, the note or permission bar shows, a tab needs the user, there is no page.
+  // is open, the note or permission bar shows, a status message shows (sent, failed, herdr
+  // did not take it), a tab needs the user, there is no page.
   function held(s) {
-    return !!(s.urlFocus || s.menu || s.sendbar || s.permbar || s.needsYou || s.empty);
+    return !!(s.urlFocus || s.menu || s.sendbar || s.permbar || s.status || s.needsYou || s.empty);
   }
 
   return { NARROW_PX, ZONE_PX, HINT_PX, DWELL_MS, HIDE_MS, PULSE_MS, PIN_DEFAULTS, compactUrl, isNarrow, surface, pinnedFor, windowActions, held };

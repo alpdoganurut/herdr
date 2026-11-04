@@ -82,7 +82,8 @@ answers `unknown_method` and the strip says "this herdr is too old for the compa
   compact URL (`project › file.html #fragment` for a `file://` page, `host › last-segment` for
   http(s)) and the whole URL while focused. Docked, expand (to herdr's Browser view; restore in
   it) and close ask herdr's client through `browser.placement_action`, only when herdr
-  advertises `placement_actions`. ⌘T new tab, ⌘W close, ⌘L address, ⌘R reload, ⌘[ / ⌘] history,
+  advertises `placement_actions` and the herdr client owning the placement takes them
+  (`browser.placements` `placement_actions`). ⌘T new tab, ⌘W close, ⌘L address, ⌘R reload, ⌘[ / ⌘] history,
   ⌘⇧S send. ⌘-click / `target=_blank` opens a tab in the same session.
 * Auto-hide: docked and in herdr's Browser view the bar is unpinned by default and hides to a
   2 px line (gold while loading, rust while a tab needs you) in a 6 px hit zone; a 180 ms dwell
