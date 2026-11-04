@@ -1,7 +1,7 @@
 id = "claude"
-version = "2026.11.01.1"
+version = "2026.11.04.1"
 min_engine_version = 2
-updated_at = "2026-11-01T00:00:00Z"
+updated_at = "2026-11-04T00:00:00Z"
 aliases = ["claude-code"]
 
 [[rules]]
@@ -139,6 +139,20 @@ all = [
     { line_regex = ['^\s*\x{276F}?\s*Accept\b'] },
     { line_regex = ['^\s*\x{276F}?\s*Decline\b'] },
   ] },
+]
+
+[[rules]]
+id = "bang_command_working"
+state = "working"
+priority = 990
+region = "above_prompt_box"
+visible_working = true
+# A `!` bash-mode command the user runs in the foreground: no model turn, no
+# hooks, no spinner, and the prompt box stays live. Its tool result shows
+# "⎿  Running… (1m 19s)" with "(ctrl+b to run in background)" until it ends.
+line_regex = [
+  '^\s*\x{23BF}\s+Running…',
+  '\(ctrl\+b to run in background\)\s*$',
 ]
 
 [[rules]]
