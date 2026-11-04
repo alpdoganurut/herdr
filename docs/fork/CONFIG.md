@@ -73,7 +73,7 @@ The top row of the tabs sidebar, left to right: `⏶ ‹ ›  ⌕ search  ◷ 1h
 | `◷` recency chip | Click steps forward through off, 15m, 30m, 1h, 6h, 1d and round again; shift-click or right-click steps back. Dim `◷` while off, accent `◷ 1h` while on | Same as the search field | None, not saved |
 | `+` | Opens a new plain shell tab, loose (in no group) at the top of the list, and focuses it; no name prompt. To group a tab, right-click it: the tab menu's **Move to group…** asks for a group name (an existing one, or a new one to create), and **Remove from group** makes a grouped tab loose again. `move_tab_to_group` opens the same prompt for the focused tab, and dragging a tab onto a group works too | Always | None; grouping is in the tab menu |
 
-The notes pane toggle moved to the session header's `▤` (below); the sidebar has no Browser row and no detail strip any more: the browser's controls are in Settings → Browser and the focused tab's facts in the session header.
+The notes pane toggle moved to the session header's `≡` (below); the sidebar has no Browser row and no detail strip any more: the browser's controls are in Settings → Browser and the focused tab's facts in the session header.
 
 ### Session header
 
@@ -87,10 +87,10 @@ One row on top of the session area (the `tabs` layout only; the `spaces` layout 
 | `⚭N` | Running subagents | When not zero |
 | `✉N` | Quiet messages waiting for the tab's agents | When not zero |
 | `Terminal` / `Browser` | Switch the tab between its terminal and Browser view (keys `toggle_browser_view`). Below the name's minimum they shrink to `T` / `B`, then go | While the companion browser docks here (this machine's herdr, `[browser]` running the companion) and `[ui] browser_view_strip` is not `"off"` |
-| `◧` | Docks the browser on the right of the tab (key `toggle_browser_dock`); in Browser view it brings the terminal back with the browser docked. Lit while docked | Same as the view tabs, also on the narrowest row |
-| `▤` | Opens or closes the tab's notes pane (key `toggle_info_pane`), never taking the keyboard. Lit while open | Always, the far right |
+| `◨` | Docks the browser on the right of the tab (key `toggle_browser_dock`); in Browser view it brings the terminal back with the browser docked. Lit while docked | Same as the view tabs, also on the narrowest row |
+| `≡` | Opens or closes the tab's notes pane (key `toggle_info_pane`), never taking the keyboard. Lit while open | Always, the far right |
 
-There is one dock slot on the right: the notes pane or the browser, never both; `◧` and `▤` swap it, and each keeps its own width (`[ui] info_pane_width`, `[ui] browser_dock_width`, or the width you dragged). Each dock has a one-line title bar: notes `▤ Notes  ✎  ✕` (`✎` edits or leaves the editor, `✕` closes), browser `◧ <page title>  ⤢  ✕` (`⤢` turns the tab to Browser view and frees the slot, `✕` closes). The page's back, forward and reload stay in the companion's own bar: herdr has no client path to drive the page from the dock. In Browser view the notes pane stays beside the page.
+There is one dock slot on the right: the notes pane or the browser, never both; `◨` and `≡` swap it, and each keeps its own width (`[ui] info_pane_width`, `[ui] browser_dock_width`, or the width you dragged). Each dock has a one-line title bar: notes `≡ Notes  ✎  ✕` (`✎` edits or leaves the editor, `✕` closes), browser `◨ <page title>  ⤢  ✕` (`⤢` turns the tab to Browser view and frees the slot, `✕` closes). The page's back, forward and reload stay in the companion's own bar: herdr has no client path to drive the page from the dock. In Browser view the notes pane stays beside the page.
 
 ## Per-tab toggles (tab menu)
 
@@ -104,7 +104,7 @@ Right-click a tab. These are per tab, not config keys. Important, pin, mute, do 
 | Do not disturb | off | Agent messages to the tab are stored quietly instead of typed in, urgent ones are refused, herdr types nothing in and the coordinator's wake-ups are held; your typing is unaffected. Notifications are untouched (that is mute). An agent can also turn it on or off for its own tab and its teammates' tabs (`agents_dnd`, `herdr tab dnd on|off`), never outside its team or on the coordinator's tab; the coordinator can, for any other tab, in your turn. When an agent or the coordinator turned it on, the coordinator's messages still get through |
 | remind | none | Scheduled reminder: 5m, 10m, 30m, 1h, 6h, daily. Pick the current one again to turn it off. Picking never focuses the tab |
 | Color | none | Color tag (also key `cycle_tab_color`) |
-| Info pane | hidden, every start | Shows or hides the tab's notes pane (also key `toggle_info_pane`, or the session header's `▤`). Which tabs have it open is client-only: after a restart or in a new client every notes pane starts hidden |
+| Info pane | hidden, every start | Shows or hides the tab's notes pane (also key `toggle_info_pane`, or the session header's `≡`). Which tabs have it open is client-only: after a restart or in a new client every notes pane starts hidden |
 
 ## Notes pane (`[notes]`)
 
@@ -175,10 +175,10 @@ The companion browser can sit inside herdr's window: docked on the right of a ta
 
 | Feature | Default | Where to change | In Settings? |
 |---|---|---|---|
-| Dock the browser on the focused tab | `prefix+shift+b` | `[keys] toggle_browser_dock`; also the session header's `◧` (the `◨` in the `spaces` layout's view strip), the tab menu's Dock browser, Settings → Browser's `browser dock on this tab` | No, config only |
+| Dock the browser on the focused tab | `prefix+shift+b` | `[keys] toggle_browser_dock`; also the session header's `◨` (the same `◨` ends the `spaces` layout's view strip), the tab menu's Dock browser, Settings → Browser's `browser dock on this tab` | No, config only |
 | Dock width | 45 % of the area right of the sidebar | `[ui] browser_dock_width = 20..80`. Drag the divider (its first column) to resize, double-click it for the default; a dragged width is saved per client | No, config only |
-| Browser view (the browser over the whole tab; the panes keep running and keep their size, and keys, pastes and IME text never reach them) | `prefix+shift+z` | `[keys] toggle_browser_view`; also the session header's `Terminal` / `Browser` (the `spaces` view strip's `▣ Terminal` / `◎ Browser`), the browser dock's `⤢` and the tab menu's Browser view | No, config only |
-| The view controls: the `tabs` layout's header view tabs and `◧`; the `spaces` layout's view strip (`▣ Terminal  ◎ Browser · 3 … ◨`) | `"auto"`: the header shows them while the browser docks here; the strip while the tab has pages, the dock or Browser view | `[ui] browser_view_strip = "off"` (hides both) | No, config only |
+| Browser view (the browser over the whole tab; the panes keep running and keep their size, and keys, pastes and IME text never reach them) | `prefix+shift+z` | `[keys] toggle_browser_view`; also the session header's `Terminal` / `Browser` (the `spaces` view strip's `◫ Terminal` / `◎ Browser`), the browser dock's `⤢` and the tab menu's Browser view | No, config only |
+| The view controls: the `tabs` layout's header view tabs and `◨`; the `spaces` layout's view strip (`◫ Terminal  ◎ Browser · 3 … ◨`) | `"auto"`: the header shows them while the browser docks here; the strip while the tab has pages, the dock or Browser view | `[ui] browser_view_strip = "off"` (hides both) | No, config only |
 | Give the companion the keyboard | unbound | `[keys] focus_browser` | No, config only |
 | Cycle the focused tab's browser: none → docked → Browser view → none (from Browser view it closes the view and the dock) | `ctrl+shift+b`, no prefix; works in Ghostty and in iTerm2 with CSI u; kitty needs `map kitty_mod+b no_op` (its default `ctrl+shift+b` moves the window backward) and WezTerm needs `enable_kitty_keyboard = true`; elsewhere `ctrl+shift+b` arrives as `ctrl+b`, the prefix, and the cycle never fires | `[keys] cycle_browser` (`""` turns it off and lets the key reach the pane) | No, config only |
 
