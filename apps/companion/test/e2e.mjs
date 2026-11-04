@@ -109,7 +109,7 @@ async function pageForTarget(targetId) {
   }
   return null;
 }
-const stripPage = () => mock.state.browser.contexts()[0].pages().find((p) => p.url().startsWith('herdr-companion://ui/'));
+const stripPage = () => mock.state.browser.contexts()[0].pages().find((p) => p.url().startsWith('herdr-companion://ui/strip.html'));
 
 // a local http server to observe html-view network blocking
 let hits = 0;
@@ -119,6 +119,30 @@ const web = http.createServer((req, res) => {
 });
 await new Promise((r) => web.listen(0, '127.0.0.1', r));
 const webPort = web.address().port;
+
+// pages for the frame dialogs (127.0.0.1 and localhost are two sites: their frames run in
+// processes of their own)
+const dlgWeb = http.createServer((req, res) => {
+  const P = dlgWeb.address().port;
+  const pages = {
+    '/top': `<title>top</title><iframe id=x src="http://localhost:${P}/inner"></iframe>`,
+    '/nest': `<title>nest</title><iframe id=a src="http://localhost:${P}/mid"></iframe>`,
+    '/mid': `<title>mid</title><iframe id=b src="http://localhost:${P}/inner"></iframe>`,
+    '/inner': '<title>inner</title><p>inner</p>',
+    '/opaque': '<title>opaque</title><iframe sandbox="allow-scripts allow-modals" src="/inner"></iframe>',
+    '/srcdoc': '<title>srcdoc</title><iframe sandbox="allow-scripts allow-modals" srcdoc="<p>sandboxed</p>"></iframe><iframe id=d src="data:text/html,<p>data</p>"></iframe>',
+    '/leave':
+      '<title>leave</title><script>' +
+      "addEventListener('beforeunload', () => { localStorage.bu = String(prompt('leaving?', 'x')); });" +
+      "addEventListener('pagehide', () => { localStorage.ph = String(confirm('really?')); alert('bye'); });" +
+      '</script>',
+    '/landed': '<title>landed</title><p>landed</p>',
+  };
+  res.setHeader('content-type', 'text/html');
+  res.end(pages[req.url.split('?')[0]] || '<title>other</title>other');
+});
+await new Promise((r) => dlgWeb.listen(0, r));
+const dlgPort = dlgWeb.address().port;
 
 try {
   startCompanion();
@@ -154,6 +178,262 @@ try {
   await p1.click('#b');
   const png = await p1.screenshot();
   check('a hidden view clicks and screenshots', (await p1.evaluate(() => window.c)) === 1 && png.length > 1000, { bytes: png.length });
+
+  // page dialogs: alert / confirm / prompt in the companion's own card (Electron has no prompt())
+  {
+    await api('mock.focus_tab', { tab_id: 'w1:t1' });
+    await waitFor(async () => (await ctl('__herdrCompanion.views()')).find((v) => v.view_id === o1.view_id && v.shown), 3000);
+    const dialogs = async () => (await ctl('__herdrCompanion.dialogs()')).dialogs;
+    const cardPage = () => mock.state.browser.contexts().flatMap((c) => c.pages()).find((p) => p.url().startsWith('herdr-companion://ui/dialog.html'));
+    const card = () =>
+      cardPage().evaluate(() => {
+        const f = document.getElementById('field');
+        const c = document.getElementById('card');
+        return {
+          hidden: c.hidden,
+          type: c.dataset.type,
+          origin: document.getElementById('origin').textContent,
+          message: document.getElementById('message').textContent,
+          field: !f.hidden,
+          value: f.value,
+          selected: [f.selectionStart, f.selectionEnd],
+          cancel: !document.getElementById('cancel').hidden,
+        };
+      });
+    const open = async (n = 1) => waitFor(async () => {
+      const d = await dialogs();
+      return d.length === n ? d : null;
+    }, 3000);
+    const settle = (p) => Promise.race([p.then((v) => ({ v }), (e) => ({ err: String(e.message || e).split('\n')[0] })), sleep(4000).then(() => ({ timeout: true }))]);
+    check('the dialog card is a herdr-companion: furniture page', !!cardPage());
+
+    // prompt: the card shows message + default (selected); typing + Enter answers the page
+    let r = p1.evaluate(() => prompt('Copy this:', 'the text'));
+    let ds = await open();
+    check('prompt() opens a dialog herdr can see (type, message, default, target)', ds && ds[0].type === 'prompt' && ds[0].message === 'Copy this:' && ds[0].default_value === 'the text' && ds[0].target_id === o1.target_id, ds);
+    let c = await waitFor(async () => ((x) => (!x.hidden && x.type === 'prompt' ? x : null))(await card()), 3000);
+    check('the card shows the prompt with its default selected and OK/Cancel', c && c.field && c.value === 'the text' && c.selected[0] === 0 && c.selected[1] === 8 && c.cancel && /says$/.test(c.origin), c);
+    await cardPage().fill('#field', 'typed here');
+    await cardPage().press('#field', 'Enter');
+    let got = await settle(r);
+    check('typing and Enter returns the typed text', got.v === 'typed here', got);
+    check('the card hides after the answer', await waitFor(async () => (await card()).hidden && (await dialogs()).length === 0, 3000));
+
+    // answered through the control page (herdr's sidecar): default, text, dismiss
+    r = p1.evaluate(() => prompt('q', 'dflt'));
+    ds = await open();
+    let ans = await ctl(`__herdrCompanion.dialog({view_id:${JSON.stringify(o1.view_id)}, accept:true})`);
+    got = await settle(r);
+    check('accept without text returns the default value', got.v === 'dflt' && ans && ans.ok && ans.type === 'prompt', { got, ans });
+    r = p1.evaluate(() => prompt('q', 'dflt'));
+    await open();
+    await ctl(`__herdrCompanion.dialog({view_id:${JSON.stringify(o1.view_id)}, accept:true, text:'x'})`);
+    got = await settle(r);
+    check('accept with text returns it', got.v === 'x', got);
+    r = p1.evaluate(() => prompt('q', 'dflt'));
+    await open();
+    await ctl(`__herdrCompanion.dialog({view_id:${JSON.stringify(o1.view_id)}, accept:false})`);
+    got = await settle(r);
+    check('dismiss returns null', got.v === null, got);
+    r = p1.evaluate(() => prompt('q'));
+    await open();
+    await waitFor(async () => !(await card()).hidden, 3000);
+    await cardPage().press('#field', 'Escape');
+    got = await settle(r);
+    check('Esc in the card returns null', got.v === null, got);
+    const none = await ctl(`__herdrCompanion.dialog({view_id:${JSON.stringify(o1.view_id)}, accept:true})`);
+    check('answering with no dialog open is no_dialog', none && none.error && none.error.code === 'no_dialog', none);
+
+    // coercion as WebIDL DOMString
+    r = p1.evaluate(() => prompt(undefined, null));
+    ds = await open();
+    check('prompt(undefined, null): message "" and default "null"', ds && ds[0].message === '' && ds[0].default_value === 'null', ds);
+    await ctl(`__herdrCompanion.dialog({view_id:${JSON.stringify(o1.view_id)}, accept:true})`);
+    got = await settle(r);
+    check('… and returns "null" on OK', got.v === 'null', got);
+    got = await settle(p1.evaluate(() => { try { prompt(Symbol('s')); return 'no throw'; } catch (e) { return e.name; } }));
+    check('prompt(Symbol()) throws a TypeError and opens nothing', got.v === 'TypeError' && (await dialogs()).length === 0, got);
+
+    // confirm and alert
+    r = p1.evaluate(() => confirm('sure?'));
+    await open();
+    c = await waitFor(async () => ((x) => (!x.hidden && x.type === 'confirm' ? x : null))(await card()), 3000);
+    check('confirm shows OK and Cancel, no field', c && !c.field && c.cancel && c.message === 'sure?', c);
+    await cardPage().click('#ok');
+    got = await settle(r);
+    check('confirm OK returns true', got.v === true, got);
+    r = p1.evaluate(() => confirm('sure?'));
+    await open();
+    await waitFor(async () => !(await card()).hidden, 3000);
+    await cardPage().click('#cancel');
+    got = await settle(r);
+    check('confirm Cancel returns false', got.v === false, got);
+    r = p1.evaluate(() => { const t = Date.now(); const v = alert('hello'); return { v: v === undefined ? 'undefined' : v, waited: Date.now() - t }; });
+    await open();
+    c = await waitFor(async () => ((x) => (!x.hidden && x.type === 'alert' ? x : null))(await card()), 3000);
+    check('alert shows only OK', c && !c.field && !c.cancel && c.message === 'hello', c);
+    await sleep(300);
+    const blocked = await Promise.race([r.then(() => 'returned'), sleep(200).then(() => 'blocked')]);
+    check('alert blocks the page until answered', blocked === 'blocked');
+    await cardPage().click('#ok');
+    got = await settle(r);
+    check('alert returns undefined after OK', got.v && got.v.v === 'undefined' && got.v.waited >= 400, got);
+
+    // the dialog belongs to its page's herdr tab: hidden with it, back when it shows again
+    const po2 = await waitFor(() => pageForTarget(o2.target_id), 3000);
+    r = po2.evaluate(() => prompt('from the other tab', 'keep'));
+    ds = await open();
+    check('a hidden page\'s prompt is open for herdr', ds && ds[0].view_id === o2.view_id, ds);
+    await sleep(300);
+    check('… but its card stays hidden while another tab shows', (await card()).hidden);
+    await api('mock.focus_tab', { tab_id: 'w1:t2' });
+    c = await waitFor(async () => ((x) => (!x.hidden && x.message === 'from the other tab' ? x : null))(await card()), 3000);
+    check('switching to its herdr tab shows its card', c && c.value === 'keep', c);
+    await cardPage().fill('#field', 'kept value');
+    await api('mock.focus_tab', { tab_id: 'w1:t1' });
+    check('switching away hides it again', await waitFor(async () => (await card()).hidden, 3000));
+    await api('mock.focus_tab', { tab_id: 'w1:t2' });
+    c = await waitFor(async () => ((x) => (!x.hidden && x.message === 'from the other tab' ? x : null))(await card()), 3000);
+    check('… and back keeps what was typed', c && c.value === 'kept value', c);
+    await cardPage().press('#field', 'Enter');
+    got = await settle(r);
+    check('the answer reaches the other tab\'s page', got.v === 'kept value', got);
+
+    // a navigation or a close while a dialog is open: the page's call returns null, nothing hangs
+    const ow = await ctl(`__herdrCompanion.open({tab_id:'w1:t2', url:'http://127.0.0.1:${webPort}/dlg', background:false})`);
+    const pw = await waitFor(() => pageForTarget(ow.target_id), 5000);
+    await pw.waitForLoadState('load').catch(() => {});
+    r = pw.evaluate(() => prompt('reload me'));
+    await open();
+    await stripPage().evaluate(() => window.stripBridge.action('reload'));
+    got = await settle(r);
+    check('a reload while a prompt is open cancels it', !got.timeout && (await dialogs()).length === 0, got);
+    const alive = await waitFor(async () => ((x) => (x.v === 2 ? x : null))(await settle(pw.waitForLoadState('load').then(() => pw.evaluate(() => 1 + 1)))), 5000);
+    check('… and the same-origin reload completes', alive && alive.v === 2, alive);
+    r = pw.evaluate(() => prompt('close me'));
+    await open();
+    await ctl(`__herdrCompanion.close(${JSON.stringify(ow.view_id)})`);
+    got = await settle(r);
+    check('closing the page while a prompt is open answers it (no hang)', !got.timeout && (await dialogs()).length === 0, got);
+    await api('mock.focus_tab', { tab_id: 'w1:t2' });
+
+    // a long message scrolls inside the card: the field and the buttons stay in the view
+    {
+      const ol = await ctl(`__herdrCompanion.open({tab_id:'w1:t2', url:'data:text/html,<title>long</title>long', background:false})`);
+      const pl = await waitFor(() => pageForTarget(ol.target_id), 5000);
+      r = pl.evaluate(() => prompt(Array.from({ length: 400 }, (_, i) => `line ${i}`).join('\n'), 'd'));
+      r.catch(() => {});
+      await open();
+      await waitFor(async () => !(await card()).hidden, 3000);
+      await sleep(300);
+      const fit = await cardPage().evaluate(() => {
+        const m = document.getElementById('message');
+        const ok = document.getElementById('ok').getBoundingClientRect();
+        return { scrolls: m.scrollHeight > m.clientHeight, max: m.style.maxHeight, okBottom: Math.round(ok.bottom), inner: innerHeight };
+      });
+      check('a long message scrolls in the card and OK stays in view', fit.scrolls && fit.okBottom <= fit.inner, fit);
+      await ctl(`__herdrCompanion.close(${JSON.stringify(ol.view_id)})`);
+      await settle(r);
+    }
+
+    // frames: an embedded page's dialog says so, a frame that goes away takes its dialog along
+    const D = `http://127.0.0.1:${dlgPort}`;
+    const openPage = async (url) => {
+      const o = await ctl(`__herdrCompanion.open({tab_id:'w1:t2', url:${JSON.stringify(url)}, background:false})`);
+      const pg = await waitFor(() => pageForTarget(o.target_id), 5000);
+      await pg.waitForLoadState('load').catch(() => {});
+      return { o, pg };
+    };
+    const frameOf = (pg, pred) => waitFor(async () => pg.frames().find((f) => f !== pg.mainFrame() && pred(f)) || null, 5000);
+    const cardShows = (message) => waitFor(async () => ((x) => (!x.hidden && x.message === message ? x : null))(await card()), 3000);
+    const answerShown = (viewId) => ctl(`__herdrCompanion.dialog({view_id:${JSON.stringify(viewId)}, accept:false})`);
+    let fo = await openPage(`${D}/opaque`);
+    let fr = await frameOf(fo.pg, () => true);
+    r = fr.evaluate(() => prompt('from a sandboxed frame'));
+    r.catch(() => {}); // the frame may go with its call
+    await open();
+    c = await cardShows('from a sandboxed frame');
+    check('an opaque-origin frame\'s dialog reads as an embedded page, never as the page', c && c.origin === 'An embedded page says', c);
+    await answerShown(fo.o.view_id);
+    got = await settle(r);
+    check('… and is answered', got.v === null, got);
+    r = fo.pg.evaluate(() => prompt('from the page itself'));
+    await open();
+    c = await cardShows('from the page itself');
+    check('the page\'s own dialog names its origin', c && c.origin === `${D} says`, c);
+    await answerShown(fo.o.view_id);
+    await settle(r);
+    await ctl(`__herdrCompanion.close(${JSON.stringify(fo.o.view_id)})`);
+    {
+      // every frame's prompt is the companion's (Electron re-assigns its own in subframes)
+      const sp = await openPage(`${D}/srcdoc`);
+      await sleep(300);
+      const kinds = [];
+      for (const f of sp.pg.frames()) kinds.push(`${f.url().slice(0, 20)}: ${await f.evaluate(() => (/native code/.test(String(prompt)) ? 'native' : 'companion')).catch((e) => String(e.message).split('\n')[0])}`);
+      check('every frame (cross-site, srcdoc, data:) has the companion\'s prompt', kinds.length === 3 && kinds.every((k) => k.endsWith(': companion')), kinds);
+      await ctl(`__herdrCompanion.close(${JSON.stringify(sp.o.view_id)})`);
+    }
+
+    fo = await openPage(`${D}/top`);
+    fr = await frameOf(fo.pg, (f) => f.url().includes('/inner'));
+    r = fr.evaluate(() => prompt('from a removed frame'));
+    r.catch(() => {}); // the frame may go with its call
+    await open();
+    c = await cardShows('from a removed frame');
+    check('a cross-site frame\'s dialog names it as embedded', c && c.origin === `An embedded page at http://localhost:${dlgPort} says`, c);
+    const removed = await settle(fo.pg.evaluate(() => (document.getElementById('x').remove(), 'removed')));
+    check('the page removes the frame while its dialog is open (its own process is free)', removed.v === 'removed', removed);
+    let t0 = Date.now();
+    let left = await waitFor(async () => (await dialogs()).length === 0, 5000);
+    check('the removed frame\'s dialog is cancelled (no stale card)', left && (await card()).hidden, { ms: Date.now() - t0 });
+    r = fo.pg.evaluate(() => prompt('after the removal', 'p'));
+    ds = await open();
+    check('… and the page\'s own dialogs are not stuck behind it', ds && ds[0].message === 'after the removal', ds);
+    await answerShown(fo.o.view_id);
+    await settle(r);
+    await ctl(`__herdrCompanion.close(${JSON.stringify(fo.o.view_id)})`);
+
+    fo = await openPage(`${D}/nest`);
+    fr = await frameOf(fo.pg, (f) => f.url().includes('/inner') && f.parentFrame() !== fo.pg.mainFrame());
+    r = fr.evaluate(() => prompt('from a nested frame'));
+    r.catch(() => {}); // the frame may go with its call
+    await open();
+    t0 = Date.now();
+    const moved = await settle(fo.pg.evaluate((u) => ((document.getElementById('a').src = u), 'moved'), `http://localhost:${dlgPort}/landed`));
+    left = await waitFor(async () => (await dialogs()).length === 0, 8000);
+    check('a navigation of the frame around the one that asked cancels its dialog', moved.v === 'moved' && left, { moved, ms: Date.now() - t0 });
+    got = await settle(r);
+    check('… and nothing hangs', !got.timeout, got);
+    await ctl(`__herdrCompanion.close(${JSON.stringify(fo.o.view_id)})`);
+
+    // dialogs of a leaving page (beforeunload, pagehide) are answered at once and never shown
+    fo = await openPage(`${D}/landed`);
+    r = fo.pg.evaluate(() => {
+      addEventListener('pagehide', () => { window.__got = prompt('a page event is not a leave', 's'); });
+      dispatchEvent(new Event('pagehide'));
+      return window.__got;
+    });
+    ds = await open();
+    check('a pagehide the page dispatches itself does not silence its dialogs', ds && ds[0].message === 'a page event is not a leave', ds);
+    await answerShown(fo.o.view_id);
+    await settle(r);
+    await ctl(`__herdrCompanion.close(${JSON.stringify(fo.o.view_id)})`);
+    fo = await openPage(`${D}/leave`);
+    let seen = 0;
+    const watch = setInterval(async () => {
+      try {
+        if ((await dialogs()).length) seen++;
+      } catch {}
+    }, 50);
+    await settle(fo.pg.evaluate((u) => ((location.href = u), 'go'), `${D}/landed`));
+    const landed = await waitFor(async () => (fo.pg.url().endsWith('/landed') && (await fo.pg.title()) === 'landed') || null, 8000);
+    await sleep(300);
+    clearInterval(watch);
+    const stored = landed && (await fo.pg.evaluate(() => ({ bu: localStorage.bu, ph: localStorage.ph })));
+    check('a leaving page\'s prompt / confirm / alert return at once, never shown', landed && seen === 0 && stored && stored.bu === 'null' && stored.ph === 'false' && (await card()).hidden, { landed: !!landed, seen, stored });
+    await fo.pg.evaluate(() => localStorage.clear());
+    await ctl(`__herdrCompanion.close(${JSON.stringify(fo.o.view_id)})`);
+  }
 
   // strip actions through the strip page (same IPC the buttons use)
   const strip = stripPage();
@@ -255,6 +535,32 @@ try {
     now: (await ctl('__herdrCompanion.views()')).filter((v) => v.tab_id === 'w1:t2').map((v) => [v.view_id, v.url.slice(0, 40)]),
     closed: active && active.view_id,
   });
+  // The user's click on the close button itself (DOM path, not the bridge): before the fix the
+  // tab's mousedown select re-rendered the strip and the button's click never fired.
+  {
+    const left = (await ctl('__herdrCompanion.views()')).filter((v) => v.tab_id === 'w1:t2');
+    if (left.length > 0) {
+      const n0 = left.length;
+      // A real click with a human press length: hit testing decides where mouseup/click land,
+      // so a strip re-rendered between press and release swallows the click (the bug).
+      const box = await strip.evaluate(() => {
+        const b = document.querySelector('.tab.active .close') || document.querySelector('.tab .close');
+        if (!b) return null;
+        const r = b.getBoundingClientRect();
+        return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+      });
+      let clicked = false;
+      if (box) {
+        await strip.mouse.move(box.x, box.y);
+        await strip.mouse.down();
+        await new Promise((r) => setTimeout(r, 150));
+        await strip.mouse.up();
+        clicked = true;
+      }
+      const gone = await waitFor(async () => ((await ctl('__herdrCompanion.views()')).filter((v) => v.tab_id === 'w1:t2').length === n0 - 1 ? true : null), 3000);
+      check('a click on a tab close button closes that tab (DOM path)', clicked && gone, { clicked, n0 });
+    }
+  }
 
   // html view sandbox
   const site = path.join(tmp, 'site');
@@ -360,6 +666,7 @@ try {
 } finally {
   await mock.close();
   web.close();
+  dlgWeb.close();
   console.log(`\n${results.length - failed}/${results.length} passed; log ${logFile}`);
   if (!failed) fs.rmSync(tmp, { recursive: true, force: true });
   process.exit(failed ? 1 : 0);

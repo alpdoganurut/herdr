@@ -1,0 +1,15 @@
+/* A page's dialog: a card in the bar's look (variant A; light/dark follows the system, Dusk when
+   docked), on a transparent view at the top centre of the page (main.js sizes it to the card). */
+html, body.dialog { background: transparent; overflow: hidden; }
+body.dialog { padding: 0 12px 14px; }
+#card { margin: 0; padding: 12px 14px 12px; border-radius: 0 0 9px 9px; background: var(--chrome); color: var(--ink);
+  box-shadow: 0 0 0 1px var(--rule), 0 8px 24px rgba(0, 0, 0, .22); display: flex; flex-direction: column; gap: 8px; }
+#origin { font-size: 11px; font-weight: 600; color: var(--body); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#message { font-size: 12.5px; line-height: 1.4; color: var(--ink); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 240px; overflow-y: auto; user-select: text; }
+#message:empty { display: none; }
+#field { height: 26px; border-radius: 6px; border: 1px solid var(--field-border); background: var(--field); color: var(--ink); padding: 0 8px;
+  font: 12.5px ui-monospace, SFMono-Regular, Menlo, monospace; outline: none; min-width: 0; }
+#field:focus { border-color: var(--field-focus); box-shadow: 0 0 0 2px var(--gold-tint); }
+.buttons { display: flex; justify-content: flex-end; gap: 6px; margin-top: 2px; }
+.buttons .tb { height: 24px; min-width: 64px; }
+.buttons .tb:focus-visible { outline: 2px solid var(--field-focus); outline-offset: 1px; }

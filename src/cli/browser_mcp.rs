@@ -296,7 +296,8 @@ pub fn op_for_tool(
         },
         "browser_dialog" => BrowserOp::Dialog {
             action: need("action")?,
-            text: opt_str(a, "text"),
+            // an explicit "" is an empty answer; absent keeps the field's value
+            text: a["text"].as_str().map(str::to_string),
         },
         "browser_tabs" => BrowserOp::Tabs {
             mine: flag(a, "mine"),

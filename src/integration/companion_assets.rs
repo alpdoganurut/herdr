@@ -8,7 +8,7 @@
 use sha2::{Digest, Sha256};
 
 /// The app's version (`apps/companion/package.json`), checked by a test.
-pub const COMPANION_APP_VERSION: &str = "0.2.1";
+pub const COMPANION_APP_VERSION: &str = "0.2.3";
 
 /// File name (relative to the app directory) and content, in write order.
 pub const COMPANION_ASSETS: &[(&str, &[u8])] = &[
@@ -19,6 +19,10 @@ pub const COMPANION_ASSETS: &[(&str, &[u8])] = &[
     (
         "src/dock/dock.js",
         include_bytes!("../../apps/companion/src/dock/dock.js"),
+    ),
+    (
+        "src/dock/front.jxa.js",
+        include_bytes!("../../apps/companion/src/dock/front.jxa.js"),
     ),
     (
         "src/dock/geometry.js",
@@ -39,6 +43,14 @@ pub const COMPANION_ASSETS: &[(&str, &[u8])] = &[
     (
         "src/dock/window-probe.js",
         include_bytes!("../../apps/companion/src/dock/window-probe.js"),
+    ),
+    (
+        "src/context-menu.js",
+        include_bytes!("../../apps/companion/src/context-menu.js"),
+    ),
+    (
+        "src/dialogs.js",
+        include_bytes!("../../apps/companion/src/dialogs.js"),
     ),
     (
         "src/groups.js",
@@ -73,8 +85,12 @@ pub const COMPANION_ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../apps/companion/src/preload/control.js"),
     ),
     (
-        "src/preload/nonet.js",
-        include_bytes!("../../apps/companion/src/preload/nonet.js"),
+        "src/preload/dialog.js",
+        include_bytes!("../../apps/companion/src/preload/dialog.js"),
+    ),
+    (
+        "src/preload/page.js",
+        include_bytes!("../../apps/companion/src/preload/page.js"),
     ),
     (
         "src/preload/strip.js",
@@ -83,6 +99,18 @@ pub const COMPANION_ASSETS: &[(&str, &[u8])] = &[
     (
         "src/ui/control.html",
         include_bytes!("../../apps/companion/src/ui/control.html"),
+    ),
+    (
+        "src/ui/dialog.css",
+        include_bytes!("../../apps/companion/src/ui/dialog.css"),
+    ),
+    (
+        "src/ui/dialog.html",
+        include_bytes!("../../apps/companion/src/ui/dialog.html"),
+    ),
+    (
+        "src/ui/dialog.js",
+        include_bytes!("../../apps/companion/src/ui/dialog.js"),
     ),
     (
         "src/ui/strip.css",

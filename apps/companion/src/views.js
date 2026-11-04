@@ -1,7 +1,7 @@
 // One WebContentsView per page (contract §6). Web pages share the persistent profile
 // partition; every html view gets its own in-memory sandbox partition (§4.3).
 'use strict';
-const { WebContentsView, session, net } = require('electron');
+const { WebContentsView, session, net, app } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
@@ -9,7 +9,22 @@ const { pathToFileURL, fileURLToPath } = require('node:url');
 
 const WEB_PARTITION = 'persist:herdr-companion';
 const NETWORK_URLS = ['http://*/*', 'https://*/*', 'ws://*/*', 'wss://*/*'];
-const NONET_PRELOAD = path.join(__dirname, 'preload', 'nonet.js');
+// every page view, every frame: the companion's alert/confirm/prompt (src/dialogs.js) and, in
+// html views without network, no WebRTC
+const PAGE_PRELOAD = path.join(__dirname, 'preload', 'page.js');
+const { downloadAllowed } = require('./context-menu.js');
+
+// Every download of a page's session (a link, Save Image As…) goes through the save dialog
+// (no save path is set: Electron asks where), starting in Downloads; a local file is never
+// copied out (file: and other non-web URLs are cancelled).
+function guardDownloads(ses) {
+  ses.on('will-download', (_e, item) => {
+    if (!downloadAllowed(item.getURL())) return item.cancel();
+    try {
+      item.setSaveDialogOptions({ defaultPath: path.join(app.getPath('downloads'), item.getFilename() || 'download') });
+    } catch {}
+  });
+}
 
 function within(root, p) {
   return p === root || p.startsWith(root.endsWith(path.sep) ? root : root + path.sep);
@@ -80,6 +95,7 @@ function htmlSession(rootReal, allowNetwork) {
   }
   ses.setPermissionRequestHandler((_wc, _perm, cb) => cb(false));
   ses.setPermissionCheckHandler(() => false);
+  guardDownloads(ses);
   const out = { ses, rootReal, ready, partition };
   htmlSessions.set(partition, out);
   return out;
@@ -93,6 +109,16 @@ function grantKeys(origin, permission, details = {}) {
     (t) => t === 'audio' || t === 'video',
   );
   return types.length ? [...new Set(types)].sort().map((t) => `${origin}|media:${t}`) : [`${origin}|media:unknown`];
+}
+
+// A frame's identity for its dialogs (WebFrameMain): its frame tree node, stable across its
+// documents' processes.
+function frameKey(frame) {
+  try {
+    return frame ? `${frame.frameTreeNodeId}` : null;
+  } catch {
+    return null;
+  }
 }
 
 async function targetIdOf(wc) {
@@ -118,11 +144,26 @@ async function targetIdOf(wc) {
 
 class ViewManager {
   // hooks: {onNav(viewId, patch), onState(viewId), onError(viewId, kind, text), onOpen(fromViewId, url, disposition), onKey(input) -> bool,
-  //         onPermission(viewId, {permission,label,origin}, done(allow)), onLeave(viewId, newOrigin|null)}
+  //         onPermission(viewId, {permission,label,origin}, done(allow)), onLeave(viewId, newOrigin|null),
+  //         onDialogsEnd(viewId, frameKey|null): its dialogs are cancelled (navigation, crash, destroy)}
   constructor(hooks) {
     this.hooks = hooks;
     this.live = new Map(); // view_id -> {view, entry, rootReal}
     this.host = null; // the window the views live in (the dock's while docked)
+    this.overlays = []; // views kept above every page (the dialog modal); they move with the pages
+  }
+
+  // A view that stays above the pages in whatever window hosts them.
+  addOverlay(view, win) {
+    this.overlays.push(view);
+    (this.host || win).contentView.addChildView(view);
+  }
+
+  // Adding a view again moves it to the top: the overlays above a page added after them.
+  raiseOverlays(win) {
+    const host = this.host || win;
+    if (!host) return;
+    for (const v of this.overlays) host.contentView.addChildView(v);
   }
 
   // Move every view into `win` (docked mode and back). Re-parented views keep painting
@@ -136,6 +177,12 @@ class ViewManager {
         if (old && !old.isDestroyed()) old.contentView.removeChildView(rec.view);
       } catch {}
       win.contentView.addChildView(rec.view);
+    }
+    for (const v of this.overlays) {
+      try {
+        if (old && !old.isDestroyed()) old.contentView.removeChildView(v);
+      } catch {}
+      win.contentView.addChildView(v);
     }
   }
 
@@ -157,6 +204,7 @@ class ViewManager {
     const ses = session.fromPartition(WEB_PARTITION);
     if (this.webSessionReady) return ses;
     this.webSessionReady = true;
+    guardDownloads(ses);
     ses.setPermissionRequestHandler((wc, permission, cb, details = {}) => {
       if (ALLOWED.has(permission)) return cb(true);
       const viewId = this.viewIdOf(wc);
@@ -214,8 +262,10 @@ class ViewManager {
         nodeIntegration: false,
         backgroundThrottling: false,
         webSecurity: true,
-        // no network: WebRTC removed in every frame (the preload runs in subframes too)
-        ...(noNetwork ? { preload: NONET_PRELOAD, nodeIntegrationInSubFrames: true } : {}),
+        // sandboxed (no Node in the page); in subframes too, so a frame's dialogs are the companion's
+        preload: PAGE_PRELOAD,
+        nodeIntegrationInSubFrames: true,
+        ...(noNetwork ? { additionalArguments: ['--herdr-nonet'] } : {}),
       },
     });
     if (noNetwork) {
@@ -227,6 +277,7 @@ class ViewManager {
     this.live.set(entry.view_id, rec);
     view.setVisible(false);
     (this.host || win).contentView.addChildView(view);
+    this.raiseOverlays(win);
     this._wire(rec);
     rec.ready = (async () => {
       // Never leave a target unloaded: an unloaded webContents stalls connectOverCDP (spike S1).
@@ -262,10 +313,23 @@ class ViewManager {
     wc.on('did-fail-load', (_e, code, desc, url, isMainFrame) => {
       if (isMainFrame && code !== -3) this.hooks.onError(id, 'load_failed', `${desc} (${code}) ${url}`);
     });
-    wc.on('render-process-gone', (_e, d) => this.hooks.onError(id, 'crashed', d.reason));
+    wc.on('render-process-gone', (_e, d) => {
+      if (this.hooks.onDialogsEnd) this.hooks.onDialogsEnd(id, null);
+      this.hooks.onError(id, 'crashed', d.reason);
+    });
+    // a frame leaving its document cancels its dialogs and those of the frames inside it (the
+    // main frame: every one of the view)
+    wc.on('did-start-navigation', (d) => {
+      if (!d || d.isSameDocument || !this.hooks.onDialogsEnd) return;
+      if (d.isMainFrame) return this.hooks.onDialogsEnd(id, null);
+      const key = frameKey(d.frame);
+      if (key) this.hooks.onDialogsEnd(id, key); // no frame: nothing to match (never all of them)
+    });
     wc.on('before-input-event', (e, input) => {
       if (this.hooks.onKey(input)) e.preventDefault();
     });
+    // a right-click: the page's context menu (main.js)
+    wc.on('context-menu', (_e, params) => this.hooks.onContextMenu && this.hooks.onContextMenu(id, params));
     if (entry.kind === 'html_view') {
       wc.setWindowOpenHandler(() => ({ action: 'deny' }));
       wc.on('will-navigate', (e, url) => {
@@ -299,6 +363,8 @@ class ViewManager {
     if (!rec) return;
     this.live.delete(viewId);
     if (this.hooks.onLeave) this.hooks.onLeave(viewId, null);
+    // its blocked dialog calls are answered before the page goes
+    if (this.hooks.onDialogsEnd) this.hooks.onDialogsEnd(viewId, null);
     try {
       (this.host || win).contentView.removeChildView(rec.view);
     } catch {}
@@ -325,4 +391,4 @@ class ViewManager {
   }
 }
 
-module.exports = { ViewManager, WEB_PARTITION, within, PROMPTED, ALLOWED, grantKeys, viewRoot, viewPartition };
+module.exports = { ViewManager, frameKey, WEB_PARTITION, within, PROMPTED, ALLOWED, grantKeys, viewRoot, viewPartition };

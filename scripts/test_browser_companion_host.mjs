@@ -2,10 +2,11 @@
 // HTML view watches, against a fake control page (no Electron, no
 // Chromium): the nonce check, view calls and their error codes, the
 // target -> view map, focus and raise against old and current companions,
-// furniture URLs, debounced reloads and the watch cap.
+// furniture URLs, debounced reloads and the watch cap, the companion's page
+// dialogs (a Playwright-like Dialog over the control page, push reconcile).
 // Run: node scripts/test_browser_companion_host.mjs   (also run by
 // integration::browser_assets::tests when node is on PATH)
-import { ControlPage, ViewWatches, isFurnitureUrl, CONTROL_URL_PREFIX } from '../src/integration/assets/browser/activity.mjs';
+import { ControlPage, ViewWatches, isFurnitureUrl, CONTROL_URL_PREFIX, CompanionDialog, reconcileDialogs, pruneAnswered } from '../src/integration/assets/browser/activity.mjs';
 
 function check(cond, msg) { if (!cond) { console.error(`FAIL: ${msg}`); process.exit(1); } }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -143,3 +144,47 @@ check(watches.arm('T1', '/tmp/views/report.html', () => { reloads++; }), 're-arm
 check(watchers.slice(0, 2).every((w) => w.closed), 're-arming closes the old watchers');
 check(watches.disarm('T1') && !watches.has('T1') && !watches.disarm('T1'), 'disarm once');
 console.log('ok: html view watches debounce, cap and disarm');
+
+// Fork (companion dialogs): alert / confirm / prompt live in the companion; the sidecar's
+// stand-in for Playwright's Dialog answers through the control page.
+const answers = [];
+const dialogControl = { call: async (fn, arg) => { answers.push([fn, arg]); if (arg.view_id === 'gone') throw Object.assign(new Error('no dialog'), { herdr: true, code: 'no_dialog' }); return { ok: true }; } };
+const answered = [];
+const dlg = new CompanionDialog(dialogControl, { id: 'd3', view_id: 'v7', target_id: 'T7', type: 'prompt', message: 'Copy this:', default_value: 'abc' }, (id) => answered.push(id));
+check(dlg.companion && dlg.type() === 'prompt' && dlg.message() === 'Copy this:' && dlg.defaultValue() === 'abc', 'the dialog reads like Playwright\'s');
+await dlg.accept('x');
+await dlg.accept(undefined);
+await dlg.dismiss();
+check(JSON.stringify(answers) === JSON.stringify([['dialog', { view_id: 'v7', id: 'd3', accept: true, text: 'x' }], ['dialog', { view_id: 'v7', id: 'd3', accept: true }], ['dialog', { view_id: 'v7', id: 'd3', accept: false }]]), `accept(text) / accept() / dismiss() answer through dialog() (${JSON.stringify(answers)})`);
+check(answered.join() === 'd3,d3,d3', 'each answer is remembered before it goes');
+failed = null;
+try { await new CompanionDialog(dialogControl, { id: 'd4', view_id: 'gone', type: 'alert' }).accept(); } catch (err) { failed = err; }
+check(failed && failed.code === 'no_dialog', 'an answer the companion refuses keeps its code');
+check(new CompanionDialog(dialogControl, { id: 'd5', view_id: 'v', type: 'print' }).type() === 'alert', 'an unknown type reads as alert');
+const pending = new Set();
+const slowControl = { call: async () => { throw Object.assign(new Error('companion dialog did not answer in 5000 ms'), { herdr: true, code: 'browser_timeout' }); } };
+failed = null;
+try { await new CompanionDialog(slowControl, { id: 'd8', view_id: 'v8', type: 'prompt' }, (id) => pending.add(id), (id) => pending.delete(id)).accept('x'); } catch (err) { failed = err; }
+check(failed && failed.code === 'browser_timeout' && !pending.has('d8'), 'an answer the companion did not take is forgotten again (keeps its code)');
+const goneControl = { call: async () => { throw Object.assign(new Error('no dialog'), { herdr: true, code: 'no_dialog' }); } };
+try { await new CompanionDialog(goneControl, { id: 'd10', view_id: 'v', type: 'alert' }, (id) => pending.add(id), (id) => pending.delete(id)).accept(); } catch {}
+check(pending.has('d10'), 'a no_dialog answer stays answered (the dialog is gone)');
+await new CompanionDialog(dialogControl, { id: 'd11', view_id: 'v', type: 'prompt' }).accept('');
+check(JSON.stringify(answers.at(-1)) === JSON.stringify(['dialog', { view_id: 'v', id: 'd11', accept: true, text: '' }]), `accept("") sends an empty answer (${JSON.stringify(answers.at(-1))})`);
+console.log('ok: companion dialogs answer through the control page');
+
+const have = new CompanionDialog(dialogControl, { id: 'd1', view_id: 'v1', type: 'alert' });
+let rec = reconcileDialogs(new Map([['T1', null], ['T2', have], ['T3', null]]), [{ id: 'd2', view_id: 'v3', target_id: 'T3', type: 'prompt' }, { id: 'd9', view_id: 'v9', target_id: 'T9', type: 'alert' }]);
+check(rec.open.length === 1 && rec.open[0][0] === 'T3' && rec.close.join() === 'T2', `a push opens the new one, closes the gone one, ignores untracked pages (${JSON.stringify(rec)})`);
+rec = reconcileDialogs(new Map([['T2', have]]), [{ id: 'd1', view_id: 'v1', target_id: 'T2', type: 'alert' }]);
+check(!rec.open.length && !rec.close.length, 'the same dialog again changes nothing');
+rec = reconcileDialogs(new Map([['T2', have]]), [{ id: 'd6', view_id: 'v1', target_id: 'T2', type: 'confirm' }]);
+check(rec.open.length === 1 && rec.open[0][1].id === 'd6', 'the next dialog of the page replaces it');
+rec = reconcileDialogs(new Map([['T2', null]]), [{ id: 'd1', view_id: 'v1', target_id: 'T2', type: 'alert' }], new Set(['d1']));
+check(!rec.open.length, 'a push from before an answer does not bring the dialog back');
+const ans = new Set(['d1', 'd2', 'd3']);
+pruneAnswered(ans, [{ id: 'd2', target_id: 'T2' }]);
+check([...ans].join() === 'd2', `the answered ids shrink to the pushed ones (${[...ans]})`);
+pruneAnswered(ans, []);
+check(ans.size === 0, 'an empty push forgets every answer');
+console.log('ok: companion dialog pushes reconcile per page');
