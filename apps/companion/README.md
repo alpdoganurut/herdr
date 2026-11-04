@@ -84,6 +84,16 @@ answers `unknown_method` and the strip says "this herdr is too old for the compa
   it) and close ask herdr's client through `browser.placement_action`, only when herdr
   advertises `placement_actions`. ⌘T new tab, ⌘W close, ⌘L address, ⌘R reload, ⌘[ / ⌘] history,
   ⌘⇧S send. ⌘-click / `target=_blank` opens a tab in the same session.
+* Auto-hide: docked and in herdr's Browser view the bar is unpinned by default and hides to a
+  2 px line (gold while loading, rust while a tab needs you) in a 6 px hit zone; a 180 ms dwell
+  there shows it over the page (the page never moves; the dock's bar is a view above the pages),
+  and it hides 400 ms after the pointer leaves. It stays while the URL field, the pill menu, the
+  note or permission bar is open or a tab needs you; ⌘L shows it with the URL focused; ⌘T, ⌘W, a
+  navigation, a finished load and the dock taking the keyboard show it for 1.2 s. The pin (⌘⇧.)
+  keeps it in the layout, the page below it. The floating window is pinned by default (its bar
+  holds the traffic lights and the drag region); unpinned, its page starts below the hit zone and
+  moves down while the bar shows. Pins are per surface (docked, Browser view, floating) in the
+  profile's `bar.json`.
 * Strip actions and page load failures/crashes go to herdr as `browser.host_report` events
   (in-page clicks and typing are never reported).
 * Hidden control page `herdr-companion://control/` exposes `window.__herdrCompanion`
@@ -233,9 +243,10 @@ herdr tabs swaps its pages. Quit the companion and the next `open` goes to the h
 | `src/dialogs.js` | pages' alert/confirm/prompt: per-view queue, answers, cancels (pure) |
 | `src/dock/` | docked mode: placements feed, window probe (JXA), geometry model, Ghostty config, the dock core and its Electron side |
 | `src/info.js` | the count pill and the sessions menu (pure) |
+| `src/ui/bar-model.js` | the bar's rules: compact URL, one or two rows, surface, window actions, pin defaults, what holds it open (pure; the strip page and `node --test` load it) |
 | `src/preload/control.js`, `src/preload/strip.js`, `src/preload/dialog.js` | context bridges |
 | `src/preload/page.js` | every page view's preload: alert/confirm/prompt through the companion; no WebRTC in no-network html views |
-| `src/ui/` | strip page (bar variant A, light/dark follows the system), the dialog card and control page; `icons/` = icon set A masters |
+| `src/ui/` | strip page (the compact bar, variant A; light/dark follows the system), the dialog card and control page; `icons/` = icon set A masters |
 | `assets/icon/` | eye-plus app icon: PNGs (window/dock), `eye-plus.icns` for packaging (`make-icns.sh` rebuilds it) |
 | `test/` | unit tests, mock herdr, e2e |
 | `install/` | the Electron runtime's npm manifest and pinned lock (`herdr browser setup --companion` runs `npm ci` with it) |

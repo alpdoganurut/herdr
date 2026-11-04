@@ -48,7 +48,7 @@
       <button id="send" class="ib" title="Send this page to the session's agent"><svg class="ico"><use href="#i-send"/></svg></button>
       <div id="win">
         <div class="sep"></div>
-        <button id="pin" class="ib" title="Pin the bar (⌘⇧.)" aria-pressed="false" hidden><svg class="ico"><use href="#i-pin"/></svg></button>
+        <button id="pin" class="ib" title="Pin the bar (⌘⇧.)" aria-pressed="false"><svg class="ico"><use href="#i-pin"/></svg></button>
         <button id="expand" class="ib" hidden><svg class="ico"><use href="#i-expand"/></svg></button>
         <button id="dockclose" class="ib" hidden><svg class="ico"><use href="#i-close"/></svg></button>
       </div>
@@ -68,6 +68,8 @@
     </div>
     <div id="status" hidden></div>
   </header>
+  <!-- the hidden bar: a 2 px line (idle rule, loading gold, a tab needs you: rust) in its 6 px hit zone -->
+  <div id="hint"></div>
   <main id="empty">
     <img class="mark" src="icons/eye-plus-small.svg" alt="" width="40" height="40">
     <p id="emptytext">No pages in this session.</p>

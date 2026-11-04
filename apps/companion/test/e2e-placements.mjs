@@ -248,6 +248,46 @@ if (covering) {
     return d.decision.target && d.decision.target.placement.kind === 'side';
   });
 
+  // ---------- the compact bar over the band: auto-hide, expand / restore ----------
+  const dockBar = await waitFor(() => cdp.contexts().flatMap((c) => c.pages()).find((p) => p.url().startsWith('herdr-companion://ui/strip.html?mode=docked')) || null, 5000);
+  check('the dock has its own bar view', !!dockBar);
+  const barDbg = () => ctl('bar_debug');
+  const barBtn = (id) => dockBar.evaluate((i) => {
+    const b = document.getElementById(i);
+    if (!b || b.hidden) return false;
+    b.click();
+    return true;
+  }, id);
+  const kindNow = async () => {
+    const d = await debug();
+    const p = d && d.decision && d.decision.target && d.decision.target.placement;
+    return p ? p.kind : null;
+  };
+  // a page in the docked tab (without one the bar stays open over the empty state)
+  const pg = await ctl('open', { tab_id: docked, url: 'about:blank', background: false });
+  const hiddenDock = await waitFor(async () => {
+    const b = await barDbg();
+    return b && b.layout && b.layout.host === 'dock' && b.layout.overlay && b.dockBar && b.dockBar.height === 6 ? b : null;
+  }, 8000);
+  check('docked and unpinned, the page takes the whole band and the bar is its 6 px hit zone', hiddenDock && hiddenDock.layout.top === 0, hiddenDock || (await barDbg()));
+  if (dockBar) {
+    await dockBar.mouse.move(100, 2);
+    const over = await waitFor(async () => {
+      const b = await barDbg();
+      return b.dockBar && b.dockBar.height >= 28 ? b : null;
+    }, 3000, 30);
+    check('a dwell at the top reveals the bar over the page (the page does not move)', over && over.layout.top === 0, over || (await barDbg()));
+    await dockBar.evaluate(() => document.documentElement.dispatchEvent(new MouseEvent('mouseleave')));
+    check('and it hides once the pointer leaves', !!(await waitFor(async () => ((await barDbg()).dockBar || {}).height === 6 || null, 3000, 30)));
+    check('herdr advertises placement_actions: the bar has expand and close', await dockBar.evaluate(() => !document.getElementById('expand').hidden && !document.getElementById('dockclose').hidden));
+    await barBtn('expand');
+    check("expand: herdr's client shows the tab in Browser view (a full placement)", (await waitFor(async () => ((await kindNow()) === 'full') || null, 10000)) === true, await debug().catch((e) => e.message));
+    check('in Browser view the bar offers restore', !!(await waitFor(() => dockBar.evaluate(() => document.getElementById('expand').dataset.action === 'restore' || null), 5000)));
+    await barBtn('expand');
+    check('restore: back to the dock beside the terminal', (await waitFor(async () => ((await kindNow()) === 'side') || null, 10000)) === true, await debug().catch((e) => e.message));
+  }
+  if (pg && pg.view_id) await ctl('close', pg.view_id);
+
   // ---------- undock ----------
   type('02 42');
   const undocked = await waitFor(async () => {
@@ -261,11 +301,13 @@ if (covering) {
   type('02 42');
   const redocked = await waitFor(async () => ((await statusOf(target.id)) || {}).state === 'covering', 20000);
   check('docked again: the companion reports on the placement anew', !!redocked, redocked ? undefined : await debug().catch((e) => e.message));
-  type('02 42');
-  await waitFor(async () => {
+  // the bar's close: herdr's client closes the dock
+  const closer = await waitFor(() => (dockBar ? barBtn('dockclose') : false) || null, 5000);
+  const closed = await waitFor(async () => {
     const d = await debug();
     return d && !d.docked;
   }, 15000);
+  check("the bar's close closes herdr's dock", !!closer && !!closed, await debug().catch((e) => e.message));
 }
 
 // ---------- done ----------

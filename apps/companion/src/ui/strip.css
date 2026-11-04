@@ -134,6 +134,18 @@ body.docked #bar { padding-left: 8px; -webkit-app-region: no-drag; }
 body:not(.docked) #bar.narrow > #nav { margin-left: -72px; }
 body.noinset:not(.docked) #bar.narrow > #nav { margin-left: -2px; }
 
+/* auto-hide (unpinned): hidden, only the hint line in the 6 px hit zone shows (the docked bar's
+   view is that tall, transparent below the line; the floating window's page starts below it);
+   revealed, the bar floats over the page (docked) or pushes it down (floating) */
+#hint { position: fixed; top: 0; left: 0; right: 0; height: 2px; background: var(--rule); display: none; pointer-events: none; overflow: hidden; }
+html.bar-hidden #hint { display: block; }
+html.bar-hidden #chrome { visibility: hidden; }
+html.bar-hidden, html.bar-hidden body { background: transparent; }
+#hint.loading { background: var(--gold-tint); }
+#hint.loading::after { content: ""; position: absolute; top: 0; bottom: 0; width: 35%; background: var(--gold); animation: hintload 1.1s ease-in-out infinite; }
+#hint.attn { background: var(--rust); }
+@keyframes hintload { from { left: -35%; } to { left: 100%; } }
+
 /* empty state */
 #empty { position: fixed; top: 120px; left: 0; right: 0; text-align: center; color: var(--dim); }
 #empty .mark { display: block; margin: 0 auto 6px; opacity: .85; }

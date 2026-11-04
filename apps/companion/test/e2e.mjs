@@ -525,6 +525,64 @@ try {
   check('in herdr\'s Browser view: restore and close', full && full.expand && full.close, full);
   await ctl('__herdrCompanion.strip_preview(null)');
   check('back to the floating bar: neither', await waitFor(async () => !(await winButtons()).expand || null, 2000));
+  // auto-hide and the pin, per surface (the floating window: pinned by default)
+  const barInfo = () => ctl('__herdrCompanion.bar_debug()');
+  const hiddenNow = () => strip.evaluate(() => document.documentElement.classList.contains('bar-hidden'));
+  await strip.mouse.move(300, 500); // the pointer below the bar
+  await sleep(500);
+  let bd = await barInfo();
+  check('the floating bar is pinned by default: the page starts below it', bd && bd.layout.pinned && bd.layout.top === bd.report.win.height && bd.report.win.height >= 28 && !(await hiddenNow()), bd);
+  await strip.evaluate(() => document.getElementById('pin').click());
+  const unpinned = await waitFor(async () => {
+    const b = await barInfo();
+    return !b.layout.pinned && (await hiddenNow()) ? b : null;
+  }, 4000);
+  check('unpinned, the bar hides to its hint line: the page starts below the 6 px hit zone', unpinned && unpinned.layout.top === 6 && unpinned.pins.floating === false, unpinned || (await barInfo()));
+  const hint = await strip.evaluate(() => Math.round(document.getElementById('hint').getBoundingClientRect().height));
+  check('the hint line is 2 px', hint === 2, hint);
+  await strip.mouse.move(300, 3);
+  await sleep(60);
+  await strip.mouse.move(300, 400);
+  await sleep(250);
+  check('a pass through the hit zone shorter than the dwell does not reveal it', await hiddenNow());
+  await strip.mouse.move(300, 3);
+  const hovered = await waitFor(async () => !(await hiddenNow()) || null, 1500, 30);
+  bd = await barInfo();
+  check('a dwell in the hit zone reveals it (floating: the page moves below it)', hovered && bd.report.win.shown && bd.layout.top === bd.report.win.height, bd);
+  await strip.mouse.move(300, 400);
+  await sleep(150);
+  check('it stays through the grace after the pointer leaves', !(await hiddenNow()));
+  check('and hides after it', await waitFor(hiddenNow, 2000, 30));
+  await strip.mouse.move(300, 3);
+  await waitFor(async () => !(await hiddenNow()) || null, 1500, 30);
+  await strip.evaluate(() => document.getElementById('url').focus());
+  await strip.mouse.move(300, 400);
+  await sleep(700);
+  check('the focused URL field holds it open after the pointer leaves', !(await hiddenNow()));
+  await strip.evaluate(() => document.getElementById('url').blur());
+  check('blurred, it hides again', await waitFor(hiddenNow, 2000, 30));
+  await strip.evaluate((u) => window.stripBridge.action('navigate', u), `127.0.0.1:${webPort}/pulse`);
+  check('a navigation shows the hidden bar for a moment', await waitFor(async () => !(await hiddenNow()) || null, 3000, 30));
+  check('then it hides again', await waitFor(hiddenNow, 4000, 50));
+  // the pin is per surface: docked keeps its own (unpinned by default)
+  await ctl(`__herdrCompanion.strip_preview({dock: true, kind: 'side', features: ['placements', 'placement_actions']})`);
+  const dockPin = await waitFor(async () => {
+    const v = await strip.evaluate(() => document.getElementById('pin').getAttribute('aria-pressed'));
+    return v === 'false' ? v : null;
+  }, 2000);
+  check('docked, the bar is unpinned by default', dockPin === 'false', dockPin);
+  await strip.evaluate(() => document.getElementById('pin').click());
+  const saved = await waitFor(async () => {
+    const b = await barInfo();
+    return b.pins.docked === true ? b.pins : null;
+  }, 2000);
+  check('pinning it docked saves the docked pin only', saved && saved.docked === true && saved.floating === false, saved);
+  const file = JSON.parse(fs.readFileSync(path.join(profile, 'bar.json'), 'utf8'));
+  check('the pins live in the profile (bar.json)', file.pinned && file.pinned.docked === true && file.pinned.floating === false, file);
+  await ctl('__herdrCompanion.strip_preview(null)');
+  // pinned again for the checks below (the floating pin is checked again after a restart)
+  await strip.evaluate(() => document.getElementById('pin').click());
+  check('pinned again, it stays', await waitFor(async () => (await barInfo()).pins.floating === true && !(await hiddenNow()), 2000));
   // the update chip (herdr installed newer app files than this process runs): disabled only
   // while its restart request runs; a failed request brings it back
   const chip = () =>
@@ -715,6 +773,9 @@ try {
   // restart of the companion restores the session's pages from herdr's state
   await api('mock.focus_tab', { tab_id: 'w1:t1' });
   await sleep(300);
+  // and keeps the bar's pins: the floating one unpinned now
+  await stripPage().evaluate(() => document.getElementById('pin').click());
+  await waitFor(async () => (await ctl('__herdrCompanion.bar_debug()')).pins.floating === false, 2000);
   const quit1 = await quitCompanion();
   check('quits through its own control path', quit1);
   check('unregistered on quit', !mock.state.lease);
@@ -734,6 +795,8 @@ try {
       return e && e.target === restored.target_id ? e : null;
     }, 4000);
     check('the restored view syncs its new target', rsync);
+    const pins = await ctl('__herdrCompanion.bar_debug()');
+    check('the bar\'s pins survive a restart (floating unpinned, docked pinned)', pins && pins.pins.floating === false && pins.pins.docked === true && pins.layout && !pins.layout.pinned, pins);
     check('quits again', await quitCompanion());
   }
 } catch (e) {
