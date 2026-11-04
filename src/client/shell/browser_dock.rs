@@ -347,7 +347,9 @@ pub(crate) struct BrowserDockView {
     pub(crate) placeholder: Option<Placeholder>,
     pub(crate) dragging: bool,
     /// Fork (session header): the band's title bar (the tabs layout): the
-    /// focused tab's page title, else its URL, else `Browser`.
+    /// focused tab's page title, else its URL, else `Browser`. Fork
+    /// (compact bar): only while the placeholder is not calm (the companion
+    /// does not cover the band).
     pub(crate) title: Option<String>,
 }
 
@@ -456,16 +458,26 @@ impl ClientShellState {
     pub(super) fn browser_dock_view(&self, layout: &ClientShellLayout) -> BrowserDockView {
         let browser_view =
             self.browser_view_open_for_focused_tab() && !full_area(layout).is_empty();
+        let placeholder = (browser_view || !layout.browser_band.is_empty())
+            .then(|| self.browser_placeholder(Instant::now()));
+        // Fork (compact bar): the band's title bar is the fallback for a
+        // band the companion does not cover (not installed, not running,
+        // not docked: the placeholder says so); over a covered band (a calm
+        // placeholder) the companion's own bar offers expand and close.
+        let uncovered = placeholder
+            .as_ref()
+            .is_some_and(|placeholder| !placeholder.calm);
         BrowserDockView {
             browser_view,
             strip: (!layout.view_strip.is_empty())
                 .then(|| self.browser_view_strip())
                 .flatten(),
-            placeholder: (browser_view || !layout.browser_band.is_empty())
-                .then(|| self.browser_placeholder(Instant::now())),
             dragging: matches!(self.chrome_drag, Some(ClientChromeDrag::BrowserDockWidth)),
-            title: (!layout.session_header.is_empty() && !layout.browser_band.is_empty())
+            title: (!layout.session_header.is_empty()
+                && !layout.browser_band.is_empty()
+                && uncovered)
                 .then(|| self.browser_dock_title()),
+            placeholder,
         }
     }
 
@@ -1312,7 +1324,7 @@ impl ClientShellState {
     }
 
     /// This client's placement now (`None`: none to publish).
-    fn browser_placement_spec(&self) -> Option<BrowserPlacementSpec> {
+    pub(super) fn browser_placement_spec(&self) -> Option<BrowserPlacementSpec> {
         if !self.browser_dock_in_use() || !self.browser_dock_available() {
             return None;
         }
@@ -1326,13 +1338,16 @@ impl ClientShellState {
             (BrowserPlacementKind::Full, area, !area.is_empty())
         } else if !layout.browser_band.is_empty() {
             let band = layout.browser_band;
-            // Fork (session header): below the band's title bar.
-            let top = u16::from(!layout.session_header.is_empty()).min(band.height);
+            // Fork (compact bar): the whole band right of its divider, with
+            // or without the title bar: the title row shows only while the
+            // companion is not over the band (`browser_dock_view`), so the
+            // area never follows the host's report (that would move the
+            // host, which reports again: a loop).
             let area = Rect::new(
                 band.x.saturating_add(1),
-                band.y + top,
+                band.y,
                 band.width.saturating_sub(1),
-                band.height - top,
+                band.height,
             );
             (BrowserPlacementKind::Side, area, !area.is_empty())
         } else {

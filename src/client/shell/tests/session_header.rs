@@ -469,6 +469,9 @@ fn each_dock_type_keeps_its_own_width_across_a_swap() {
 fn the_browser_dock_title_bar_promotes_and_closes() {
     let mut state = browser_state();
     state.toggle_browser_dock("tab_1".into(), &mut ClientShellInput::default());
+    // Fork (compact bar): the title bar is the fallback of a band the
+    // companion does not cover (here it cannot dock to this terminal)
+    report_placement(&mut state, "unsupported");
     let frame = state.compose(COLS, ROWS).expect("frame").frame;
     let band = state.layout(COLS, ROWS).browser_band;
     let title: String = (band.x..band.right())
@@ -480,7 +483,7 @@ fn the_browser_dock_title_bar_promotes_and_closes() {
         .collect();
     assert!(title.contains("◨ herdr+ preview"), "{title}");
     assert!(title.trim_end().ends_with("⤢  ✕"), "{title}");
-    // the companion covers the band below its title bar
+    // the placement is the whole band right of the divider, title or not
     let spec = state
         .take_browser_placement_request(std::time::Instant::now())
         .and_then(|message| match message {
@@ -494,10 +497,7 @@ fn the_browser_dock_title_bar_promotes_and_closes() {
             _ => None,
         })
         .expect("a placement");
-    assert_eq!(
-        (spec.area.y, spec.area.height),
-        (band.y + 1, band.height - 1)
-    );
+    assert_eq!((spec.area.y, spec.area.height), (band.y, band.height));
     let target = |state: &ClientShellState, wanted| {
         state
             .hits
@@ -694,4 +694,58 @@ fn the_dock_and_view_glyphs_are_one_cell_native_glyphs() {
         assert_eq!(glyph.chars().collect::<Vec<_>>(), vec![expected], "{glyph}");
         assert_eq!(super::super::render::display_width(glyph), 1, "{glyph}");
     }
+}
+
+/// The host's report on this client's placement, as `browser.get` carries it.
+fn report_placement(state: &mut ClientShellState, report: &str) {
+    let id = state.browser_dock.placement_id.clone();
+    if let Some(info) = state.browser.info.as_mut() {
+        info.placements = vec![crate::api::schema::BrowserPlacementStatus {
+            id,
+            state: report.into(),
+            reason: None,
+        }];
+    }
+}
+
+/// Fork (compact bar): over a band the companion covers, herdr draws no
+/// title bar (the companion's bar has expand and close), and the placement
+/// keeps the same area either way, so the host's report never moves it.
+#[test]
+fn fork_smoke_a_covered_band_has_no_title_bar_and_the_same_placement() {
+    use super::super::browser_dock::BrowserDockTarget;
+    let mut state = browser_state();
+    state.toggle_browser_dock("tab_1".into(), &mut ClientShellInput::default());
+    let placement = |state: &mut ClientShellState| {
+        state.compose(COLS, ROWS);
+        state.browser_placement_spec().expect("a placement")
+    };
+    report_placement(&mut state, "unbound");
+    let uncovered = placement(&mut state);
+    report_placement(&mut state, "covering");
+    let frame = state.compose(COLS, ROWS).expect("frame").frame;
+    let band = state.layout(COLS, ROWS).browser_band;
+    let row: String = (band.x + 1..band.right())
+        .map(|x| {
+            frame.cells[usize::from(band.y) * usize::from(COLS) + usize::from(x)]
+                .symbol
+                .clone()
+        })
+        .collect();
+    assert!(
+        !row.contains("herdr+ preview") && !row.contains('✕'),
+        "{row:?}"
+    );
+    assert!(!state
+        .hits
+        .browser_dock
+        .targets
+        .iter()
+        .any(|(_, target)| matches!(
+            target,
+            BrowserDockTarget::Promote | BrowserDockTarget::Close
+        )));
+    let covered = placement(&mut state);
+    assert_eq!(covered.area, uncovered.area);
+    assert_eq!((covered.area.y, covered.area.height), (band.y, band.height));
 }
