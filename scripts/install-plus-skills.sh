@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Install the herdr+ Claude Code skills (plus:notes, plus:notify, plus:status,
-# plus:team-build) from docs/fork/skills into the user's Claude skills folder.
+# Install the herdr+ Claude Code skills (plus:notes, plus:notify, plus:setup,
+# plus:status, plus:team-build) from docs/fork/skills into the user's Claude skills folder.
 #
 # Usage: scripts/install-plus-skills.sh [--dest <skills-dir>] [--dry-run]
 #   --dest     target folder (default: ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills)

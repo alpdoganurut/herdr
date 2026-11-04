@@ -258,12 +258,14 @@ scripts/install-plus-skills.sh
 
 This installs into `${CLAUDE_CONFIG_DIR:-~/.claude}/skills/plus:<name>`. It is safe to
 re-run; a differing existing copy is moved to `~/.claude/skills-backup/` first. Restart
-Claude Code afterwards.
+Claude Code afterwards. Then `/plus:setup` in a herdr+ Claude tab walks you through the
+rest (options, browser, health check) and re-checks your setup whenever you run it again.
 
 | Skill | What it does |
 |---|---|
 | `/plus:notes` | Writes or refreshes this session's notes in the notes pane (context, work in flight, plan). Only on request. |
 | `/plus:notify` | Sets, shows or clears when this agent should alert you through `agents_notify`. |
+| `/plus:setup` | Guided onboarding and check-up: tour, options, installs, health check, a safe restart. Asks before every change and backs up each file first. Re-run any time. |
 | `/plus:status` | One-shot digest of agents: working, blocked, done, what waits on you. Args: `[group \| all]`. |
 | `/plus:team-build` | Runs a multi-agent build as a herdr+ team: design, contracts, lanes, review, gate, cutover. |
 
