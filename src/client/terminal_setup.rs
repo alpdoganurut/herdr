@@ -160,6 +160,8 @@ struct HostKeyboardProbeResponses {
     flags: Option<u16>,
     sgr_pixel_mouse_status: Option<u8>,
     primary_device_attributes: bool,
+    /// Fork (scrollback scroll): DECRPM status of DECLRMM (mode 69).
+    left_right_margin_status: Option<u8>,
 }
 
 /// What the startup probe learned about the host terminal.
@@ -172,8 +174,9 @@ pub(super) struct HostTerminalProbe {
 
 #[cfg(not(windows))]
 fn query_host_capabilities(query_keyboard: bool) -> (HostTerminalProbe, Vec<u8>) {
-    const FULL_QUERY: &[u8] = b"\x1b[?1016$p\x1b[?u\x1b[c";
-    const PIXEL_MOUSE_QUERY: &[u8] = b"\x1b[?1016$p\x1b[c";
+    // Fork (scrollback scroll): `?69$p` asks whether the host has DECSLRM.
+    const FULL_QUERY: &[u8] = b"\x1b[?1016$p\x1b[?69$p\x1b[?u\x1b[c";
+    const PIXEL_MOUSE_QUERY: &[u8] = b"\x1b[?1016$p\x1b[?69$p\x1b[c";
 
     let mut buffered_input = Vec::new();
     let query = if query_keyboard {
@@ -226,6 +229,13 @@ fn query_host_capabilities(query_keyboard: bool) -> (HostTerminalProbe, Vec<u8>)
         }
     }
 
+    // Fork (scrollback scroll): what the client blit may scroll on the host.
+    let host_scroll = crate::protocol::render_ansi::support_from_probe(
+        responses.primary_device_attributes,
+        responses.left_right_margin_status,
+    );
+    tracing::info!(?host_scroll, "host scroll regions");
+    crate::protocol::render_ansi::set_host_scroll_support(host_scroll);
     (host_terminal_probe(&responses), buffered_input)
 }
 
@@ -312,6 +322,12 @@ fn consume_host_keyboard_probe_responses(
                     buffered_input.drain(start..=end + 1);
                     continue;
                 }
+                // Fork (scrollback scroll): DECRPM for DECLRMM.
+                if let Some(status) = parse_left_right_margin_status(body) {
+                    responses.left_right_margin_status = Some(status);
+                    buffered_input.drain(start..=end + 1);
+                    continue;
+                }
             }
             offset += 1;
             continue;
@@ -354,6 +370,15 @@ fn parse_sgr_pixel_mouse_status(body: &[u8]) -> Option<u8> {
     (fields.next().is_none() && status <= 4).then_some(status)
 }
 
+/// Fork (scrollback scroll): `CSI ? 69 ; Ps $ y`.
+#[cfg(not(windows))]
+fn parse_left_right_margin_status(body: &[u8]) -> Option<u8> {
+    let mut fields = body.split(|byte| *byte == b';');
+    (fields.next()? == b"69").then_some(())?;
+    let status = std::str::from_utf8(fields.next()?).ok()?.parse().ok()?;
+    (fields.next().is_none() && status <= 4).then_some(status)
+}
+
 #[cfg(not(windows))]
 fn host_control_string_end(bytes: &[u8]) -> Option<Option<usize>> {
     if bytes.first() != Some(&0x1b) {
@@ -384,6 +409,10 @@ fn host_control_string_end(bytes: &[u8]) -> Option<Option<usize>> {
 
 #[cfg(windows)]
 fn query_host_capabilities(_query_keyboard: bool) -> (HostTerminalProbe, Vec<u8>) {
+    // Fork (scrollback scroll): no probe runs here, so the blit never scrolls the host.
+    crate::protocol::render_ansi::set_host_scroll_support(
+        crate::protocol::render_ansi::support_from_probe(false, None),
+    );
     (HostTerminalProbe::default(), Vec::new())
 }
 
@@ -1123,6 +1152,28 @@ mod tests {
             assert!(responses.primary_device_attributes, "split {split}");
             assert_eq!(buffered, b"before-middle--after", "split {split}");
         }
+    }
+
+    // Fork (scrollback scroll): the DECLRMM answer is consumed, never typed into a pane.
+    #[cfg(not(windows))]
+    #[test]
+    fn fork_smoke_host_capability_probe_reads_the_left_right_margin_mode() {
+        let stream = b"a\x1b[?1016;2$y\x1b[?69;2$yb\x1b[?1;2c";
+        for split in 1..stream.len() {
+            let mut buffered = stream[..split].to_vec();
+            let mut responses = HostKeyboardProbeResponses::default();
+            consume_host_keyboard_probe_responses(&mut buffered, &mut responses);
+            buffered.extend_from_slice(&stream[split..]);
+            consume_host_keyboard_probe_responses(&mut buffered, &mut responses);
+            assert_eq!(responses.left_right_margin_status, Some(2), "split {split}");
+            assert_eq!(responses.sgr_pixel_mouse_status, Some(2), "split {split}");
+            assert_eq!(buffered, b"ab", "split {split}");
+        }
+        let mut unknown = b"\x1b[?69;0$y".to_vec();
+        let mut responses = HostKeyboardProbeResponses::default();
+        consume_host_keyboard_probe_responses(&mut unknown, &mut responses);
+        assert_eq!(responses.left_right_margin_status, Some(0));
+        assert!(unknown.is_empty());
     }
 
     #[cfg(not(windows))]

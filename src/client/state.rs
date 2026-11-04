@@ -564,7 +564,14 @@ impl ClientState {
         let frame_output::ComposedFrame {
             frame: mut frame_data,
             graphics,
+            scroll_regions,
         } = frame_data.into();
+        // Fork (scrollback scroll): host images do not follow a scrolled region.
+        let scroll_regions = if graphics.is_empty() {
+            scroll_regions
+        } else {
+            Vec::new()
+        };
         // With capture enabled, host OSC 8 can intercept Ctrl-click before plugins.
         // Keep semantic links internally and restore native links when capture is off.
         if self.shell_mouse_capture_preference {
@@ -575,7 +582,15 @@ impl ClientState {
         } else {
             frame_data
         };
-        let encoded = if self.draw_host_cursor {
+        let encoded = if !scroll_regions.is_empty() {
+            self.blit_encoder.encode_scrolling(
+                &frame_data,
+                self.repaint_pending,
+                self.draw_host_cursor,
+                &scroll_regions,
+                render_ansi::host_scroll_support(),
+            )
+        } else if self.draw_host_cursor {
             self.blit_encoder
                 .encode_with_suppressed_visible_cursor(&frame_data, self.repaint_pending)
         } else {

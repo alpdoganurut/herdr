@@ -35,6 +35,12 @@ use crate::protocol::{
     underline_style_from_modifier, CellData, CursorState, FrameData, PaneSurfacePatchRow,
 };
 
+// Fork (scrollback scroll): host scroll regions for scrolled panes.
+mod host_scroll;
+pub(crate) use host_scroll::{
+    host_scroll_support, set_host_scroll_support, support_from_probe, HostScrollSupport,
+};
+
 const REVERSED_MODIFIER: u16 = 1 << 6;
 const SYNC_OUTPUT_END: &[u8] = b"\x1b[?2026l";
 
@@ -70,7 +76,7 @@ impl BlitEncoder {
     }
 
     pub(crate) fn encode(&self, frame: &FrameData, repaint: bool) -> EncodedBlit {
-        self.encode_inner(frame, repaint, false)
+        self.encode_inner(frame, repaint, false, &[], HostScrollSupport::Off)
     }
 
     pub(crate) fn encode_with_suppressed_visible_cursor(
@@ -78,7 +84,27 @@ impl BlitEncoder {
         frame: &FrameData,
         repaint: bool,
     ) -> EncodedBlit {
-        self.encode_inner(frame, repaint, true)
+        self.encode_inner(frame, repaint, true, &[], HostScrollSupport::Off)
+    }
+
+    /// Fork (scrollback scroll): as `encode`, but a candidate region (a pane's
+    /// content rectangle) whose rows shifted since the last frame is moved on
+    /// the host and only its exposed or changed cells are written.
+    pub(crate) fn encode_scrolling(
+        &self,
+        frame: &FrameData,
+        repaint: bool,
+        suppress_visible_cursor: bool,
+        scroll_regions: &[crate::protocol::SurfaceRect],
+        support: HostScrollSupport,
+    ) -> EncodedBlit {
+        self.encode_inner(
+            frame,
+            repaint,
+            suppress_visible_cursor,
+            scroll_regions,
+            support,
+        )
     }
 
     fn encode_inner(
@@ -86,6 +112,8 @@ impl BlitEncoder {
         frame: &FrameData,
         repaint: bool,
         suppress_visible_cursor: bool,
+        scroll_regions: &[crate::protocol::SurfaceRect],
+        support: HostScrollSupport,
     ) -> EncodedBlit {
         let previous_frame = self.last_frame.as_ref();
         let prev = if repaint { None } else { previous_frame };
@@ -93,6 +121,10 @@ impl BlitEncoder {
             || prev.is_none()
             || prev.is_some_and(|p| p.width != frame.width || p.height != frame.height);
         let clear_before_full_redraw = previous_frame.is_none();
+        let scrolls = match prev {
+            Some(prev) if !full => host_scroll::plan(prev, frame, scroll_regions, support),
+            _ => Vec::new(),
+        };
         let prof_stats =
             crate::render_prof::enabled().then(|| compute_prof_blit_stats(frame, prev, full));
         let prof_started = crate::render_prof::timer();
@@ -108,8 +140,10 @@ impl BlitEncoder {
             repeat_ime_anchor_after_sync(),
             clear_before_full_redraw,
             suppress_visible_cursor,
+            &scrolls,
         );
         if let Some(stats) = prof_stats {
+            crate::render_prof::counter("ansi_encode.host_scrolls", scrolls.len() as u64);
             crate::render_prof::duration_since("ansi_encode.total", prof_started);
             crate::render_prof::counter("ansi_encode.bytes", bytes.len() as u64);
             crate::render_prof::counter("ansi_encode.scanned_cells", stats.scanned_cells);
@@ -554,6 +588,7 @@ fn blit_frame_to_with_cursor_memory_and_policy(
         repeat_ime_anchor,
         true,
         suppress_visible_cursor,
+        &[],
     );
 }
 
@@ -679,6 +714,7 @@ fn blit_frame_to_with_cursor_memory_and_clear_policy(
     repeat_ime_anchor: bool,
     clear_before_full_redraw: bool,
     suppress_visible_cursor: bool,
+    scrolls: &[host_scroll::HostScroll],
 ) {
     // On first frame or size change, do a full redraw.
     let full_redraw =
@@ -706,7 +742,9 @@ fn blit_frame_to_with_cursor_memory_and_clear_policy(
     } else {
         // Diff-based update: only write changed cells.
         let prev = prev.unwrap();
-        write_changed_cells(&mut writer, frame, prev);
+        // Fork (scrollback scroll): move scrolled regions on the host first.
+        host_scroll::write_scrolls(&mut writer, scrolls, frame.width);
+        write_changed_cells_after_scrolls(&mut writer, frame, prev, scrolls);
     }
 
     // Position the cursor while it is still hidden, then restore visibility.
@@ -1003,7 +1041,14 @@ fn cells_visually_equal(
     // Skip flag is only for ratatui internal use, not visual.
 }
 
-fn write_changed_cells(writer: &mut impl Write, frame: &FrameData, prev: &FrameData) {
+/// Fork (scrollback scroll): diffs against what the host shows after
+/// `scrolls`; an exposed cell (no known content) is always written.
+fn write_changed_cells_after_scrolls(
+    writer: &mut impl Write,
+    frame: &FrameData,
+    prev: &FrameData,
+    scrolls: &[host_scroll::HostScroll],
+) {
     let mut last_sgr = String::new(); // Track last SGR to avoid redundant style changes.
     let mut last_style = None;
     let mut active_hyperlink = None;
@@ -1020,15 +1065,21 @@ fn write_changed_cells(writer: &mut impl Write, frame: &FrameData, prev: &FrameD
         for col in 0..frame.width {
             let idx = (row as usize) * (frame.width as usize) + (col as usize);
             let cell = &frame.cells[idx];
-            let prev_cell = &prev.cells[idx];
+            let host_cell = if scrolls.is_empty() {
+                Some(&prev.cells[idx])
+            } else {
+                host_scroll::host_cell(prev, scrolls, col, row)
+            };
 
             if !cell.skip
-                && (!cells_visually_equal(
-                    &sanitized_hyperlinks,
-                    cell,
-                    &prev_sanitized_hyperlinks,
-                    prev_cell,
-                ) || invalidated > 0)
+                && (host_cell.is_none_or(|prev_cell| {
+                    !cells_visually_equal(
+                        &sanitized_hyperlinks,
+                        cell,
+                        &prev_sanitized_hyperlinks,
+                        prev_cell,
+                    )
+                }) || invalidated > 0)
                 && to_skip == 0
             {
                 let cursor_position =
@@ -1047,7 +1098,7 @@ fn write_changed_cells(writer: &mut impl Write, frame: &FrameData, prev: &FrameD
             }
 
             to_skip = cell_width(cell).saturating_sub(1);
-            let affected_width = cmp::max(cell_width(cell), cell_width(prev_cell));
+            let affected_width = cmp::max(cell_width(cell), host_cell.map_or(1, cell_width));
             invalidated = cmp::max(affected_width, invalidated).saturating_sub(1);
         }
     }

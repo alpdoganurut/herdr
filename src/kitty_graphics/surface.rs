@@ -226,6 +226,12 @@ impl ClientState {
         Self::default()
     }
 
+    /// Fork (scrollback scroll): whether an image is placed on the host or in
+    /// the scene, so a host scroll region would leave it behind.
+    pub(crate) fn has_host_placements(&self) -> bool {
+        !self.host.placements.is_empty() || !self.display_scene.placements.is_empty()
+    }
+
     fn image_id(&self, key: &SurfaceGraphicsAssetKey) -> u32 {
         if matches!(key.source, SurfaceGraphicsSource::Terminal { .. }) {
             return self
