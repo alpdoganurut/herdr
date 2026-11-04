@@ -29,6 +29,9 @@ pub(crate) enum EndpointControlMessage {
     AgentContext(crate::server::headless::agent_context::AgentContextPayload),
     /// Fork: show a tab's info pane (`endpoint.notes-reveal.v1`).
     NotesReveal(crate::server::headless::notes_reveal::NotesRevealPayload),
+    /// Fork (compact bar): the browser host's ask on this client's placement
+    /// (`endpoint.placement-action.v1`).
+    PlacementAction(crate::server::headless::placement_action::PlacementActionPayload),
     Snapshot(Box<crate::protocol::ClientShellSnapshot>),
     Ignored,
 }
@@ -109,6 +112,14 @@ pub(crate) fn decode_endpoint_control(
         return Ok(
             crate::server::headless::notes_reveal::NotesRevealPayload::decode(data)
                 .map(EndpointControlMessage::NotesReveal)
+                .unwrap_or(EndpointControlMessage::Ignored),
+        );
+    }
+    // Fork (compact bar): a placement action, optional like a notes reveal.
+    if kind == crate::server::headless::placement_action::PLACEMENT_ACTION_KIND {
+        return Ok(
+            crate::server::headless::placement_action::PlacementActionPayload::decode(data)
+                .map(EndpointControlMessage::PlacementAction)
                 .unwrap_or(EndpointControlMessage::Ignored),
         );
     }

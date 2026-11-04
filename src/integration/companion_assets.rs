@@ -8,7 +8,7 @@
 use sha2::{Digest, Sha256};
 
 /// The app's version (`apps/companion/package.json`), checked by a test.
-pub const COMPANION_APP_VERSION: &str = "0.2.3";
+pub const COMPANION_APP_VERSION: &str = "0.2.4";
 
 /// File name (relative to the app directory) and content, in write order.
 pub const COMPANION_ASSETS: &[(&str, &[u8])] = &[
@@ -95,6 +95,10 @@ pub const COMPANION_ASSETS: &[(&str, &[u8])] = &[
     (
         "src/preload/strip.js",
         include_bytes!("../../apps/companion/src/preload/strip.js"),
+    ),
+    (
+        "src/ui/bar-model.js",
+        include_bytes!("../../apps/companion/src/ui/bar-model.js"),
     ),
     (
         "src/ui/control.html",

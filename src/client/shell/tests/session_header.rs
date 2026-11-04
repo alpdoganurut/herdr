@@ -118,21 +118,21 @@ fn the_name_truncates_first_then_the_view_tabs_shrink_and_the_toggles_stay() {
         wide.contains("● header-design-and-navigation  82% ⚭3 ✉1"),
         "{wide}"
     );
-    assert!(wide.contains("Terminal  Browser ◧  ▤"), "{wide}");
+    assert!(wide.contains("Terminal  Browser ◨  ≡"), "{wide}");
     // the name gives way while it keeps MIN_NAME cells
     let mid = text(&header, 52);
-    assert!(mid.contains("Terminal  Browser ◧  ▤"), "{mid}");
+    assert!(mid.contains("Terminal  Browser ◨  ≡"), "{mid}");
     assert!(mid.contains('…') && !mid.contains("navigation"), "{mid}");
     // then the short tabs
     let narrow = text(&header, 36);
-    assert!(narrow.contains("T  B ◧  ▤"), "{narrow}");
+    assert!(narrow.contains("T  B ◨  ≡"), "{narrow}");
     assert!(!narrow.contains("Terminal"), "{narrow}");
-    // then the dock toggle alone; ▤ is always the last cell before the margin
+    // then the dock toggle alone; ≡ is always the last cell before the margin
     for width in [26u16, 20, 12, 6] {
         let row = text(&header, width);
-        assert!(row.trim_end().ends_with('▤'), "{width}: {row:?}");
+        assert!(row.trim_end().ends_with('≡'), "{width}: {row:?}");
         if width >= 12 {
-            assert!(row.contains('◧'), "{width}: {row:?}");
+            assert!(row.contains('◨'), "{width}: {row:?}");
         }
     }
 }
@@ -296,6 +296,8 @@ fn companion_info() -> BrowserGetInfo {
         enabled: true,
         companion_app: Some(BrowserCompanionAppInfo {
             state: "running".into(),
+            // the compact bar's companion (its bar has expand and close)
+            version: Some("0.2.4".into()),
             ..Default::default()
         }),
         window_off: true,
@@ -354,29 +356,29 @@ fn fork_smoke_the_header_sits_on_top_and_its_controls_switch_views_and_docks() {
     let hits = state.hits.session_header;
     assert!(!hits.terminal.is_empty() && !hits.browser.is_empty());
     assert!(!hits.browser_dock.is_empty() && !hits.notes_dock.is_empty());
-    assert_eq!(hits.notes_dock.right(), COLS, "▤ at the far right");
+    assert_eq!(hits.notes_dock.right(), COLS, "≡ at the far right");
     assert!(hits.browser_dock.x < hits.notes_dock.x);
     // Browser, then Terminal
     click(&mut state, hits.browser);
     assert!(state.browser_view_open_for("tab_1"));
     press(&mut state, |hits| hits.terminal);
     assert!(!state.browser_view_open_for("tab_1"));
-    // ◧ docks the browser: the band takes the dock slot
+    // ◨ docks the browser: the band takes the dock slot
     let outcome = press(&mut state, |hits| hits.browser_dock);
     assert!(outcome.resize);
     assert!(state.browser_dock_open_for("tab_1"));
     assert!(!state.layout(COLS, ROWS).browser_band.is_empty());
-    // ▤ swaps it for the notes dock
+    // ≡ swaps it for the notes dock
     press(&mut state, |hits| hits.notes_dock);
     assert!(state.info_dock_open_for_focused_tab());
     assert!(!state.browser_dock_open_for("tab_1"), "one dock slot");
     let layout = state.layout(COLS, ROWS);
     assert!(layout.browser_band.is_empty() && !layout.info_dock.is_empty());
-    // ◧ again swaps back
+    // ◨ again swaps back
     press(&mut state, |hits| hits.browser_dock);
     assert!(state.browser_dock_open_for("tab_1"));
     assert!(!state.info_dock_open_for_focused_tab(), "one dock slot");
-    // from Browser view, ◧ brings the terminal back with the browser docked
+    // from Browser view, ◨ brings the terminal back with the browser docked
     press(&mut state, |hits| hits.browser_dock);
     assert!(!state.browser_dock_open_for("tab_1"));
     press(&mut state, |hits| hits.browser);
@@ -469,6 +471,9 @@ fn each_dock_type_keeps_its_own_width_across_a_swap() {
 fn the_browser_dock_title_bar_promotes_and_closes() {
     let mut state = browser_state();
     state.toggle_browser_dock("tab_1".into(), &mut ClientShellInput::default());
+    // Fork (compact bar): the title bar is the fallback of a band the
+    // companion does not cover (here it cannot dock to this terminal)
+    report_placement(&mut state, "unsupported");
     let frame = state.compose(COLS, ROWS).expect("frame").frame;
     let band = state.layout(COLS, ROWS).browser_band;
     let title: String = (band.x..band.right())
@@ -478,9 +483,9 @@ fn the_browser_dock_title_bar_promotes_and_closes() {
                 .clone()
         })
         .collect();
-    assert!(title.contains("◧ herdr+ preview"), "{title}");
+    assert!(title.contains("◨ herdr+ preview"), "{title}");
     assert!(title.trim_end().ends_with("⤢  ✕"), "{title}");
-    // the companion covers the band below its title bar
+    // the placement is the whole band right of the divider, title or not
     let spec = state
         .take_browser_placement_request(std::time::Instant::now())
         .and_then(|message| match message {
@@ -494,10 +499,7 @@ fn the_browser_dock_title_bar_promotes_and_closes() {
             _ => None,
         })
         .expect("a placement");
-    assert_eq!(
-        (spec.area.y, spec.area.height),
-        (band.y + 1, band.height - 1)
-    );
+    assert_eq!((spec.area.y, spec.area.height), (band.y, band.height));
     let target = |state: &ClientShellState, wanted| {
         state
             .hits
@@ -672,4 +674,212 @@ fn a_notes_reveal_leaves_a_docked_browser_alone() {
     state.toggle_browser_dock("tab_1".into(), &mut ClientShellInput::default());
     state.receive_notes_reveal(&ClientEndpointId::Local, reveal(2));
     assert!(state.info_dock_open_for_focused_tab());
+}
+
+/// Fork (compact bar): the tab bar's dock toggles, the view strip's terminal
+/// mark and the menus' Open mark are single-cell glyphs the JetBrains Mono
+/// face draws itself (the old `▤` / `▣` came from a wider fallback face).
+/// `≡` is East Asian Width "ambiguous": herdr counts it as one cell.
+#[test]
+fn the_dock_and_view_glyphs_are_one_cell_native_glyphs() {
+    let glyphs = [
+        (session_header::BROWSER_DOCK_GLYPH, '\u{25E8}'),
+        (session_header::NOTES_DOCK_GLYPH, '\u{2261}'),
+        (
+            super::super::browser_dock_render::TERMINAL_GLYPH,
+            '\u{25EB}',
+        ),
+        (super::super::browser_dock_render::DOCK_GLYPH, '\u{25E8}'),
+        (super::super::context_menu::GLYPH_OPEN, '\u{229F}'),
+    ];
+    for (glyph, expected) in glyphs {
+        assert_eq!(glyph.chars().collect::<Vec<_>>(), vec![expected], "{glyph}");
+        assert_eq!(super::super::render::display_width(glyph), 1, "{glyph}");
+    }
+}
+
+/// The host's report on this client's placement, as `browser.get` carries it.
+fn report_placement(state: &mut ClientShellState, report: &str) {
+    let id = state.browser_dock.placement_id.clone();
+    if let Some(info) = state.browser.info.as_mut() {
+        info.placements = vec![crate::api::schema::BrowserPlacementStatus {
+            id,
+            state: report.into(),
+            reason: None,
+        }];
+    }
+}
+
+/// Fork (compact bar): over a band the companion covers, herdr draws no
+/// title bar (the companion's bar has expand and close), and the placement
+/// keeps the same area either way, so the host's report never moves it.
+#[test]
+fn fork_smoke_a_covered_band_has_no_title_bar_and_the_same_placement() {
+    use super::super::browser_dock::BrowserDockTarget;
+    let mut state = browser_state();
+    state.toggle_browser_dock("tab_1".into(), &mut ClientShellInput::default());
+    let placement = |state: &mut ClientShellState| {
+        state.compose(COLS, ROWS);
+        state.browser_placement_spec().expect("a placement")
+    };
+    report_placement(&mut state, "unbound");
+    let uncovered = placement(&mut state);
+    report_placement(&mut state, "covering");
+    let frame = state.compose(COLS, ROWS).expect("frame").frame;
+    let band = state.layout(COLS, ROWS).browser_band;
+    let row: String = (band.x + 1..band.right())
+        .map(|x| {
+            frame.cells[usize::from(band.y) * usize::from(COLS) + usize::from(x)]
+                .symbol
+                .clone()
+        })
+        .collect();
+    assert!(
+        !row.contains("herdr+ preview") && !row.contains('✕'),
+        "{row:?}"
+    );
+    assert!(!state
+        .hits
+        .browser_dock
+        .targets
+        .iter()
+        .any(|(_, target)| matches!(
+            target,
+            BrowserDockTarget::Promote | BrowserDockTarget::Close
+        )));
+    let covered = placement(&mut state);
+    assert_eq!(covered.area, uncovered.area);
+    assert_eq!((covered.area.y, covered.area.height), (band.y, band.height));
+}
+
+/// Fork (compact bar): the companion's expand, restore and close, relayed
+/// by the server (`endpoint.placement-action.v1`), act like the band's
+/// own buttons, once per relay, and only on this client's placement.
+#[test]
+fn fork_smoke_a_placement_action_promotes_restores_and_closes_the_dock() {
+    use crate::api::schema::BrowserPlacementAction as Action;
+    use crate::server::headless::placement_action::PlacementActionPayload;
+    let mut state = browser_state();
+    state.toggle_browser_dock("tab_1".into(), &mut ClientShellInput::default());
+    let id = state.browser_dock.placement_id.clone();
+    let endpoint = crate::client::endpoint::ClientEndpointId::Local;
+    let send = |state: &mut ClientShellState, revision, id: &str, action| {
+        state.receive_browser_placement_action(
+            &endpoint,
+            PlacementActionPayload {
+                boot_id: "boot".into(),
+                revision,
+                id: id.into(),
+                tab_id: "tab_1".into(),
+                action,
+            },
+        )
+    };
+    let docks = |state: &ClientShellState| {
+        (
+            state.browser_view_open_for("tab_1"),
+            state.browser_dock_open_for("tab_1"),
+        )
+    };
+    // expand: Browser view, the dock slot freed
+    assert!(send(&mut state, 1, &id, Action::Promote).repaint);
+    assert_eq!(docks(&state), (true, false));
+    // the same relay twice acts once
+    send(&mut state, 1, &id, Action::Restore);
+    assert_eq!(docks(&state), (true, false));
+    // restore: the terminal comes back with the browser docked
+    send(&mut state, 2, &id, Action::Restore);
+    assert_eq!(docks(&state), (false, true));
+    // another client's placement: nothing
+    send(&mut state, 3, "pl-someone-else", Action::Close);
+    assert_eq!(docks(&state), (false, true));
+    // close: the dock goes
+    send(&mut state, 4, &id, Action::Close);
+    assert_eq!(docks(&state), (false, false));
+    // close in Browser view: back to the terminal
+    state.set_browser_view("tab_1".into(), true, &mut ClientShellInput::default());
+    send(&mut state, 5, &id, Action::Close);
+    assert_eq!(docks(&state), (false, false));
+    // the relay as received from any endpoint, boot and tab
+    let relay = |state: &mut ClientShellState,
+                 endpoint: &crate::client::endpoint::ClientEndpointId,
+                 boot: &str,
+                 revision,
+                 tab: &str,
+                 action| {
+        state.receive_browser_placement_action(
+            endpoint,
+            PlacementActionPayload {
+                boot_id: boot.into(),
+                revision,
+                id: id.clone(),
+                tab_id: tab.into(),
+                action,
+            },
+        )
+    };
+    // a tab that is no longer the focused one: nothing
+    relay(&mut state, &endpoint, "boot", 6, "tab_2", Action::Promote);
+    assert_eq!(docks(&state), (false, false));
+    assert!(!state.browser_view_open_for("tab_2"));
+    // another endpoint (an SSH server's relay): nothing
+    let remote = crate::client::endpoint::ClientEndpointId::Ssh(
+        crate::client::endpoint::ProfileId::parse("0123456789abcdef0123456789abcdef")
+            .expect("profile id"),
+    );
+    relay(&mut state, &remote, "boot", 7, "tab_1", Action::Promote);
+    assert_eq!(docks(&state), (false, false));
+    // a new server boot (a live handoff) counts from revision 1 again: it acts
+    state.set_browser_view("tab_1".into(), true, &mut ClientShellInput::default());
+    relay(&mut state, &endpoint, "boot-2", 1, "tab_1", Action::Restore);
+    assert_eq!(docks(&state), (false, true));
+}
+
+/// Fork (compact bar): a running companion that predates the compact bar
+/// (no expand or close in its bar) keeps the band's title bar over a band it
+/// covers, and its area starts below that row; 0.2.4 and newer do not.
+#[test]
+fn fork_smoke_an_older_companion_keeps_the_band_title_bar_over_a_covered_band() {
+    use super::super::browser_dock::BrowserDockTarget;
+    let mut state = browser_state();
+    state.toggle_browser_dock("tab_1".into(), &mut ClientShellInput::default());
+    report_placement(&mut state, "covering");
+    let set_version = |state: &mut ClientShellState, version: Option<&str>| {
+        if let Some(companion) = state
+            .browser
+            .info
+            .as_mut()
+            .and_then(|info| info.companion_app.as_mut())
+        {
+            companion.version = version.map(str::to_owned);
+        }
+    };
+    let drawn = |state: &mut ClientShellState| {
+        state.compose(COLS, ROWS);
+        let promote = state
+            .hits
+            .browser_dock
+            .targets
+            .iter()
+            .any(|(_, target)| *target == BrowserDockTarget::Promote);
+        let spec = state.browser_placement_spec().expect("a placement");
+        (promote, spec.area.y, spec.area.height)
+    };
+    let band = state.layout(COLS, ROWS).browser_band;
+    for (version, title) in [
+        (Some("0.2.3"), true),
+        (None, true),
+        (Some("0.2.4"), false),
+        (Some("0.3.0-dev"), false),
+    ] {
+        set_version(&mut state, version);
+        let (promote, y, height) = drawn(&mut state);
+        assert_eq!(promote, title, "{version:?}");
+        let top = u16::from(title);
+        assert_eq!(
+            (y, height),
+            (band.y + top, band.height - top),
+            "{version:?}"
+        );
+    }
 }

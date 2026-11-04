@@ -93,6 +93,8 @@ mod news_notify;
 /// Fork: the `endpoint.notes-reveal.v1` push.
 pub mod notes_reveal;
 mod notifications;
+/// Fork (compact bar): the `endpoint.placement-action.v1` relay.
+pub mod placement_action;
 /// Fork: the `endpoint.quiet.v1` push (quiet messages, do-not-disturb).
 pub mod quiet;
 /// Fork (restart screen): toasts for relaunches that never started.

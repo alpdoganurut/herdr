@@ -35,7 +35,7 @@ pub const HEARTBEAT_MS: u64 = 5_000;
 /// A lease not renewed within this goes.
 pub const LEASE_TTL_MS: u64 = 15_000;
 /// What the lease answer advertises beyond the register methods.
-pub const SERVER_FEATURES: [&str; 6] = [
+pub const SERVER_FEATURES: [&str; 7] = [
     "host_sync",
     "host_report",
     "send_page",
@@ -43,6 +43,9 @@ pub const SERVER_FEATURES: [&str; 6] = [
     "page_errors",
     // Fork (companion launcher): browser.placements / browser.placement_report.
     "placements",
+    // Fork (compact bar): browser.placement_action (the bar's expand,
+    // restore and close; without it the companion hides them).
+    "placement_actions",
 ];
 /// The DevTools probe of a registering host.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);

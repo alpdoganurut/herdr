@@ -53,7 +53,7 @@ pub(crate) const PLACEMENT_REQUEST_PREFIX: &str = "client-shell-placement:";
 /// A click target of the band, the strip or the placeholder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BrowserDockTarget {
-    /// The strip's `▣ Terminal`.
+    /// The strip's `◫ Terminal`.
     ViewTerminal,
     /// The strip's `◎ Browser`.
     ViewBrowser,
@@ -223,6 +223,9 @@ pub(crate) struct ClientBrowserDockState {
     pending_ticked_at: Option<Instant>,
     /// Bumped by a click on the unbound placeholder.
     pub(crate) nudge: u32,
+    /// Fork (compact bar): the last placement action taken (`boot_id`,
+    /// revision): a relay seen twice acts once.
+    action_seen: Option<(String, u64)>,
     guard_toasts: HashMap<String, Instant>,
     /// The live alignment smoke (`scripts/smoke_companion_dock.sh`):
     /// `HERDR_TEST_BROWSER_VIEW=side|full` docks (or opens Browser view on)
@@ -273,6 +276,7 @@ impl ClientBrowserDockState {
             pending: false,
             pending_ticked_at: None,
             nudge: 0,
+            action_seen: None,
             guard_toasts: HashMap::new(),
             test_view: match std::env::var("HERDR_TEST_BROWSER_VIEW").as_deref() {
                 Ok("side") => Some(BrowserPlacementKind::Side),
@@ -339,6 +343,20 @@ pub(super) fn full_area(layout: &ClientShellLayout) -> Rect {
     area
 }
 
+/// Fork (compact bar): the first companion whose bar has expand and close.
+const COMPACT_BAR_COMPANION: (u32, u32, u32) = (0, 2, 4);
+
+/// `major.minor.patch` (a suffix after the patch number is ignored).
+fn parse_version(text: &str) -> Option<(u32, u32, u32)> {
+    let mut parts = text.trim().trim_start_matches('v').split('.');
+    let mut next = || -> Option<u32> {
+        let part = parts.next()?;
+        let digits: String = part.chars().take_while(char::is_ascii_digit).collect();
+        digits.parse().ok()
+    };
+    Some((next()?, next()?, next()?))
+}
+
 /// What one frame of the strip, the band and the Browser view's area shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BrowserDockView {
@@ -347,7 +365,9 @@ pub(crate) struct BrowserDockView {
     pub(crate) placeholder: Option<Placeholder>,
     pub(crate) dragging: bool,
     /// Fork (session header): the band's title bar (the tabs layout): the
-    /// focused tab's page title, else its URL, else `Browser`.
+    /// focused tab's page title, else its URL, else `Browser`. Fork
+    /// (compact bar): only while the placeholder is not calm (the companion
+    /// does not cover the band).
     pub(crate) title: Option<String>,
 }
 
@@ -456,17 +476,39 @@ impl ClientShellState {
     pub(super) fn browser_dock_view(&self, layout: &ClientShellLayout) -> BrowserDockView {
         let browser_view =
             self.browser_view_open_for_focused_tab() && !full_area(layout).is_empty();
+        let placeholder = (browser_view || !layout.browser_band.is_empty())
+            .then(|| self.browser_placeholder(Instant::now()));
+        // Fork (compact bar): the band's title bar is the fallback for a
+        // band the companion does not cover (not installed, not running,
+        // not docked: the placeholder says so); over a covered band (a calm
+        // placeholder) the companion's own bar offers expand and close,
+        // unless the running companion predates that bar.
+        let uncovered = placeholder
+            .as_ref()
+            .is_some_and(|placeholder| !placeholder.calm)
+            || !self.browser_companion_has_window_actions();
         BrowserDockView {
             browser_view,
             strip: (!layout.view_strip.is_empty())
                 .then(|| self.browser_view_strip())
                 .flatten(),
-            placeholder: (browser_view || !layout.browser_band.is_empty())
-                .then(|| self.browser_placeholder(Instant::now())),
             dragging: matches!(self.chrome_drag, Some(ClientChromeDrag::BrowserDockWidth)),
-            title: (!layout.session_header.is_empty() && !layout.browser_band.is_empty())
+            title: (!layout.session_header.is_empty()
+                && !layout.browser_band.is_empty()
+                && uncovered)
                 .then(|| self.browser_dock_title()),
+            placeholder,
         }
+    }
+
+    /// Fork (compact bar): whether the running companion's bar has expand
+    /// and close (version [`COMPACT_BAR_COMPANION`] or newer). An older or
+    /// unknown version keeps the band's own title bar over a covered band.
+    pub(crate) fn browser_companion_has_window_actions(&self) -> bool {
+        self.browser_companion()
+            .and_then(|companion| companion.version.as_deref())
+            .and_then(parse_version)
+            .is_some_and(|version| version >= COMPACT_BAR_COMPANION)
     }
 
     /// Fork (session header): the browser dock's title: the focused tab's
@@ -1014,15 +1056,75 @@ impl ClientShellState {
             }
             BrowserDockTarget::Promote => {
                 if let Some(tab_id) = tab_id {
-                    self.set_browser_view(tab_id.clone(), true, outcome);
-                    if self.browser_view_open_for(&tab_id) && self.browser_dock_open_for(&tab_id) {
-                        self.toggle_browser_dock(tab_id, outcome);
-                    }
+                    self.promote_browser_dock(tab_id, outcome);
                 }
             }
             BrowserDockTarget::Close => self.toggle_browser_dock_for_focused_tab(outcome),
         }
         true
+    }
+
+    /// The dock becomes `tab_id`'s Browser view (the dock slot freed).
+    fn promote_browser_dock(&mut self, tab_id: String, outcome: &mut ClientShellInput) {
+        self.set_browser_view(tab_id.clone(), true, outcome);
+        if self.browser_view_open_for(&tab_id) && self.browser_dock_open_for(&tab_id) {
+            self.toggle_browser_dock(tab_id, outcome);
+        }
+    }
+
+    /// Fork (compact bar): the browser host's ask on this client's
+    /// placement (`endpoint.placement-action.v1`: the companion's expand,
+    /// restore and close), taken like the matching click: `promote` turns
+    /// the dock into Browser view; `restore` brings the terminal back with
+    /// the browser docked; `close` leaves Browser view, else closes the
+    /// dock. Ignored for another placement id, another endpoint, a tab that
+    /// is no longer the focused one, or a relay already taken.
+    pub(crate) fn receive_browser_placement_action(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+        payload: crate::server::headless::placement_action::PlacementActionPayload,
+    ) -> ClientShellInput {
+        use crate::api::schema::BrowserPlacementAction;
+        let mut outcome = ClientShellInput::default();
+        if *endpoint_id != self.active_endpoint_id
+            || payload.id != self.browser_dock.placement_id
+            || self.browser_dock_focused_tab() != Some(payload.tab_id.as_str())
+        {
+            return outcome;
+        }
+        let seen = self
+            .browser_dock
+            .action_seen
+            .as_ref()
+            .is_some_and(|(boot_id, revision)| {
+                *boot_id == payload.boot_id && *revision >= payload.revision
+            });
+        if seen {
+            return outcome;
+        }
+        self.browser_dock.action_seen = Some((payload.boot_id, payload.revision));
+        let tab_id = payload.tab_id;
+        let viewing = self.browser_view_open_for(&tab_id);
+        let docked = self.browser_dock_open_for(&tab_id);
+        match payload.action {
+            BrowserPlacementAction::Promote if !viewing => {
+                self.promote_browser_dock(tab_id, &mut outcome);
+            }
+            BrowserPlacementAction::Restore if viewing => {
+                self.set_browser_view(tab_id.clone(), false, &mut outcome);
+                if !self.browser_dock_open_for(&tab_id) {
+                    self.toggle_browser_dock(tab_id, &mut outcome);
+                }
+            }
+            BrowserPlacementAction::Close if viewing => {
+                self.set_browser_view(tab_id, false, &mut outcome);
+            }
+            BrowserPlacementAction::Close if docked => {
+                self.toggle_browser_dock(tab_id, &mut outcome);
+            }
+            _ => {}
+        }
+        outcome
     }
 
     // ------------------------------------------------------------ keys
@@ -1312,7 +1414,7 @@ impl ClientShellState {
     }
 
     /// This client's placement now (`None`: none to publish).
-    fn browser_placement_spec(&self) -> Option<BrowserPlacementSpec> {
+    pub(super) fn browser_placement_spec(&self) -> Option<BrowserPlacementSpec> {
         if !self.browser_dock_in_use() || !self.browser_dock_available() {
             return None;
         }
@@ -1326,8 +1428,17 @@ impl ClientShellState {
             (BrowserPlacementKind::Full, area, !area.is_empty())
         } else if !layout.browser_band.is_empty() {
             let band = layout.browser_band;
-            // Fork (session header): below the band's title bar.
-            let top = u16::from(!layout.session_header.is_empty()).min(band.height);
+            // Fork (compact bar): the whole band right of its divider, with
+            // or without the title bar: the title row shows only while the
+            // companion is not over the band (`browser_dock_view`), so the
+            // area never follows the host's report (that would move the
+            // host, which reports again: a loop). A running companion whose
+            // bar predates expand and close keeps the band's title bar, so
+            // its area starts below it (by its version, never its report).
+            let top = u16::from(
+                !layout.session_header.is_empty() && !self.browser_companion_has_window_actions(),
+            )
+            .min(band.height);
             let area = Rect::new(
                 band.x.saturating_add(1),
                 band.y + top,

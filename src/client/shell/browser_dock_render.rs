@@ -6,7 +6,7 @@
 //! placeholder that is seen only while the companion is not over it. The
 //! band's column 0 is its divider (`│`, a gold `┃` while dragged), as on
 //! the info dock. The strip is one chrome row in the tab bar's colours:
-//! `▣ Terminal  ◎ Browser · 3 … ◨`.
+//! `◫ Terminal  ◎ Browser · 3 … ◨`.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -22,7 +22,7 @@ use crate::app::state::Palette;
 const MARK: &str = super::browser::TAB_BROWSER_MARKER;
 const ATTENTION: &str = super::browser::TAB_BROWSER_ATTENTION_MARKER;
 /// The strip's terminal segment and the dock toggle.
-const TERMINAL_GLYPH: &str = "\u{25A3}"; // ▣
+pub(crate) const TERMINAL_GLYPH: &str = "\u{25EB}"; // ◫
 pub(crate) const DOCK_GLYPH: &str = "\u{25E8}"; // ◨
 const STOPPED_GLYPH: &str = "\u{25CC}"; // ◌
 
@@ -173,7 +173,7 @@ fn render_placeholder(
 
 /// The band: the divider in column 0, the page colour and the placeholder
 /// in the rest. Fork (session header): with a `title`, row 0 is the title
-/// bar, `◧ <title>` left and `⤢  ✕` flush right, the placeholder under it.
+/// bar, `◨ <title>` left and `⤢  ✕` flush right, the placeholder under it.
 pub(crate) fn render_band(
     buffer: &mut Buffer,
     band: Rect,
@@ -264,7 +264,7 @@ pub(crate) fn render_full(
     render_placeholder(buffer, area, placeholder, hits);
 }
 
-/// The view strip: `▣ Terminal`, `◎ Browser · N`, the stopped link and `◨`.
+/// The view strip: `◫ Terminal`, `◎ Browser · N`, the stopped link and `◨`.
 pub(crate) fn render_view_strip(
     buffer: &mut Buffer,
     area: Rect,
@@ -289,7 +289,7 @@ pub(crate) fn render_view_strip(
         .add_modifier(Modifier::BOLD);
     let right_edge = area.right().saturating_sub(4);
     let mut x = area.x + 1;
-    // ▣ Terminal
+    // ◫ Terminal
     let terminal = format!(" {TERMINAL_GLYPH} Terminal ");
     let terminal_width = width_of(&terminal);
     if x + terminal_width <= right_edge {

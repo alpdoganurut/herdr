@@ -13,14 +13,19 @@
 //! read and wait. `rev` grows with every change; `boot_id` is new with each
 //! server process, so a host that outlives a live handoff starts over. A
 //! client's placement and the host's report on it leave with the client.
+//!
+//! Fork (compact bar): the host's asks on a placement (promote, restore,
+//! close; `browser.placement_action`) wait here, numbered, for the headless
+//! server's render pass that relays each to the client owning it.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::api::schema::{
-    BrowserPlacementInfo, BrowserPlacementKind, BrowserPlacementSpec, BrowserPlacementStatus,
+    BrowserPlacementAction, BrowserPlacementInfo, BrowserPlacementKind, BrowserPlacementSpec,
+    BrowserPlacementStatus,
 };
 
 /// The longest a `browser.placements` wait may block.
@@ -42,6 +47,22 @@ pub const REPORT_STATES: [&str; 6] = [
     "unsupported",
     "elsewhere",
 ];
+
+/// Fork (compact bar): the asks kept for the relay (oldest dropped).
+pub const ACTION_CAP: usize = 16;
+
+/// Fork (compact bar): one host ask on a placement, for its client.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlacementActionRecord {
+    /// From 1, per server process.
+    pub revision: u64,
+    /// The server's id of the client that owns the placement.
+    pub client_id: u64,
+    /// The placement's id and herdr tab when it was asked.
+    pub id: String,
+    pub tab_id: String,
+    pub action: BrowserPlacementAction,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Entry {
@@ -69,6 +90,22 @@ struct Board {
     entries: BTreeMap<u64, Entry>,
     /// By placement id.
     reports: HashMap<String, BrowserPlacementStatus>,
+    /// Fork (compact bar): the host's asks, at most [`ACTION_CAP`].
+    actions: VecDeque<PlacementActionRecord>,
+    action_revision: u64,
+    /// Fork (compact bar): the clients whose handshake says they take the
+    /// asks (`EndpointClientHello.placement_actions`); an older client
+    /// ignores them, so they are refused for it.
+    takes_actions: HashSet<u64>,
+}
+
+/// Fork (compact bar): why an ask was not queued.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActionRefused {
+    /// No client holds the placement.
+    NotFound,
+    /// The owning client predates placement actions.
+    Unsupported,
 }
 
 /// See the module docs.
@@ -129,6 +166,9 @@ impl PlacementBoard {
                 rev: 0,
                 entries: BTreeMap::new(),
                 reports: HashMap::new(),
+                actions: VecDeque::new(),
+                action_revision: 0,
+                takes_actions: HashSet::new(),
             }),
             changed: Condvar::new(),
         }
@@ -214,7 +254,23 @@ impl PlacementBoard {
     /// The client went away: its placement and the report on it go too.
     pub fn remove(&self, client_id: u64) -> bool {
         let mut board = self.lock();
+        board.takes_actions.remove(&client_id);
         self.remove_locked(&mut board, client_id)
+    }
+
+    /// Fork (compact bar): client `client_id`'s handshake said whether it
+    /// takes the host's placement actions. Returns whether the board changed.
+    pub fn set_takes_actions(&self, client_id: u64, takes: bool) -> bool {
+        let mut board = self.lock();
+        let changed = if takes {
+            board.takes_actions.insert(client_id)
+        } else {
+            board.takes_actions.remove(&client_id)
+        };
+        if changed && board.entries.contains_key(&client_id) {
+            self.bump(&mut board);
+        }
+        changed
     }
 
     fn remove_locked(&self, board: &mut Board, client_id: u64) -> bool {
@@ -237,8 +293,8 @@ impl PlacementBoard {
             rev: board.rev,
             placements: board
                 .entries
-                .values()
-                .map(|entry| {
+                .iter()
+                .map(|(client_id, entry)| {
                     let mut placement = entry.spec.clone();
                     placement.shown &= entry.facts.surface_active;
                     BrowserPlacementInfo {
@@ -246,6 +302,7 @@ impl PlacementBoard {
                         focused: entry.facts.focused,
                         foreground: entry.facts.foreground,
                         updated_unix: entry.updated_unix,
+                        placement_actions: board.takes_actions.contains(client_id),
                     }
                 })
                 .collect(),
@@ -311,6 +368,57 @@ impl PlacementBoard {
         true
     }
 
+    /// Fork (compact bar): the host asks the client owning placement `id`
+    /// for `action`. Returns the ask's revision; refused for an id the board
+    /// does not hold (the client left, or never published it) and for a
+    /// client that predates placement actions (it would ignore the ask).
+    pub fn queue_action(
+        &self,
+        id: &str,
+        action: BrowserPlacementAction,
+    ) -> Result<u64, ActionRefused> {
+        let id = clip(id.trim(), MAX_ID);
+        let mut board = self.lock();
+        let (client_id, tab_id) = board
+            .entries
+            .iter()
+            .find(|(_, entry)| entry.spec.id == id)
+            .map(|(client_id, entry)| (*client_id, entry.spec.tab_id.clone()))
+            .ok_or(ActionRefused::NotFound)?;
+        if !board.takes_actions.contains(&client_id) {
+            return Err(ActionRefused::Unsupported);
+        }
+        board.action_revision = board.action_revision.saturating_add(1);
+        let revision = board.action_revision;
+        board.actions.push_back(PlacementActionRecord {
+            revision,
+            client_id,
+            id,
+            tab_id,
+            action,
+        });
+        while board.actions.len() > ACTION_CAP {
+            board.actions.pop_front();
+        }
+        Ok(revision)
+    }
+
+    /// Fork (compact bar): the newest ask's revision (0: none yet).
+    pub fn action_revision(&self) -> u64 {
+        self.lock().action_revision
+    }
+
+    /// Fork (compact bar): client `client_id`'s kept asks above revision
+    /// `after`, oldest first.
+    pub fn actions_for(&self, client_id: u64, after: u64) -> Vec<PlacementActionRecord> {
+        self.lock()
+            .actions
+            .iter()
+            .filter(|record| record.client_id == client_id && record.revision > after)
+            .cloned()
+            .collect()
+    }
+
     /// The host's reports on the placements the board holds, by id.
     pub fn statuses(&self) -> Vec<BrowserPlacementStatus> {
         let board = self.lock();
@@ -357,6 +465,65 @@ mod tests {
             shown: true,
             ..Default::default()
         }
+    }
+
+    /// Fork (compact bar): an ask is kept for the client that owns the
+    /// placement, numbered; an unknown id is refused; the oldest go past
+    /// the cap.
+    #[test]
+    fn a_placement_action_is_kept_for_the_owning_client() {
+        let board = PlacementBoard::new();
+        assert_eq!(
+            board.queue_action("nobody", BrowserPlacementAction::Close),
+            Err(ActionRefused::NotFound)
+        );
+        assert!(board.set(7, Some(spec("pl1", "t1")), facts(true, true), 100));
+        assert!(board.set(8, Some(spec("pl2", "t2")), facts(false, false), 100));
+        // a client whose handshake did not say it takes them: refused
+        assert_eq!(
+            board.queue_action("pl1", BrowserPlacementAction::Promote),
+            Err(ActionRefused::Unsupported)
+        );
+        assert!(!board.snapshot().placements[0].placement_actions);
+        board.set_takes_actions(7, true);
+        board.set_takes_actions(8, true);
+        assert!(board
+            .snapshot()
+            .placements
+            .iter()
+            .all(|p| p.placement_actions));
+        assert_eq!(
+            board.queue_action(" pl1 ", BrowserPlacementAction::Promote),
+            Ok(1)
+        );
+        assert_eq!(
+            board.queue_action("pl2", BrowserPlacementAction::Close),
+            Ok(2)
+        );
+        let mine = board.actions_for(7, 0);
+        assert_eq!(mine.len(), 1);
+        assert_eq!(
+            (
+                mine[0].revision,
+                mine[0].id.as_str(),
+                mine[0].tab_id.as_str()
+            ),
+            (1, "pl1", "t1")
+        );
+        assert_eq!(mine[0].action, BrowserPlacementAction::Promote);
+        assert!(board.actions_for(7, 1).is_empty());
+        assert_eq!(
+            board.actions_for(8, 0)[0].action,
+            BrowserPlacementAction::Close
+        );
+        for _ in 0..ACTION_CAP {
+            assert!(board
+                .queue_action("pl1", BrowserPlacementAction::Restore)
+                .is_ok());
+        }
+        assert_eq!(board.action_revision(), 2 + ACTION_CAP as u64);
+        assert!(board.actions_for(8, 0).is_empty(), "dropped past the cap");
+        assert_eq!(board.actions_for(7, 0).len(), ACTION_CAP);
     }
 
     #[test]

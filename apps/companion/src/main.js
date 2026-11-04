@@ -17,12 +17,13 @@ const { WindowProbe } = require('./dock/window-probe.js');
 const { DockController } = require('./dock/dock.js');
 const { sessionCounts, sessionMenuItems } = require('./info.js');
 const { pageMenuItems, pageMenuActions } = require('./context-menu.js');
+const bar = require('./ui/bar-model.js');
 
 const VERSION = require('../package.json').version;
 const APP_NAME = 'herdr+ companion'; // the macOS menu bar, Dock and window titles
 const UI_DIR = path.join(__dirname, 'ui');
 const ICON_DIR = path.join(__dirname, '..', 'assets', 'icon'); // eye-plus app icon (eye-plus.icns for packaging)
-const CHROME_HEIGHT = 56; // strip.css: tabs row 26 + nav row 30; extra rows add to it (reported by the strip)
+const CHROME_HEIGHT = 30; // strip.css: one 30 px row (two rows of 28 when narrow); extra rows add to it (reported by the strip)
 // The window background behind the bar before it paints: the bar's --chrome colour (light / Dusk dark).
 const chromeBackground = () => (nativeTheme.shouldUseDarkColors ? '#1b1c23' : '#efeee9');
 // The docked bar is always Dusk (it sits in herdr's dark window); pages keep the system look.
@@ -38,6 +39,28 @@ const REPORT_RATE = 20; // events/s
 const SELECTION_MAX = 8000;
 const NOTE_MAX = 2000;
 const PROMPT_TIMEOUT_MS = 60000; // an unanswered permission prompt is denied
+
+// The bar's pins per surface (docked, full, floating), in the profile; defaults in bar-model.js.
+const barPinsFile = () => path.join(app.getPath('userData'), 'bar.json');
+function loadBarPins() {
+  try {
+    const doc = JSON.parse(fs.readFileSync(barPinsFile(), 'utf8'));
+    const out = {};
+    for (const mode of Object.keys(bar.PIN_DEFAULTS)) if (doc && doc.pinned && typeof doc.pinned[mode] === 'boolean') out[mode] = doc.pinned[mode];
+    return out;
+  } catch (e) {
+    // no file yet: the defaults; anything else is worth a line in the log
+    if (e.code !== 'ENOENT') log('bar pins unreadable', e.message);
+    return {};
+  }
+}
+function saveBarPins(pins) {
+  try {
+    fs.writeFileSync(barPinsFile(), JSON.stringify({ version: 1, pinned: pins }) + '\n');
+  } catch (e) {
+    log('bar pins not saved', e.message);
+  }
+}
 
 // ---------- arguments and process switches (before ready) ----------
 
@@ -115,7 +138,6 @@ class Companion {
     this.nonce = crypto.randomBytes(16).toString('hex');
     this.win = null;
     this.control = null;
-    this.chromeHeight = CHROME_HEIGHT;
     this.shownTab = null;
     this.flash = null; // transient strip message
     this.restarting = false; // the update chip's restart request is under way
@@ -139,6 +161,7 @@ class Companion {
       onLeave: (id, origin) => this.onLeave(id, origin),
       onContextMenu: (id, params) => this.openPageMenu(id, params),
       onDialogsEnd: (id, frame) => this.dialogs.dismissView(id, { frame }),
+      onRaise: (host) => this.raiseDockBar(host),
     });
     // pages' alert / confirm / prompt (src/dialogs.js), shown in the dialog card over the page
     this.dialogs = new DialogBook({ onChange: () => this.onDialogsChanged() });
@@ -152,7 +175,15 @@ class Companion {
     // Docked mode (launcher design §3.4): a frameless window over herdr's band.
     this.dockWin = null;
     this.docked = false;
-    this.dockChromeHeight = CHROME_HEIGHT;
+    this.dockPlacement = null; // {id, kind} of the placement the dock covers (its bar's window actions)
+    this.dockBar = null; // the dock's bar: a view above its pages (it floats over them while unpinned)
+    // The bar's auto-hide: the pin per surface (saved), what each bar reports (its height and
+    // whether it shows), a counter that makes it show for a moment, the pill menu being open.
+    this.barPins = loadBarPins();
+    this.barReport = { win: { height: CHROME_HEIGHT, shown: true }, dock: { height: CHROME_HEIGHT, shown: true } };
+    this.barPulse = 0;
+    this.barMenuOpen = false;
+    this.lastActive = null; // {view_id, url, loading} of the shown page (its changes make the bar show)
     this.mainWasVisible = false;
     this.startupShow = null;
   }
@@ -171,7 +202,7 @@ class Companion {
       if (this.dialogView && e.sender === this.dialogView.webContents) this.onDialogUi(kind, a || {});
     });
     ipcMain.handle('herdr-companion:strip', (e, name, a) => {
-      const dock = !!(this.dockWindow() && e.sender === this.dockWin.webContents);
+      const dock = !!(this.dockBarView() && e.sender === this.dockBar.webContents);
       if (!dock && (!this.win || e.sender !== this.win.webContents)) return null;
       return this.stripAction(name, a, { dock });
     });
@@ -315,6 +346,7 @@ class Companion {
           { label: 'Forward', accelerator: 'CmdOrCtrl+]', click: run(']') },
           { type: 'separator' },
           { label: 'Go to herdr Tab', click: run('go') },
+          { label: 'Pin the Bar', accelerator: 'CmdOrCtrl+Shift+.', click: run('pin') },
         ],
       },
     ];
@@ -495,11 +527,37 @@ class Companion {
     this.pushStrip();
   }
 
+  // Where the page starts in `host` and how tall the bar's own area is (the dock's bar view).
+  // Pinned (or no page to cover): the bar is part of the layout and the page starts below it.
+  // Unpinned and docked: the page takes the whole band and the bar floats over it, only its
+  // 6 px hit zone while hidden. Unpinned in the floating window (its bar is the window's own
+  // page, under the views): the page starts below the hit zone, below the bar while it shows.
+  barGeometry(host) {
+    const dock = host === this.dockWin;
+    const [, h] = host.getContentSize();
+    const r = dock ? this.barReport.dock : this.barReport.win;
+    const height = Math.max(0, Math.min(200, Number(r.height) || 0));
+    const placement = dock ? this.dockPlacement : null;
+    const mode = bar.surface(dock, placement ? placement.kind : 'side');
+    const pinned = bar.pinnedFor(this.barPins, mode);
+    const page = !!this.activeEntry();
+    if (pinned || !page) return { mode, pinned, top: height, view: page ? height : h, overlay: false };
+    if (dock) return { mode, pinned, top: 0, view: r.shown ? height : bar.ZONE_PX, overlay: true };
+    return { mode, pinned, top: r.shown ? height : bar.ZONE_PX, view: r.shown ? height : bar.ZONE_PX, overlay: false };
+  }
+
   layout() {
     const host = this.docked && this.dockWindow() ? this.dockWin : this.win;
     if (!host) return;
     const [w, h] = host.getContentSize();
-    const top = host === this.dockWin ? this.dockChromeHeight : this.chromeHeight;
+    const g = this.barGeometry(host);
+    const top = g.top;
+    this.lastBar = { host: host === this.dockWin ? 'dock' : 'win', ...g };
+    if (host === this.dockWin && this.dockBarView()) this.dockBar.setBounds({ x: 0, y: 0, width: w, height: Math.max(1, Math.min(h, g.view)) });
+    // the floating window's traffic lights come and go with its bar
+    if (host === this.win && process.platform === 'darwin' && typeof this.win.setWindowButtonVisibility === 'function') {
+      this.win.setWindowButtonVisibility(g.pinned || !!this.barReport.win.shown || !this.activeEntry());
+    }
     const e = this.activeEntry();
     this.views.layout(e ? e.view_id : null, { x: 0, y: top, width: w, height: Math.max(0, h - top) });
     this.layoutDialog();
@@ -545,25 +603,60 @@ class Companion {
       paintWhenInitiallyHidden: true,
       webPreferences: {
         session: ui,
-        preload: path.join(__dirname, 'preload', 'strip.js'),
         sandbox: true,
         contextIsolation: true,
         nodeIntegration: false,
       },
     });
     this.dockWin = win;
+    // The bar is a view above the pages (unpinned it floats over the page; its bounds shrink to
+    // the 6 px hit zone while hidden, so clicks below reach the page).
+    const barView = new WebContentsView({
+      webPreferences: {
+        session: ui,
+        preload: path.join(__dirname, 'preload', 'strip.js'),
+        sandbox: true,
+        contextIsolation: true,
+        nodeIntegration: false,
+      },
+    });
+    barView.setBackgroundColor('#00000000');
+    win.contentView.addChildView(barView);
+    barView.setBounds({ x: 0, y: 0, width: 600, height: CHROME_HEIGHT });
+    this.dockBar = barView;
+    barView.webContents.on('before-input-event', (e, input) => {
+      if (this.dockKey(input)) e.preventDefault();
+    });
     win.on('resize', () => this.layout());
-    win.on('focus', () => this.onWindowFocus());
+    win.on('focus', () => {
+      this.onWindowFocus();
+      // a hover over a dock that is not the key window may not reach its bar: the bar also
+      // shows for a moment when the user brings the dock up (not the companion's own raise
+      // for an agent's focus)
+      if (Date.now() >= this.selfRaiseUntil) this.pulseBar();
+    });
     // The keyboard went elsewhere (a click into the terminal): the dock's level and order again.
     win.on('blur', () => this.dock && this.dock.onBlur());
     win.on('closed', () => {
       if (this.dockWin === win) this.dockWin = null;
+      if (this.dockBar === barView) this.dockBar = null;
     });
     win.webContents.on('before-input-event', (e, input) => {
       if (this.dockKey(input)) e.preventDefault();
     });
-    win.loadURL(`${SCHEME}://ui/strip.html?mode=docked`).catch((e) => log('dock strip failed to load', e.message));
+    // the window's own page is only the background (the bar and the pages are views over it)
+    win.loadURL('about:blank').catch(() => {});
+    barView.webContents.loadURL(`${SCHEME}://ui/strip.html?mode=docked`).catch((e) => log('dock strip failed to load', e.message));
     return win;
+  }
+
+  dockBarView() {
+    return this.dockBar && !this.dockBar.webContents.isDestroyed() && this.dockWindow() ? this.dockBar : null;
+  }
+
+  // Adding a view again moves it to the top: the dock's bar above a page added after it.
+  raiseDockBar(host) {
+    if (host && host === this.dockWindow() && this.dockBarView()) host.contentView.addChildView(this.dockBar);
   }
 
   // dock.js: herdr keeps an area for the browser: the pages move into the dock window and
@@ -581,6 +674,7 @@ class Companion {
   leaveDocked() {
     this.docked = false;
     this.dockTab = null;
+    this.dockPlacement = null;
     if (this.win) this.views.setHost(this.win);
     this.layout();
     this.pushStrip();
@@ -590,8 +684,13 @@ class Companion {
     if (focus && focus !== this.shownTab) this.showGroup(focus, { reason: 'follow' });
   }
 
-  // dock.js: the target placement's herdr tab shows in the dock.
-  dockShowsTab(tabId) {
+  // dock.js: the target placement's herdr tab shows in the dock; its id and kind (side or
+  // full) pick the bar's window actions.
+  dockShowsTab(tabId, placement = null) {
+    const next = placement && placement.id ? { id: placement.id, kind: placement.kind === 'full' ? 'full' : 'side', actions: !!placement.actions } : null;
+    const was = this.dockPlacement;
+    this.dockPlacement = next;
+    if (!was !== !next || (was && next && (was.id !== next.id || was.kind !== next.kind || was.actions !== next.actions))) this.pushStrip();
     this.dockTab = tabId;
     if (tabId && tabId !== this.shownTab && this.store.tabs.has(tabId)) this.showGroup(tabId, { reason: 'follow', focusMoved: true });
   }
@@ -624,6 +723,10 @@ class Companion {
     }
     if (input.shift && key === 's') {
       this.handleKey('send');
+      return true;
+    }
+    if (input.shift && (input.code === 'Period' || key === '>' || key === '.')) {
+      this.handleKey('pin');
       return true;
     }
     return false;
@@ -688,13 +791,31 @@ class Companion {
   onNav(id, patch) {
     const hit = this.store.updateEntry(id, patch);
     if (!hit) return;
-    if (hit.group.tab_id === this.shownTab) this.pushStrip();
+    if (hit.group.tab_id === this.shownTab) {
+      this.notePageChange();
+      this.pushStrip();
+    }
     this.scheduleSync();
   }
 
   onViewState(id) {
     const hit = this.store.findView(id);
-    if (hit && hit.group.tab_id === this.shownTab) this.pushStrip();
+    if (hit && hit.group.tab_id === this.shownTab) {
+      this.notePageChange();
+      this.pushStrip();
+    }
+  }
+
+  // The shown page moved to another URL, finished loading, or another page shows: the hidden
+  // bar shows for a moment (the URL matters for trust when it changes). Counted only; the
+  // caller pushes the strip.
+  notePageChange() {
+    const e = this.activeEntry();
+    const now = e ? { view_id: e.view_id, url: e.url, loading: this.views.has(e.view_id) ? this.views.navState(e.view_id).loading : false } : null;
+    const was = this.lastActive;
+    this.lastActive = now;
+    if (!was || !now) return;
+    if (was.view_id !== now.view_id || was.url !== now.url || (was.loading && !now.loading)) this.barPulse++;
   }
 
   onPageError(id, kind, text) {
@@ -862,7 +983,9 @@ class Companion {
       return;
     }
     const [w, h] = host.getContentSize();
-    const top = host === this.dockWin ? this.dockChromeHeight : this.chromeHeight;
+    // below the bar, also while it floats over the page
+    const g = this.barGeometry(host);
+    const top = g.overlay ? Math.max(g.top, (host === this.dockWin ? this.barReport.dock : this.barReport.win).height) : g.top;
     const width = Math.max(200, Math.min(480, w - 24));
     const space = Math.max(60, h - top); // the card's message scrolls to fit it (ui/dialog.js)
     const height = Math.max(60, Math.min(this.dialogHeight, space));
@@ -997,6 +1120,22 @@ class Companion {
           if (a && a.close && m.open) m.menu.closePopup();
           return { view_id: m.view_id, items: m.items, open: m.open };
         }
+        case 'bar_debug':
+          // the last bar layout: which window, its surface and pin, where the page starts and
+          // how tall the bar's own area is, what the bars reported, the saved pins
+          if (!MANAGED.testHooks) return errOut('unknown_op', 'unknown control op bar_debug');
+          return { layout: this.lastBar || null, report: this.barReport, pins: this.barPins, dockBar: this.dockBarView() ? this.dockBar.getBounds() : null };
+        case 'sessions_menu':
+          // the pill menu's items as last built (headless: built, never shown)
+          if (!MANAGED.testHooks) return errOut('unknown_op', 'unknown control op sessions_menu');
+          return this.sessionsMenu || null;
+        case 'strip_preview':
+          // the floating window's bar rendered as another surface would show it ({dock, kind,
+          // features}; null: its own again), through the same state code
+          if (!MANAGED.testHooks) return errOut('unknown_op', 'unknown control op strip_preview');
+          this.stripPreview = a && typeof a === 'object' ? a : null;
+          this.pushStrip();
+          return { ok: true };
         case '__hang':
           if (!MANAGED.testHooks) return errOut('unknown_op', 'unknown control op __hang');
           log('test hook: no more heartbeats');
@@ -1146,11 +1285,13 @@ class Companion {
     const wc = e && this.views.has(e.view_id) ? this.views.get(e.view_id).view.webContents : null;
     switch (k) {
       case 't':
+        this.pulseBar();
         return this.newTab();
       case 'w':
         if (e) {
           this.report('user_action', 'close_tab', e, g);
           this.closeView(e.view_id);
+          this.pulseBar();
         }
         return;
       case 'l':
@@ -1177,11 +1318,18 @@ class Companion {
         }
         return;
       case 'send': {
-        const strip = this.stripWindow();
-        return strip && strip.webContents.executeJavaScript("document.getElementById('send').click()", true);
+        const strip = this.stripContents();
+        return strip && strip.executeJavaScript("document.getElementById('send').click()", true);
       }
       case 'go':
         return this.goToTab();
+      case 'pin': {
+        // ⌘⇧. : the shown bar's pin
+        const dock = !!(this.docked && this.dockBarView());
+        const p = dock ? this.dockPlacement : null;
+        const mode = bar.surface(dock, p ? p.kind : 'side');
+        return this.setBarPin(mode, !bar.pinnedFor(this.barPins, mode));
+      }
       default:
     }
   }
@@ -1191,11 +1339,33 @@ class Companion {
     return this.docked && this.dockWindow() ? this.dockWin : this.win;
   }
 
+  // The page of the bar the user sees: the dock's bar view while docked, else the window's own.
+  stripContents() {
+    if (this.docked && this.dockBarView()) return this.dockBar.webContents;
+    return this.win && !this.win.isDestroyed() ? this.win.webContents : null;
+  }
+
+  // ⌘L: the bar shows (the URL field holds it open) and the field takes the keyboard.
   focusUrl() {
-    const strip = this.stripWindow();
+    const strip = this.stripContents();
     if (!strip || HEADLESS) return;
-    strip.webContents.focus();
-    strip.webContents.send('strip:focus-url');
+    strip.focus();
+    strip.send('strip:focus-url');
+  }
+
+  // The bar shows for a moment (a navigation, a new or closed tab, the dock taking the keyboard).
+  pulseBar() {
+    this.barPulse++;
+    this.pushStrip();
+  }
+
+  // The pin of surface `mode`, saved with the profile.
+  setBarPin(mode, pinned) {
+    if (!Object.prototype.hasOwnProperty.call(bar.PIN_DEFAULTS, mode)) return;
+    this.barPins = { ...this.barPins, [mode]: !!pinned };
+    saveBarPins(this.barPins);
+    this.layout();
+    this.pushStrip();
   }
 
   async newTab(url = 'about:blank') {
@@ -1225,15 +1395,22 @@ class Companion {
     switch (name) {
       case 'ready':
         return this.pushStrip();
-      case 'chrome-height': {
-        const h = Math.max(40, Math.min(200, Number(a) || CHROME_HEIGHT));
-        const field = dock ? 'dockChromeHeight' : 'chromeHeight';
-        if (h !== this[field]) {
-          this[field] = h;
+      case 'bar': {
+        // the bar's height (30 px a row; 0 is fine: a hidden bar keeps its laid-out height) and
+        // whether it shows; the clamp only guards against nonsense
+        const r = a && typeof a === 'object' ? a : {};
+        const next = { height: Math.max(0, Math.min(200, Math.round(Number(r.height)) || 0)), shown: r.shown !== false };
+        const key = dock ? 'dock' : 'win';
+        const was = this.barReport[key];
+        if (next.height !== was.height || next.shown !== was.shown) {
+          this.barReport[key] = next;
           this.layout();
         }
         return;
       }
+      case 'pin':
+        // {mode, pinned}: the surface the bar shows (docked, full, floating)
+        return a && this.setBarPin(String(a.mode || ''), a.pinned === true);
       case 'sessions_menu':
         return this.openSessionsMenu(dock);
       case 'select': {
@@ -1285,6 +1462,8 @@ class Companion {
         return this.newTab();
       case 'go_to_tab':
         return this.goToTab();
+      case 'placement':
+        return this.placementAction(String(a || ''));
       case 'send_page':
         return this.sendPage((a && a.note) || '');
       case 'restart_update':
@@ -1292,6 +1471,20 @@ class Companion {
       case 'permission':
         return a && this.answerPrompt(String(a.id), a.allow === true);
       default:
+    }
+  }
+
+  // The bar's expand / restore / close (docked): herdr's client that owns the placement
+  // changes its dock or Browser view (browser.placement_action; the bar shows the buttons only
+  // when herdr advertises placement_actions).
+  async placementAction(action) {
+    const p = this.dockPlacement;
+    const lease = this.link && this.link.lease;
+    if (!p || !lease || !['promote', 'restore', 'close'].includes(action)) return;
+    try {
+      await this.link.request('browser.placement_action', { lease_id: lease.lease_id, id: p.id, action });
+    } catch (e) {
+      this.say('warn', `herdr did not take it: ${e.message}`);
     }
   }
 
@@ -1359,8 +1552,36 @@ class Companion {
         return p ? { id: p.id, label: p.label, origin: p.origin, permission: p.permission } : null;
       })(),
       attached: status.state === 'registered',
+      bar: this.barState(dock),
       status: line,
       update: this.update ? { version: this.update, restarting: this.restarting } : null,
+    };
+  }
+
+  // Tests (strip_preview): the floating bar's state as `dock` / `kind` / `features` would make it.
+  previewState({ dock = false, kind = 'side', features = [], clientTakes = true } = {}) {
+    const saved = { features: this.features, placement: this.dockPlacement };
+    this.features = new Set(features);
+    this.dockPlacement = dock ? { id: 'pl-preview', kind: kind === 'full' ? 'full' : 'side', actions: clientTakes } : null;
+    try {
+      return { ...this.stripState(), bar: this.barState(dock) };
+    } finally {
+      this.features = saved.features;
+      this.dockPlacement = saved.placement;
+    }
+  }
+
+  // The bar's surface and its window actions (dock: the placement it covers).
+  barState(dock) {
+    const placement = dock ? this.dockPlacement : null;
+    const kind = placement ? placement.kind : 'side';
+    const mode = bar.surface(dock, kind);
+    return {
+      mode,
+      pinned: bar.pinnedFor(this.barPins, mode),
+      pulse: this.barPulse,
+      menu: this.barMenuOpen,
+      actions: bar.windowActions({ docked: dock, kind, features: this.features || null, placementId: placement && placement.id, clientTakes: !!(placement && placement.actions) }),
     };
   }
 
@@ -1411,14 +1632,27 @@ class Companion {
     return template.length;
   }
 
-  // The pill's menu: one item per herdr tab with pages; choosing one focuses it in herdr
-  // (the companion follows, docked or not).
+  // The herdr space of `tabId` as a menu sublabel (none when unknown).
+  workspaceSublabel(tabId) {
+    const ws = (this.store.tabs.get(tabId) || {}).workspace_id;
+    return ws ? { sublabel: ws } : {};
+  }
+
+  // The pill's menu: the shown herdr tab and Go to herdr tab, then one item per herdr tab
+  // with pages; choosing one focuses it in herdr (the companion follows, docked or not).
   openSessionsMenu(dock) {
     const items = sessionMenuItems(this.store, this.shownTab);
+    const here = this.shownTab
+      ? [
+          { label: `This tab · ${this.store.label(this.shownTab)}`, enabled: false },
+          { label: 'Go to herdr tab', ...this.workspaceSublabel(this.shownTab), click: () => this.goToTab() },
+          { type: 'separator' },
+        ]
+      : [];
     const template = items.length
       ? [
-          { label: 'Sessions with pages', enabled: false },
-          { type: 'separator' },
+          ...here,
+          { label: 'herdr tabs with pages', enabled: false },
           ...items.map((it) => ({
             label: it.label,
             sublabel: it.pages,
@@ -1430,16 +1664,27 @@ class Companion {
             },
           })),
         ]
-      : [{ label: 'No session has pages yet', enabled: false }];
+      : [...here, { label: 'No herdr tab has pages yet', enabled: false }];
+    // the test hook's view of the last one (sessions_menu)
+    this.sessionsMenu = template.map((it) => (it.type === 'separator' ? '-' : it.label));
     const win = dock ? this.dockWindow() : this.win;
     if (!win || HEADLESS) return template.length;
-    Menu.buildFromTemplate(template).popup({ window: win });
+    // the bar stays shown while its menu is open
+    this.barMenuOpen = true;
+    this.pushStrip();
+    Menu.buildFromTemplate(template).popup({
+      window: win,
+      callback: () => {
+        this.barMenuOpen = false;
+        this.pushStrip();
+      },
+    });
     return template.length;
   }
 
   pushStrip() {
-    if (this.win && !this.win.isDestroyed()) this.win.webContents.send('strip:state', this.stripState());
-    const dock = this.dockWindow();
+    if (this.win && !this.win.isDestroyed()) this.win.webContents.send('strip:state', this.stripPreview ? this.previewState(this.stripPreview) : this.stripState());
+    const dock = this.dockBarView();
     if (dock) dock.webContents.send('strip:state', this.stripState({ dock: true }));
   }
 

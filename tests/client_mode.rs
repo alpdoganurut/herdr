@@ -1689,9 +1689,9 @@ fn read_until_client_attaches(client: &SpawnedHerdr) -> String {
             }
             Err(err) => panic!("read thin client PTY: {err}"),
         }
-        // Fork (session header): the tabs layout's header draws `▤`.
+        // Fork (session header): the tabs layout's header draws `≡`.
         if output.contains('\u{2500}')
-            || output.contains('\u{25A4}')
+            || output.contains('\u{2261}')
             || output.contains("workspace")
             || output.contains("pane")
             || output.contains("terminal")

@@ -285,7 +285,7 @@ pub(super) fn history_button_rects(content: Rect) -> Option<(Rect, Rect)> {
 fn field_width(content: Rect, field_x: u16) -> Option<u16> {
     // `+` sits at `right - 2` (render_toolbar); the chip ends one blank
     // cell before it. Fork (session header): the notes button moved to the
-    // header's `▤`.
+    // header's `≡`.
     let chip_x = content.right().checked_sub(3 + CHIP_CELLS)?;
     let width = chip_x.checked_sub(1)?.checked_sub(field_x)?;
     (width >= MIN_FIELD_CELLS && content.height > 0).then_some(width)

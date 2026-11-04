@@ -541,7 +541,7 @@ class DockController {
       if (this.settleTimer.unref) this.settleTimer.unref();
     }
     if (!this.docked) return;
-    if (d.tabId) this.host.dockShowsTab(d.tabId);
+    if (d.tabId) this.host.dockShowsTab(d.tabId, d.target && { ...d.target.placement, actions: !!d.target.placement_actions });
     if (d.pair && this.orderFront) {
       this.orderFront(d.pair, (status, why) => {
         if (status !== 'ok') this.log(`dock: the terminal's window did not come along (${status}${why ? `: ${why}` : ''})`);

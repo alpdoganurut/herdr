@@ -63,7 +63,7 @@ function startCompanion() {
   const out = fs.openSync(logFile, 'a');
   // fake media devices: getUserMedia reaches the permission prompt in a headless run
   child = spawn(electronBin, [appDir, '--socket', sock, '--profile-dir', profile, '--headless', '--use-fake-device-for-media-stream'], {
-    env: { ...process.env, HERDR_COMPANION_HEADLESS: '1', HERDR_SOCKET_PATH: '' },
+    env: { ...process.env, HERDR_COMPANION_HEADLESS: '1', HERDR_COMPANION_TEST_HOOKS: '1', HERDR_SOCKET_PATH: '' },
     stdio: ['ignore', out, out],
   });
   child.exited = new Promise((r) => child.on('exit', (code) => r(code)));
@@ -449,6 +449,166 @@ try {
   await strip.evaluate(() => window.stripBridge.action('send_page', { note: 'look' }));
   const sent = await waitFor(() => mock.state.sent[0], 3000);
   check('send to agent calls browser.send_page with tab, url and note', sent && sent.tab_id === 'w1:t2' && sent.note === 'look' && sent.url.includes(String(webPort)), sent);
+  // the compact bar: one row when wide, two when narrow; the URL compact until focused
+  const barLayout = () =>
+    strip.evaluate(() => {
+      const top = (id) => Math.round(document.getElementById(id).getBoundingClientRect().top);
+      return {
+        narrow: document.getElementById('bar').classList.contains('narrow'),
+        height: Math.round(document.getElementById('bar').getBoundingClientRect().height),
+        tabs: top('tabs'),
+        newtab: top('newtab'),
+        url: top('urlform'),
+        back: top('back'),
+        width: document.documentElement.clientWidth,
+      };
+    });
+  const wide = await barLayout();
+  check('wide, the bar is one row (tabs, navigation and the URL side by side)', !wide.narrow && wide.height <= 32 && Math.abs(wide.url - wide.tabs) <= 6 && Math.abs(wide.back - wide.tabs) <= 6, wide);
+  const viewport = await strip.evaluate(() => ({ width: innerWidth, height: innerHeight }));
+  await strip.setViewportSize({ width: 420, height: viewport.height });
+  const narrow = await waitFor(async () => {
+    const l = await barLayout();
+    return l.narrow ? l : null;
+  }, 3000);
+  check('narrow (420 px), it wraps into two rows: tabs and new tab, then navigation and the URL', narrow && narrow.height >= 48 && narrow.height <= 64 && Math.abs(narrow.newtab - narrow.tabs) <= 6 && narrow.url > narrow.tabs + 16 && Math.abs(narrow.back - narrow.url) <= 6, narrow);
+  await strip.setViewportSize(viewport);
+  const back = await waitFor(async () => {
+    const l = await barLayout();
+    return !l.narrow ? l : null;
+  }, 3000);
+  check('wide again, one row again', back && back.height <= 32, back);
+  await strip.evaluate((u) => window.stripBridge.action('navigate', u), `127.0.0.1:${webPort}/docs/a%20page?q=1#part`);
+  const compact = await waitFor(async () => {
+    const v = await strip.evaluate(() => document.getElementById('url').value);
+    return v.includes('a page') ? v : null;
+  }, 5000);
+  check('the URL shows host › last segment #fragment', compact === `127.0.0.1:${webPort} \u203a a page #part`, compact);
+  const editing = await strip.evaluate(() => {
+    const url = document.getElementById('url');
+    url.focus();
+    const out = { value: url.value, editing: document.getElementById('bar').classList.contains('editing') };
+    url.blur();
+    out.after = url.value;
+    return out;
+  });
+  check('focused, the field shows the whole URL; blurred, the compact one again', editing.value === `http://127.0.0.1:${webPort}/docs/a%20page?q=1#part` && editing.editing && editing.after === compact, editing);
+  // the count pill's menu: the shown herdr tab and Go to herdr tab, then the tabs with pages
+  await strip.evaluate(() => window.stripBridge.action('sessions_menu'));
+  const menu = await ctl('__herdrCompanion.sessions_menu()');
+  check('the pill menu leads with this tab and Go to herdr tab', menu && /^This tab · /.test(menu[0]) && menu[1] === 'Go to herdr tab' && menu.includes('herdr tabs with pages'), menu);
+  const chev = await strip.evaluate(() => !!document.querySelector('#count .chev'));
+  check('the pill has a chevron and no session label next to it', chev && !(await strip.evaluate(() => document.getElementById('session'))), chev);
+  // expand / restore / close: docked, and only from a herdr that advertises placement_actions
+  const winButtons = () =>
+    strip.evaluate(() => ({
+      expand: !document.getElementById('expand').hidden,
+      action: document.getElementById('expand').dataset.action || null,
+      close: !document.getElementById('dockclose').hidden,
+    }));
+  check('the floating window shows neither expand nor close', !(await winButtons()).expand && !(await winButtons()).close, await winButtons());
+  await ctl(`__herdrCompanion.strip_preview({dock: true, kind: 'side', features: ['placements']})`);
+  await sleep(300);
+  const older = await winButtons();
+  check('docked under a herdr without placement_actions: no expand, no close', older && !older.expand && !older.close, older);
+  await ctl(`__herdrCompanion.strip_preview({dock: true, kind: 'side', features: ['placements', 'placement_actions']})`);
+  const side = await waitFor(async () => {
+    const b = await winButtons();
+    return b.expand ? b : null;
+  }, 2000);
+  check('docked under a herdr with placement_actions: expand (promote) and close', side && side.action === 'promote' && side.close, side);
+  await ctl(`__herdrCompanion.strip_preview({dock: true, kind: 'full', features: ['placements', 'placement_actions']})`);
+  const full = await waitFor(async () => {
+    const b = await winButtons();
+    return b.action === 'restore' ? b : null;
+  }, 2000);
+  check('in herdr\'s Browser view: restore and close', full && full.expand && full.close, full);
+  await ctl(`__herdrCompanion.strip_preview({dock: true, kind: 'side', features: ['placements', 'placement_actions'], clientTakes: false})`);
+  await sleep(300);
+  const olderClient = await winButtons();
+  check('docked over an older herdr client (it ignores the actions): no expand, no close', !olderClient.expand && !olderClient.close, olderClient);
+  await ctl('__herdrCompanion.strip_preview(null)');
+  check('back to the floating bar: neither', await waitFor(async () => !(await winButtons()).expand || null, 2000));
+  // auto-hide and the pin, per surface (the floating window: pinned by default). The pointer
+  // moves are CDP events into the strip page alone: they cover the strip's hover handler, not
+  // the pointer crossing from the bar's view into a page view (a live check).
+  const barInfo = () => ctl('__herdrCompanion.bar_debug()');
+  const hiddenNow = () => strip.evaluate(() => document.documentElement.classList.contains('bar-hidden'));
+  await strip.mouse.move(300, 500); // the pointer below the bar
+  // a status message holds the hidden bar open (the send above flashed one for 6 s)
+  check('a status message clears in time', await waitFor(() => strip.evaluate(() => document.getElementById('status').hidden || null), 9000, 100));
+  await sleep(300);
+  let bd = await barInfo();
+  check('the floating bar is pinned by default: the page starts below it', bd && bd.layout.pinned && bd.layout.top === bd.report.win.height && bd.report.win.height >= 28 && !(await hiddenNow()), bd);
+  await strip.evaluate(() => document.getElementById('pin').click());
+  // the strip hides, then reports it: wait for main's layout too (the page below the zone)
+  const unpinned = await waitFor(async () => {
+    const b = await barInfo();
+    return !b.layout.pinned && b.layout.top === 6 && (await hiddenNow()) ? b : null;
+  }, 9000);
+  check('unpinned, the bar hides to its hint line: the page starts below the 6 px hit zone', unpinned && unpinned.pins.floating === false, unpinned || (await barInfo()));
+  const hint = await strip.evaluate(() => Math.round(document.getElementById('hint').getBoundingClientRect().height));
+  check('the hint line is 2 px', hint === 2, hint);
+  await strip.mouse.move(300, 3);
+  await sleep(60);
+  await strip.mouse.move(300, 400);
+  await sleep(250);
+  check('a pass through the hit zone shorter than the dwell does not reveal it', await hiddenNow());
+  await strip.mouse.move(300, 3);
+  const hovered = await waitFor(async () => !(await hiddenNow()) || null, 1500, 30);
+  bd = await barInfo();
+  check('a dwell in the hit zone reveals it (floating: the page moves below it)', hovered && bd.report.win.shown && bd.layout.top === bd.report.win.height, bd);
+  await strip.mouse.move(300, 400);
+  await sleep(150);
+  check('it stays through the grace after the pointer leaves', !(await hiddenNow()));
+  check('and hides after it', await waitFor(hiddenNow, 2000, 30));
+  await strip.mouse.move(300, 3);
+  await waitFor(async () => !(await hiddenNow()) || null, 1500, 30);
+  await strip.evaluate(() => document.getElementById('url').focus());
+  await strip.mouse.move(300, 400);
+  await sleep(700);
+  check('the focused URL field holds it open after the pointer leaves', !(await hiddenNow()));
+  await strip.evaluate(() => document.getElementById('url').blur());
+  check('blurred, it hides again', await waitFor(hiddenNow, 2000, 30));
+  await strip.evaluate((u) => window.stripBridge.action('navigate', u), `127.0.0.1:${webPort}/pulse`);
+  check('a navigation shows the hidden bar for a moment', await waitFor(async () => !(await hiddenNow()) || null, 3000, 30));
+  check('then it hides again', await waitFor(hiddenNow, 4000, 50));
+  // ⌘⇧S (main clicks #send) with the bar hidden: the note bar shows it, then takes the keyboard
+  await strip.evaluate(() => document.getElementById('send').click());
+  const noted = await strip.evaluate(() => ({
+    focused: document.activeElement && document.activeElement.id,
+    hidden: document.documentElement.classList.contains('bar-hidden'),
+  }));
+  check('send with the bar hidden: the bar shows and the note field has the keyboard', noted.focused === 'note' && !noted.hidden, noted);
+  await strip.evaluate(() => document.getElementById('sendcancel').click());
+  check('cancelled, it hides again', await waitFor(hiddenNow, 2000, 30));
+  // a status message (here: sent) shows in the bar: it holds the hidden bar open until it goes
+  await strip.evaluate(() => window.stripBridge.action('send_page', { note: 'held' }));
+  const held = await waitFor(async () => {
+    const v = await strip.evaluate(() => ({ status: !document.getElementById('status').hidden, hidden: document.documentElement.classList.contains('bar-hidden') }));
+    return v.status && !v.hidden ? v : null;
+  }, 3000, 50);
+  check('a status message holds the hidden bar open', !!held, held);
+  check('and it hides once the message goes', await waitFor(hiddenNow, 9000, 100));
+  // the pin is per surface: docked keeps its own (unpinned by default)
+  await ctl(`__herdrCompanion.strip_preview({dock: true, kind: 'side', features: ['placements', 'placement_actions']})`);
+  const dockPin = await waitFor(async () => {
+    const v = await strip.evaluate(() => document.getElementById('pin').getAttribute('aria-pressed'));
+    return v === 'false' ? v : null;
+  }, 2000);
+  check('docked, the bar is unpinned by default', dockPin === 'false', dockPin);
+  await strip.evaluate(() => document.getElementById('pin').click());
+  const saved = await waitFor(async () => {
+    const b = await barInfo();
+    return b.pins.docked === true ? b.pins : null;
+  }, 2000);
+  check('pinning it docked saves the docked pin only', saved && saved.docked === true && saved.floating === false, saved);
+  const file = JSON.parse(fs.readFileSync(path.join(profile, 'bar.json'), 'utf8'));
+  check('the pins live in the profile (bar.json)', file.pinned && file.pinned.docked === true && file.pinned.floating === false, file);
+  await ctl('__herdrCompanion.strip_preview(null)');
+  // pinned again for the checks below (the floating pin is checked again after a restart)
+  await strip.evaluate(() => document.getElementById('pin').click());
+  check('pinned again, it stays', await waitFor(async () => (await barInfo()).pins.floating === true && !(await hiddenNow()), 2000));
   // the update chip (herdr installed newer app files than this process runs): disabled only
   // while its restart request runs; a failed request brings it back
   const chip = () =>
@@ -639,6 +799,9 @@ try {
   // restart of the companion restores the session's pages from herdr's state
   await api('mock.focus_tab', { tab_id: 'w1:t1' });
   await sleep(300);
+  // and keeps the bar's pins: the floating one unpinned now
+  await stripPage().evaluate(() => document.getElementById('pin').click());
+  await waitFor(async () => (await ctl('__herdrCompanion.bar_debug()')).pins.floating === false, 2000);
   const quit1 = await quitCompanion();
   check('quits through its own control path', quit1);
   check('unregistered on quit', !mock.state.lease);
@@ -658,6 +821,8 @@ try {
       return e && e.target === restored.target_id ? e : null;
     }, 4000);
     check('the restored view syncs its new target', rsync);
+    const pins = await ctl('__herdrCompanion.bar_debug()');
+    check('the bar\'s pins survive a restart (floating unpinned, docked pinned)', pins && pins.pins.floating === false && pins.pins.docked === true && pins.layout && !pins.layout.pinned, pins);
     check('quits again', await quitCompanion());
   }
 } catch (e) {

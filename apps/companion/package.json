@@ -1,7 +1,7 @@
 {
   "name": "herdr-companion",
   "productName": "herdr+ companion",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "private": true,
   "description": "herdr+ companion browser: an Electron browser host driven by herdr",
   "main": "src/main.js",

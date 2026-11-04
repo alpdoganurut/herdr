@@ -159,11 +159,13 @@ class ViewManager {
     (this.host || win).contentView.addChildView(view);
   }
 
-  // Adding a view again moves it to the top: the overlays above a page added after them.
+  // Adding a view again moves it to the top: the overlays above a page added after them, and
+  // above them what the host keeps on top of everything (the dock's bar: hooks.onRaise).
   raiseOverlays(win) {
     const host = this.host || win;
     if (!host) return;
     for (const v of this.overlays) host.contentView.addChildView(v);
+    if (this.hooks.onRaise) this.hooks.onRaise(host);
   }
 
   // Move every view into `win` (docked mode and back). Re-parented views keep painting
@@ -184,6 +186,7 @@ class ViewManager {
       } catch {}
       win.contentView.addChildView(v);
     }
+    if (this.hooks.onRaise) this.hooks.onRaise(win);
   }
 
   get(viewId) {

@@ -4,6 +4,9 @@
 //! the companion's strip, into the ledger as the user) and
 //! `browser.send_page` (the user sends a page to an agent of the tab,
 //! through the agent message path: quiet under DND, never urgent).
+//! Fork (compact bar): `browser.placement_action` (the strip's expand,
+//! restore and close), queued on the placement board for the render pass
+//! that relays it to the client owning the placement.
 //!
 //! O(groups) per call, no render work, no sidecar call on this thread
 //! (re-watching restored HTML views runs on the hub's own thread). The
@@ -16,8 +19,8 @@ use super::api::responses::{encode_error, encode_success};
 use super::App;
 use crate::api::schema::{
     BrowserHostReportKind, BrowserHostReportParams, BrowserHostStateInfo, BrowserHostStateParams,
-    BrowserHostSyncParams, BrowserHostTabState, BrowserSendPageParams, BrowserSessionInfo,
-    ResponseResult,
+    BrowserHostSyncParams, BrowserHostTabState, BrowserPlacementAction,
+    BrowserPlacementActionParams, BrowserSendPageParams, BrowserSessionInfo, ResponseResult,
 };
 use crate::browser::hub::COMPANION_PROFILE;
 use crate::browser::session::TabBrowser;
@@ -73,6 +76,43 @@ pub(crate) fn send_page_text(params: &BrowserSendPageParams) -> String {
 }
 
 impl App {
+    /// Fork (compact bar): `browser.placement_action`: the live lease asks
+    /// the client owning placement `id` to promote, restore or close it.
+    /// The client decides (its area is TUI state); `ok` once queued,
+    /// `not_found` for a placement the board does not hold, `unsupported`
+    /// when its client predates placement actions (its handshake did not
+    /// say it takes them).
+    pub(super) fn handle_browser_placement_action(
+        &mut self,
+        id: String,
+        params: BrowserPlacementActionParams,
+    ) -> String {
+        if !hub().lease_matches(&params.lease_id) {
+            return error(id, crate::browser::hub::lease_unknown());
+        }
+        if params.action == BrowserPlacementAction::Unknown {
+            return encode_error(
+                id,
+                "invalid_params",
+                "unknown placement action (promote, restore or close)",
+            );
+        }
+        use crate::browser::placements::ActionRefused;
+        match crate::browser::placements::board().queue_action(&params.id, params.action) {
+            Ok(_) => encode_success(id, ResponseResult::Ok {}),
+            Err(ActionRefused::NotFound) => encode_error(
+                id,
+                "not_found",
+                format!("no client holds placement {}", params.id.trim()),
+            ),
+            Err(ActionRefused::Unsupported) => encode_error(
+                id,
+                "unsupported",
+                "this herdr client predates the bar's expand and close; use its own ⤢ / ✕ or restart the client",
+            ),
+        }
+    }
+
     /// `browser.host_state`: every herdr tab (or `tab_ids`) with its group.
     pub(super) fn handle_browser_host_state(
         &mut self,

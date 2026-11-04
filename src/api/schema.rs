@@ -39,9 +39,10 @@ pub use agent_wrap::{
 pub use agents::*;
 pub use browser::*;
 pub use browser_placement::{
-    BrowserCellRect, BrowserGridSize, BrowserPlacementInfo, BrowserPlacementKind,
-    BrowserPlacementReportParams, BrowserPlacementSetParams, BrowserPlacementSpec,
-    BrowserPlacementStatus, BrowserPlacementsParams, BrowserPxSize,
+    BrowserCellRect, BrowserGridSize, BrowserPlacementAction, BrowserPlacementActionParams,
+    BrowserPlacementInfo, BrowserPlacementKind, BrowserPlacementReportParams,
+    BrowserPlacementSetParams, BrowserPlacementSpec, BrowserPlacementStatus,
+    BrowserPlacementsParams, BrowserPxSize,
 };
 pub use closed_sessions::*;
 pub use commands::*;
@@ -273,6 +274,10 @@ operations::define_operations! {
     BrowserPlacementSet(BrowserPlacementSetParams) => "browser.placement.set", false, true;
     BrowserPlacements(BrowserPlacementsParams) => "browser.placements", false, false;
     BrowserPlacementReport(BrowserPlacementReportParams) => "browser.placement_report", false, false;
+    /// Fork (compact bar): the browser host's ask to promote, restore or
+    /// close a placement, relayed to the client that owns it (App lane:
+    /// changes_ui, so the render pass that relays it follows at once).
+    BrowserPlacementAction(BrowserPlacementActionParams) => "browser.placement_action", true, false;
     AgentPrompt(AgentPromptParams) => "agent.prompt", true, false;
     AgentWait(AgentWaitParams) => "agent.wait", false, false;
     PaneSplit(PaneSplitParams) => "pane.split", true, true;

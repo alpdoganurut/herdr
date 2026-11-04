@@ -7,14 +7,14 @@
 //! tab's name (bold), then its context use from 75 % (the tab row's rule),
 //! `⚭N` running subagents and `✉N` quiet messages waiting, each only when
 //! there is something to say. Right: the view tabs `Terminal` / `Browser`
-//! and the browser dock toggle `◧` (while the companion browser docks
-//! here), then, at the far right, the notes dock toggle `▤`. The active
+//! and the browser dock toggle `◨` (while the companion browser docks
+//! here), then, at the far right, the notes dock toggle `≡`. The active
 //! view and the open dock are accent; everything else is dim and a hovered
 //! control turns `text`: text colour only, no bars or boxes. Narrow: the
 //! name truncates first (to `MIN_NAME` cells), then the view tabs shrink to
-//! `T  B ◧`, then to `◧`; the dock toggles always stay. Once only `◧` is
+//! `T  B ◨`, then to `◨`; the dock toggles always stay. Once only `◨` is
 //! left the facts stay whole and the name keeps shrinking below `MIN_NAME`
-//! (`● head…  82% ⚭3 ✉1  ◧  ▤` at 26 columns); the facts drop only when
+//! (`● head…  82% ⚭3 ✉1  ◨  ≡` at 26 columns); the facts drop only when
 //! not even one name cell fits beside them.
 //!
 //! Client presentation only. Built once per compose from snapshot borrows
@@ -36,9 +36,9 @@ use super::*;
 use crate::api::schema::AgentStatus;
 
 /// The browser dock toggle (and the browser dock's title mark).
-pub(crate) const BROWSER_DOCK_GLYPH: &str = "\u{25E7}"; // ◧
+pub(crate) const BROWSER_DOCK_GLYPH: &str = "\u{25E8}"; // ◨
 /// The notes dock toggle (and the notes dock's title mark).
-pub(crate) const NOTES_DOCK_GLYPH: &str = "\u{25A4}"; // ▤
+pub(crate) const NOTES_DOCK_GLYPH: &str = "\u{2261}"; // ≡
 /// A tab whose agent restarts or wakes.
 const RESUMING_GLYPH: &str = "\u{21BB}"; // ↻
 /// A tab that waits on the user (the dots style; the sidebar's `●`).
@@ -163,7 +163,7 @@ pub(crate) struct SessionHeader<'a> {
     pub(crate) subagents: u32,
     /// `✉N` and its colour.
     pub(crate) mail: Option<(&'static str, Color)>,
-    /// `None`: the companion browser does not dock here (no view tabs, no `◧`).
+    /// `None`: the companion browser does not dock here (no view tabs, no `◨`).
     pub(crate) browser: Option<HeaderBrowser>,
     pub(crate) notes_docked: bool,
     pub(crate) hover: Option<HeaderTarget>,
@@ -213,7 +213,7 @@ impl ViewForm {
         }
     }
 
-    /// `Terminal  Browser ◧`, `T  B ◧`, `◧`.
+    /// `Terminal  Browser ◨`, `T  B ◨`, `◨`.
     fn width(self) -> u16 {
         match self.labels() {
             Some((terminal, browser)) => display_width(terminal) + 2 + display_width(browser) + 2,

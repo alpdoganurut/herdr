@@ -3260,6 +3260,102 @@ async fn a_placement_set_never_promotes_the_client_or_takes_the_command_lane() {
     assert!(mine(board).is_none());
 }
 
+/// Fork (compact bar): the companion's expand / restore / close
+/// (`browser.placement_action`, live lease only) reaches only the client
+/// that owns the placement, once, as `endpoint.placement-action.v1`; an
+/// unknown placement or action, and a client whose handshake predates
+/// placement actions, are refused; the lease advertises it.
+#[tokio::test]
+async fn fork_smoke_a_placement_action_reaches_only_its_client_once() {
+    use crate::server::headless::placement_action::{
+        PlacementActionPayload, PLACEMENT_ACTION_KIND,
+    };
+    let (mut server, _rx) = server_with_claude(None);
+    let (first, _first_render) = connect_test_shell(&mut server, 9081, 80, 23);
+    let (second, _second_render) = connect_test_shell(&mut server, 9082, 80, 23);
+    let tab_id = server.app.public_tab_id(0, 0).expect("tab id");
+    for (client_id, id) in [(9081_u64, "pl-smoke-a"), (9082, "pl-smoke-b")] {
+        let boot_id = server.client_shell_boot_id.clone();
+        server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
+            client_id,
+            boot_id,
+            request: Box::new(Request {
+                id: format!("client-shell-placement:{client_id}"),
+                method: Method::BrowserPlacementSet(api::schema::BrowserPlacementSetParams {
+                    placement: Some(api::schema::BrowserPlacementSpec {
+                        id: id.into(),
+                        kind: api::schema::BrowserPlacementKind::Side,
+                        tab_id: tab_id.clone(),
+                        shown: true,
+                        ..Default::default()
+                    }),
+                }),
+            }),
+        });
+    }
+    server.render_and_stream();
+    let actions = |control: &std::sync::mpsc::Receiver<Vec<u8>>| {
+        let mut payloads = Vec::new();
+        while let Ok(bytes) = control.try_recv() {
+            if let ServerMessage::EndpointControl { kind, data } = read_server_message(bytes) {
+                if kind == PLACEMENT_ACTION_KIND {
+                    payloads.push(PlacementActionPayload::decode(&data).expect("decodes"));
+                }
+            }
+        }
+        payloads
+    };
+    assert!(actions(&first).is_empty() && actions(&second).is_empty());
+    let ask = |server: &mut HeadlessServer, lease: &str, id: &str, action| {
+        api(
+            server,
+            Method::BrowserPlacementAction(api::schema::BrowserPlacementActionParams {
+                lease_id: lease.into(),
+                id: id.into(),
+                action,
+            }),
+        )
+    };
+    use api::schema::BrowserPlacementAction as Action;
+    let refused = ask(&mut server, "no-lease", "pl-smoke-a", Action::Promote);
+    assert_eq!(refused["error"]["code"], "lease_unknown", "{refused}");
+    crate::browser::hub().install_test_lease("lease-smoke");
+    let unknown = ask(&mut server, "lease-smoke", "pl-nobody", Action::Close);
+    assert_eq!(unknown["error"]["code"], "not_found", "{unknown}");
+    let odd = ask(&mut server, "lease-smoke", "pl-smoke-a", Action::Unknown);
+    assert_eq!(odd["error"]["code"], "invalid_params", "{odd}");
+    // a client whose handshake did not say it takes them (an older client,
+    // reattached after a live handoff) would ignore the ask: refused
+    let older = ask(&mut server, "lease-smoke", "pl-smoke-a", Action::Promote);
+    assert_eq!(older["error"]["code"], "unsupported", "{older}");
+    crate::browser::placements::board().set_takes_actions(9081, true);
+    let still = ask(&mut server, "lease-smoke", "pl-smoke-b", Action::Close);
+    assert_eq!(still["error"]["code"], "unsupported", "{still}");
+    let ok = ask(&mut server, "lease-smoke", "pl-smoke-a", Action::Promote);
+    assert_eq!(ok["result"]["type"], "ok", "{ok}");
+    server.render_and_stream();
+    let got = actions(&first);
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert_eq!(
+        (got[0].id.as_str(), got[0].tab_id.as_str(), got[0].action),
+        ("pl-smoke-a", tab_id.as_str(), Action::Promote)
+    );
+    assert_eq!(got[0].boot_id, server.client_shell_boot_id);
+    assert!(actions(&second).is_empty(), "only the owning client");
+    server.render_and_stream();
+    assert!(actions(&first).is_empty(), "relayed once");
+    // two asks before one pass: both, in order
+    ask(&mut server, "lease-smoke", "pl-smoke-a", Action::Restore);
+    ask(&mut server, "lease-smoke", "pl-smoke-a", Action::Close);
+    server.render_and_stream();
+    let order: Vec<_> = actions(&first).into_iter().map(|p| p.action).collect();
+    assert_eq!(order, [Action::Restore, Action::Close]);
+    assert!(crate::browser::hub::SERVER_FEATURES.contains(&"placement_actions"));
+    server.remove_client(9081);
+    server.remove_client(9082);
+    shutdown_test_runtimes(&mut server);
+}
+
 /// Fork (companion launcher): the host sees each placement with the
 /// server's facts about its client (its terminal's focus, the foreground
 /// client, its surface showing this server), as they change; an unknown

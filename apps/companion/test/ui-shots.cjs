@@ -34,7 +34,16 @@ const base = () => ({
   prompt: null,
   attached: true,
   status: null,
+  bar: { mode: 'floating', pinned: true, pulse: 0, menu: false, actions: { expand: null, close: false } },
+  info: { here: 2, total: 12, sessions: 4 },
 });
+// the dock's bar: no traffic-light inset, expand / restore and close (herdr advertises them)
+const docked = (s, kind = 'side') => {
+  s.inset = false;
+  s.docked = true;
+  s.bar = { mode: kind === 'full' ? 'full' : 'docked', pinned: true, pulse: 0, menu: false, actions: { expand: kind === 'full' ? 'restore' : 'promote', close: true } };
+  return s;
+};
 
 const STATES = {
   normal: (s) => s,
@@ -57,7 +66,15 @@ const STATES = {
     s.status = { level: 'ok', text: 'Sent to claude (w1:p2) with a note and 214 chars of selection' };
     return s;
   },
+  file: (s) => {
+    s.active.url = 'file:///Users/me/Projects/search-it/.leap/work/drafts/aws-costs/aws-costs.html#cdn';
+    return s;
+  },
+  docked: (s) => docked(s),
+  browserview: (s) => docked(s, 'full'),
 };
+// the same bar at a narrow width (two rows)
+const NARROW = { width: 420, states: ['normal', 'docked'] };
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -82,7 +99,7 @@ app.whenReady().then(async () => {
   for (const scheme of ['light', 'dark']) {
     nativeTheme.themeSource = scheme;
     for (const [name, make] of Object.entries(STATES)) {
-      await win.webContents.executeJavaScript(`document.getElementById('sendbar').hidden = true; document.activeElement && document.activeElement.blur(); 0`);
+      await win.webContents.executeJavaScript(`document.getElementById('sendbar').hidden = true; document.body.classList.remove('docked'); document.activeElement && document.activeElement.blur(); 0`);
       win.webContents.send('strip:state', make(base()));
       await wait(150);
       if (name === 'note') await win.webContents.executeJavaScript(`document.getElementById('send').click(); 0`);
@@ -93,6 +110,20 @@ app.whenReady().then(async () => {
       fs.writeFileSync(file, img.toPNG());
       written.push(`${file} ${img.getSize().width}x${img.getSize().height} chrome=${h}px`);
     }
+  }
+  // narrow: the window resized
+  win.setContentSize(NARROW.width, 220);
+  await wait(200);
+  nativeTheme.themeSource = 'dark';
+  for (const name of NARROW.states) {
+    await win.webContents.executeJavaScript(`document.body.classList.remove('docked'); 0`);
+    win.webContents.send('strip:state', STATES[name](base()));
+    await wait(400);
+    const h = await win.webContents.executeJavaScript(`Math.ceil(document.getElementById('chrome').getBoundingClientRect().height)`);
+    const img = await win.webContents.capturePage({ x: 0, y: 0, width: NARROW.width, height: h });
+    const file = path.join(OUT, `bar-dark-narrow-${name}.png`);
+    fs.writeFileSync(file, img.toPNG());
+    written.push(`${file} ${img.getSize().width}x${img.getSize().height} chrome=${h}px`);
   }
   console.log(written.join('\n'));
   win.destroy();
