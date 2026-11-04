@@ -294,6 +294,78 @@ export async function captureWithQuietRetry({ capture, select, log = () => {}, d
   }
 }
 
+/** How long a capture waits behind an earlier one that has not settled; after
+ *  that it starts anyway (one Chromium never answers must not wedge a tab's
+ *  screenshots for good). */
+export const CAPTURE_STALE_MS = 60000;
+
+/** One page's `Page.captureScreenshot` requests, one at a time. With a clip
+ *  (full page, an element, a scaled copy) Chromium resizes the page's view for
+ *  the capture and, when the capture settles (also when it fails), puts back
+ *  the size the view had when the request arrived. A request that arrives
+ *  while an earlier one is still pending reads the stretched size as the
+ *  original and puts that back: the tab is left as tall as its document
+ *  (innerHeight == scrollHeight) and cannot scroll. A screenshot that timed
+ *  out on our side is still pending in Chromium, so every capture of a page
+ *  queues here behind every earlier one until that one settles. */
+export class CaptureLane {
+  constructor({ staleMs = CAPTURE_STALE_MS } = {}) {
+    this.tail = Promise.resolve();
+    this.staleMs = staleMs;
+  }
+  /** `send()` runs once the requests queued before it have settled; when
+   *  `wanted()` is false by then (the op gave up), it does not run at all. */
+  enqueue(send, wanted = () => true) {
+    let timer = null;
+    const stale = new Promise((resolve) => { timer = setTimeout(resolve, this.staleMs); });
+    const run = Promise.race([this.tail, stale])
+      .finally(() => clearTimeout(timer))
+      .then(() => (wanted() ? send() : Promise.reject(new Error('capture abandoned before it started'))));
+    this.tail = run.then(() => {}, () => {});
+    return run;
+  }
+}
+
+/** A promise that rejects with a Timeout error after `ms` (the request itself goes on). */
+export function captureTimeout(promise, ms) {
+  let timer = null;
+  const expired = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`Timeout ${ms}ms exceeded: the tab did not draw the capture`)), ms);
+  });
+  return Promise.race([promise, expired]).finally(() => clearTimeout(timer));
+}
+
+/** One screenshot through a page's lane, for captureWithQuietRetry: the first
+ *  `wait(ms)` queues the request, a later one (the retry after a quiet
+ *  select) waits on the same request rather than sending a second one beside
+ *  it. `abandon()` (the op is over) keeps a request that has not started yet
+ *  from starting; one Chromium already has is left to settle in the lane. */
+export function laneShot(lane, send) {
+  let request = null;
+  let abandoned = false;
+  return {
+    wait(ms) {
+      if (!request) {
+        request = lane.enqueue(send, () => !abandoned);
+        request.catch(() => {});
+      }
+      return captureTimeout(request, ms);
+    },
+    abandon() { abandoned = true; },
+  };
+}
+
+/** The `Page.captureScreenshot` parameters for one shot. A viewport shot sends
+ *  no clip, and Chromium then leaves the view's size alone; a clip (`beyond`
+ *  for a full page or an element) resizes the view for the capture. */
+export function shotParams({ type, quality, clip = null, beyond = false }) {
+  const params = { format: type };
+  if (type === 'jpeg') params.quality = quality;
+  if (clip) params.clip = { x: clip.x, y: clip.y, width: clip.width, height: clip.height, scale: clip.scale || 1 };
+  if (clip && beyond) params.captureBeyondViewport = true;
+  return params;
+}
+
 /** Panes that are gone: the overlay of every page a pane's directive touched
  *  (`state.paneKey`, recorded by the host when the directive arrived) goes
  *  now — whatever the companion's state, grouped or not. Answers how many. */

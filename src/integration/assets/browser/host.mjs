@@ -14,7 +14,7 @@ import { createRequire } from 'node:module';
 import readline from 'node:readline';
 import fs from 'node:fs';
 import { EXTRACT_SOURCE, LINKS_SOURCE } from './extract.mjs';
-import { Overlay, Companion, NUDGE_URL, dismissPanes, captureWithQuietRetry, SELECT_BUDGET_MS, describe, probePages, ControlPage, ViewWatches, isFurnitureUrl, VIEW_MARKER, CompanionDialog, reconcileDialogs, pruneAnswered, DIALOG_BINDING } from './activity.mjs';
+import { Overlay, Companion, NUDGE_URL, dismissPanes, captureWithQuietRetry, CaptureLane, laneShot, shotParams, SELECT_BUDGET_MS, describe, probePages, ControlPage, ViewWatches, isFurnitureUrl, VIEW_MARKER, CompanionDialog, reconcileDialogs, pruneAnswered, DIALOG_BINDING } from './activity.mjs';
 import { pathToFileURL } from 'node:url';
 import nodePath from 'node:path';
 /** Kept out of the connect for the post-timeout diagnosis (the page probe: a 1 s list fetch, 1 s probes). */
@@ -75,6 +75,7 @@ class PageState {
     this.paneKey = null; // the agent pane whose directive last touched this page
     this.overlay = new Overlay(this);
     this.overlay.log = (text) => log('debug', text);
+    this.captures = new CaptureLane(); // every Page.captureScreenshot of this page, one at a time
   }
   pushConsole(entry) {
     entry.seq = ++this.consoleSeq;
@@ -781,60 +782,100 @@ const ops = {
     const state = needPage(needProfile(name), target);
     await guardDialog(state);
     const type = args.format === 'png' ? 'png' : 'jpeg';
-    const options = { path: args.path, type, fullPage: Boolean(args.full) };
-    if (type === 'jpeg') options.quality = args.quality || 70;
+    const quality = args.quality || 70;
     const scope = scopeLocator(state, args);
     const deadlineAt = Date.now() + Number(deadline_ms || 30000);
+    const left = () => Math.max(1000, deadlineAt - Date.now());
+    // Raw CDP on the host's own session, through the page's capture lane:
+    // Playwright's page.screenshot abandons a capture that timed out while
+    // Chromium still holds it, and a second one sent beside it (the quiet
+    // retry, the inline copy, another pane's shot) left the tab stretched to
+    // its document's height. A viewport shot sends no clip at all.
+    const capture = (params) => laneShot(state.captures, () => state.session.send('Page.captureScreenshot', params));
+    const shots = [];
     let buffer;
     // The agent's picture is the page: the activity overlay steps aside for
     // both captures (the file and the inline copy).
     await state.overlay.suspend(true);
     let size; let inlinePath = null;
     try {
+    // An element's box in page coordinates, scrolled into view first (visible
+    // is enough, as for Playwright's element shot: waiting for it to be stable
+    // needs animation frames a background tab does not run).
+    const elementBox = async () => {
+      const timeout = Math.min(SCREENSHOT_STALL_MS, left());
+      await scope.waitFor({ state: 'visible', timeout });
+      await scope.evaluate((el) => el.scrollIntoView({ block: 'nearest', inline: 'nearest' }), undefined, { timeout });
+      const box = await scope.boundingBox({ timeout });
+      if (!box || !box.width || !box.height) {
+        if (args.ref) fail('stale_ref', `ref ${args.ref} has no box any more; take a new snapshot`);
+        fail('element_not_visible', `selector ${args.selector} is not visible; scroll it into view or take a new snapshot`);
+      }
+      const scroll = await state.page.evaluate(() => ({ x: window.scrollX, y: window.scrollY }));
+      return { x: box.x + scroll.x, y: box.y + scroll.y, width: box.width, height: box.height };
+    };
+    let element = null;
     try {
-      // A background tab whose renderer stalled: select it quietly and try
-      // once more, inside the op's deadline; an element capture is not retried.
-      buffer = await captureWithQuietRetry({
-        capture: (timeout) => (scope ? scope.screenshot({ ...options, timeout }) : state.page.screenshot({ ...options, timeout })),
+      if (scope) element = await elementBox();
+      let clip = element;
+      if (!clip && args.full) {
+        const metrics = await state.session.send('Page.getLayoutMetrics');
+        const content = metrics.cssContentSize || metrics.contentSize;
+        clip = { x: 0, y: 0, width: content.width, height: content.height };
+      }
+      const shot = capture(shotParams({ type, quality, clip, beyond: Boolean(clip) }));
+      shots.push(shot);
+      // A background tab whose renderer stalled: select it quietly and wait
+      // once more for the same capture, inside the op's deadline; an element
+      // capture is not retried.
+      const answer = await captureWithQuietRetry({
+        capture: (timeout) => shot.wait(timeout),
         select: () => quietSelect(state),
         log: (text) => log('debug', text),
         deadlineAt,
         stallMs: SCREENSHOT_STALL_MS,
         scoped: Boolean(scope),
       });
+      buffer = Buffer.from(answer.data, 'base64');
     } catch (err) {
+      if (err instanceof OpError) throw err;
       if (err.code === 'tab_not_rendered') fail('tab_not_rendered', err.message);
       if (args.ref && /aria-ref|resolve/i.test(err.message)) fail('stale_ref', `ref ${args.ref} no longer resolves; take a new snapshot`);
       if (scope && /Timeout/i.test(err.message)) fail('element_not_visible', `${args.ref ? `ref ${args.ref}` : `selector ${args.selector}`} did not become visible in time; scroll it into view or take a new snapshot`);
       throw err;
     }
+    if (args.path) {
+      fs.mkdirSync(nodePath.dirname(args.path), { recursive: true });
+      fs.writeFileSync(args.path, buffer);
+    }
     size = imageSize(buffer, type);
     const maxPx = args.max_px || 1568;
     const longEdge = Math.max(size.width, size.height);
     if (longEdge > maxPx && args.inline_path) {
-      // Downscale with CDP's clip.scale (no image library needed). Element shots
-      // clip to the element's box in page coordinates (viewport box + scroll).
-      const session = state.session;
+      // Downscale with CDP's clip.scale (no image library needed), the same
+      // region as the file: the element's box, the document or the viewport.
       const scale = maxPx / longEdge;
-      const metrics = await session.send('Page.getLayoutMetrics');
+      const metrics = await state.session.send('Page.getLayoutMetrics');
       const vis = metrics.cssVisualViewport || metrics.visualViewport;
       const content = metrics.cssContentSize || metrics.contentSize;
       let clip;
-      if (scope) {
-        const box = await scope.boundingBox();
-        if (!box) fail('stale_ref', 'the element has no box any more; take a new snapshot');
-        const scroll = await state.page.evaluate(() => ({ x: window.scrollX, y: window.scrollY }));
-        clip = { x: box.x + scroll.x, y: box.y + scroll.y, width: box.width, height: box.height, scale };
-      } else if (args.full) {
-        clip = { x: 0, y: 0, width: content.width, height: content.height, scale };
-      } else {
-        clip = { x: vis.pageX, y: vis.pageY, width: vis.clientWidth, height: vis.clientHeight, scale };
+      if (element) clip = { ...element, scale };
+      else if (args.full) clip = { x: 0, y: 0, width: content.width, height: content.height, scale };
+      else clip = { x: vis.pageX, y: vis.pageY, width: vis.clientWidth, height: vis.clientHeight, scale };
+      const small = capture(shotParams({ type, quality, clip, beyond: Boolean(element || args.full) }));
+      shots.push(small);
+      let answer;
+      try {
+        answer = await small.wait(left());
+      } catch (err) {
+        if (/Timeout/i.test(err.message)) fail('tab_not_rendered', 'the tab could not be drawn for the inline copy; try again');
+        throw err;
       }
-      const shot = await session.send('Page.captureScreenshot', { format: type, quality: type === 'jpeg' ? (args.quality || 70) : undefined, clip, captureBeyondViewport: Boolean(args.full || scope) });
-      fs.writeFileSync(args.inline_path, Buffer.from(shot.data, 'base64'));
+      fs.writeFileSync(args.inline_path, Buffer.from(answer.data, 'base64'));
       inlinePath = args.inline_path;
     }
     } finally {
+      for (const shot of shots) shot.abandon();
       await state.overlay.suspend(false);
     }
     return { result: { path: args.path, inline_path: inlinePath, width: size.width, height: size.height, bytes: buffer.length }, page: await pageInfo(state) };

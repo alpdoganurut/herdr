@@ -10,7 +10,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { Overlay, Companion, OVERLAY_JS, dismissPanes, captureWithQuietRetry, FRAME_LINGER_MS, CURSOR_LINGER_MS, LINGER_MS } from '../src/integration/assets/browser/activity.mjs';
+import { Overlay, Companion, OVERLAY_JS, dismissPanes, captureWithQuietRetry, CaptureLane, laneShot, captureTimeout, shotParams, FRAME_LINGER_MS, CURSOR_LINGER_MS, LINGER_MS } from '../src/integration/assets/browser/activity.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function check(cond, msg) { if (!cond) { console.error(`FAIL: ${msg}`); process.exit(1); } }
@@ -188,6 +188,81 @@ check((() => { const o = new Overlay({ session }); o.linger('x'); const ok = o.u
   calls.length = 0; failed = null;
   try { await captureWithQuietRetry({ capture: () => { calls.push('capture'); return timeout(); }, select: async () => { calls.push('select'); return true; }, scoped: true }); } catch (err) { failed = err; }
   check(failed && !failed.code && /Timeout/.test(failed.message) && calls.join(',') === 'capture', `scoped: the original timeout, no select: ${calls}`);
+}
+
+// ------------------------------------------------ the capture lane (a stretched tab)
+// Chromium puts back the view size it saw when a clipped capture arrived; one
+// sent while another is pending reads the stretched size. The lane never
+// sends a page's capture beside an unsettled one, and the quiet retry waits on
+// the same request instead of sending a second.
+{
+  const lane = new CaptureLane();
+  const log = [];
+  let release;
+  const first = lane.enqueue(() => { log.push('send 1'); return new Promise((r) => { release = r; }); });
+  const second = lane.enqueue(() => { log.push('send 2'); return Promise.resolve('two'); });
+  await sleep(20);
+  check(log.join(',') === 'send 1', `the second capture waits for the first to settle: ${log}`);
+  release('one');
+  check(await first === 'one' && await second === 'two' && log.join(',') === 'send 1,send 2', `then runs: ${log}`);
+  // a failed capture frees the lane too
+  log.length = 0;
+  const bad = lane.enqueue(() => { log.push('bad'); return Promise.reject(new Error('Unable to capture screenshot')); });
+  const after = lane.enqueue(() => { log.push('after'); return Promise.resolve('ok'); });
+  let failed = null;
+  try { await bad; } catch (err) { failed = err; }
+  check(failed && await after === 'ok' && log.join(',') === 'bad,after', `a failure frees the lane: ${log}`);
+
+  // the stalled tab: the first wait times out, the quiet select, the retry waits on the same request
+  const sends = [];
+  let paint;
+  const shot = laneShot(lane, () => { sends.push('capture'); return new Promise((r) => { paint = r; }); });
+  const calls = [];
+  const result = captureWithQuietRetry({
+    capture: (ms) => { calls.push('capture'); return shot.wait(ms); },
+    select: async () => { calls.push('select'); setTimeout(() => paint({ data: 'png' }), 30); return true; },
+    stallMs: 60,
+  });
+  check((await result).data === 'png' && calls.join(',') === 'capture,select,capture' && sends.length === 1, `one request across the retry: ${calls} / ${sends}`);
+  check(/Timeout/.test((await captureTimeout(new Promise(() => {}), 5).catch((e) => e)).message), 'a wait that runs out is a Timeout (the retry and element_not_visible key on it)');
+
+  // the next screenshot of a tab whose earlier capture is still pending waits for it
+  sends.length = 0;
+  let late;
+  const stuck = laneShot(lane, () => { sends.push('stalled'); return new Promise((r) => { late = r; }); });
+  failed = null;
+  try { await captureWithQuietRetry({ capture: (ms) => stuck.wait(ms), select: async () => true, stallMs: 30 }); } catch (err) { failed = err; }
+  check(failed && failed.code === 'tab_not_rendered', 'still stalled after the retry: tab_not_rendered');
+  stuck.abandon();
+  const next = laneShot(lane, () => { sends.push('next'); return Promise.resolve({ data: 'jpeg' }); });
+  const waiting = next.wait(1000);
+  await sleep(20);
+  check(sends.join(',') === 'stalled', `a new shot is not sent beside the pending one: ${sends}`);
+  late({ data: 'late' });
+  check((await waiting).data === 'jpeg' && sends.join(',') === 'stalled,next', `it goes once that one settles: ${sends}`);
+
+  // an op that gave up before its request started: never sent
+  sends.length = 0;
+  let hold;
+  const blocker = lane.enqueue(() => new Promise((r) => { hold = r; }));
+  const gaveUp = laneShot(lane, () => { sends.push('late'); return Promise.resolve({}); });
+  const gone = gaveUp.wait(10).catch((e) => e);
+  check(/Timeout/.test((await gone).message), 'the wait times out behind the blocker');
+  gaveUp.abandon();
+  hold('done'); await blocker; await sleep(10);
+  check(sends.length === 0, 'an abandoned shot never reaches Chromium');
+
+  // one Chromium never answers does not wedge the page for good
+  const short = new CaptureLane({ staleMs: 30 });
+  short.enqueue(() => new Promise(() => {}));
+  check(await short.enqueue(() => Promise.resolve('through')) === 'through', 'a capture starts after the stale cap');
+
+  // the parameters: a viewport shot has no clip (Chromium leaves the view alone)
+  const viewport = shotParams({ type: 'jpeg', quality: 70 });
+  check(!viewport.clip && !viewport.captureBeyondViewport && viewport.quality === 70, `a viewport shot: ${JSON.stringify(viewport)}`);
+  const full = shotParams({ type: 'png', quality: 70, clip: { x: 0, y: 0, width: 600, height: 9000 }, beyond: true });
+  check(full.clip.scale === 1 && full.captureBeyondViewport === true && full.quality === undefined, `a full page: ${JSON.stringify(full)}`);
+  console.log('ok: a page\'s captures run one at a time, the quiet retry waits on the same request, an abandoned one is never sent');
 }
 
 // ------------------------------------------------------------- the companion
