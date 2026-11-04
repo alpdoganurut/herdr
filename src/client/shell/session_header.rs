@@ -8,11 +8,13 @@
 //! `⚭N` running subagents and `✉N` quiet messages waiting, each only when
 //! there is something to say. Right: the view tabs `Terminal` / `Browser`
 //! and the browser dock toggle `◨` (while the companion browser docks
-//! here), then, at the far right, the notes dock toggle `≡`. The active
+//! here; `Browser` carries the tab's open page count in a small block,
+//! `surface1` or accent while Browser view is on, none at 0 pages or while
+//! the companion is stopped, `99+` from 100), then, at the far right, the notes dock toggle `≡`. The active
 //! view and the open dock are accent; everything else is dim and a hovered
 //! control turns `text`: text colour only, no bars or boxes. Narrow: the
 //! name truncates first (to `MIN_NAME` cells), then the view tabs shrink to
-//! `T  B ◨`, then to `◨`; the dock toggles always stay. Once only `◨` is
+//! `T  B ◨` (`B7 ◨` with pages), then to `◨` (no count); the dock toggles always stay. Once only `◨` is
 //! left the facts stay whole and the name keeps shrinking below `MIN_NAME`
 //! (`● head…  82% ⚭3 ✉1  ◨  ≡` at 26 columns); the facts drop only when
 //! not even one name cell fits beside them.
@@ -149,6 +151,24 @@ pub(crate) struct HeaderBrowser {
     pub(crate) viewing: bool,
     /// The browser dock is open (lit only while Terminal shows).
     pub(crate) docked: bool,
+    /// The tab's open companion pages (0 while the companion is stopped):
+    /// the badge after `Browser`, none at 0.
+    pub(crate) pages: u32,
+}
+
+/// The page count badge's text: `7`, `12`, `99+` from 100 (empty at 0).
+fn page_count(pages: u32) -> StackStr<4> {
+    let mut text = StackStr::<4>::new();
+    match pages {
+        0 => {}
+        1..=99 => {
+            let _ = write!(text, "{pages}");
+        }
+        _ => {
+            let _ = text.write_str("99+");
+        }
+    }
+    text
 }
 
 /// One frame of the header.
@@ -213,10 +233,24 @@ impl ViewForm {
         }
     }
 
-    /// `Terminal  Browser ◨`, `T  B ◨`, `◨`.
-    fn width(self) -> u16 {
+    /// The badge's cells for a count of `digits` cells (none at 0): ` 7 `
+    /// after a blank in the full form, `7` right after `B` in the short one,
+    /// no count once only `◨` is left.
+    fn badge_width(self, digits: u16) -> u16 {
+        match self {
+            _ if digits == 0 => 0,
+            Self::Full => 1 + digits + 2,
+            Self::Short => digits,
+            Self::Toggle => 0,
+        }
+    }
+
+    /// `Terminal  Browser ◨`, `T  B ◨`, `◨`, plus the badge.
+    fn width(self, digits: u16) -> u16 {
         match self.labels() {
-            Some((terminal, browser)) => display_width(terminal) + 2 + display_width(browser) + 2,
+            Some((terminal, browser)) => {
+                display_width(terminal) + 2 + display_width(browser) + self.badge_width(digits) + 2
+            }
             None => 1,
         }
     }
@@ -310,14 +344,16 @@ pub(crate) fn render(
     // The view tabs and the dock toggle: the widest form that leaves the
     // name its minimum.
     if let Some(browser) = header.browser {
+        let count = page_count(browser.pages);
+        let digits = display_width(count.as_str());
         let form = [ViewForm::Full, ViewForm::Short]
             .into_iter()
             .find(|form| {
-                end.checked_sub(form.width() + 2)
+                end.checked_sub(form.width(digits) + 2)
                     .is_some_and(|rest| rest > name_x && left_needed(rest))
             })
             .unwrap_or(ViewForm::Toggle);
-        let start = end.saturating_sub(form.width());
+        let start = end.saturating_sub(form.width(digits));
         if start > left {
             let mut x = start;
             if let Some((terminal, browser_label)) = form.labels() {
@@ -341,8 +377,28 @@ pub(crate) fn render(
                     browser_label,
                     control(HeaderTarget::ViewBrowser, browser.viewing),
                 );
-                hits.browser = Rect::new(x, y, browser_width, 1);
-                x += browser_width + 1;
+                // The badge: grey, accent while Browser view is on; part of
+                // the Browser button.
+                let badge = form.badge_width(digits);
+                if badge > 0 {
+                    let block = if browser.viewing {
+                        Style::default().fg(bg).bg(palette.accent)
+                    } else {
+                        Style::default().fg(palette.text).bg(palette.surface1)
+                    };
+                    // Full: a blank, then ` N `; short: `N` right after `B`.
+                    let (gap, pad) = if form == ViewForm::Full {
+                        (1, 1)
+                    } else {
+                        (0, 0)
+                    };
+                    let block_x = x + browser_width + gap;
+                    let block_rect = Rect::new(block_x, y, badge - gap, 1).intersection(area);
+                    buffer.set_style(block_rect, block);
+                    put_text(buffer, block_x + pad, y, digits, count.as_str(), block);
+                }
+                hits.browser = Rect::new(x, y, browser_width + badge, 1);
+                x += browser_width + badge + 1;
             }
             put_text(
                 buffer,
@@ -466,7 +522,15 @@ impl ClientShellState {
         let browser = (self.config.browser_view_strip
             && (self.browser_companion().is_some() || viewing || docked)
             && self.browser_dock_available())
-        .then_some(HeaderBrowser { viewing, docked });
+        .then(|| HeaderBrowser {
+            viewing,
+            docked,
+            pages: if self.browser_companion_stopped().is_some() {
+                0
+            } else {
+                self.browser_tab_pages(tab_id)
+            },
+        });
         let status = tab.agent_status;
         Some(SessionHeader {
             icon: status_glyph(status, resuming, self.config.status_indicators),

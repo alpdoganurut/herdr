@@ -153,3 +153,134 @@
    06-57 -/sidebar_chrome_bg
    58-58 overlay0/sidebar_chrome_bg
    59-59 -/sidebar_chrome_bg
+== 7 pages @ 110
+00| ● header-design-and-navigation  82% ⚭3 ✉1                                         Terminal  Browser  7  ◨  ≡ |
+   00-00 -/sidebar_chrome_bg
+   01-01 yellow/sidebar_chrome_bg
+   02-02 -/sidebar_chrome_bg
+   03-30 text/sidebar_chrome_bg/b
+   31-32 -/sidebar_chrome_bg
+   33-35 yellow/sidebar_chrome_bg
+   36-36 -/sidebar_chrome_bg
+   37-38 subtext0/sidebar_chrome_bg
+   39-39 -/sidebar_chrome_bg
+   40-41 overlay1/sidebar_chrome_bg
+   42-82 -/sidebar_chrome_bg
+   83-90 accent/sidebar_chrome_bg
+   91-92 -/sidebar_chrome_bg
+   93-99 overlay0/sidebar_chrome_bg
+   100-100 -/sidebar_chrome_bg
+   101-103 text/surface1
+   104-104 -/sidebar_chrome_bg
+   105-105 overlay0/sidebar_chrome_bg
+   106-107 -/sidebar_chrome_bg
+   108-108 overlay0/sidebar_chrome_bg
+   109-109 -/sidebar_chrome_bg
+== 12 pages @ 110
+00| ● header-design-and-navigation  82% ⚭3 ✉1                                        Terminal  Browser  12  ◨  ≡ |
+   00-00 -/sidebar_chrome_bg
+   01-01 yellow/sidebar_chrome_bg
+   02-02 -/sidebar_chrome_bg
+   03-30 text/sidebar_chrome_bg/b
+   31-32 -/sidebar_chrome_bg
+   33-35 yellow/sidebar_chrome_bg
+   36-36 -/sidebar_chrome_bg
+   37-38 subtext0/sidebar_chrome_bg
+   39-39 -/sidebar_chrome_bg
+   40-41 overlay1/sidebar_chrome_bg
+   42-81 -/sidebar_chrome_bg
+   82-89 accent/sidebar_chrome_bg
+   90-91 -/sidebar_chrome_bg
+   92-98 overlay0/sidebar_chrome_bg
+   99-99 -/sidebar_chrome_bg
+   100-103 text/surface1
+   104-104 -/sidebar_chrome_bg
+   105-105 overlay0/sidebar_chrome_bg
+   106-107 -/sidebar_chrome_bg
+   108-108 overlay0/sidebar_chrome_bg
+   109-109 -/sidebar_chrome_bg
+== 150 pages @ 110
+00| ● header-design-and-navigation  82% ⚭3 ✉1                                       Terminal  Browser  99+  ◨  ≡ |
+   00-00 -/sidebar_chrome_bg
+   01-01 yellow/sidebar_chrome_bg
+   02-02 -/sidebar_chrome_bg
+   03-30 text/sidebar_chrome_bg/b
+   31-32 -/sidebar_chrome_bg
+   33-35 yellow/sidebar_chrome_bg
+   36-36 -/sidebar_chrome_bg
+   37-38 subtext0/sidebar_chrome_bg
+   39-39 -/sidebar_chrome_bg
+   40-41 overlay1/sidebar_chrome_bg
+   42-80 -/sidebar_chrome_bg
+   81-88 accent/sidebar_chrome_bg
+   89-90 -/sidebar_chrome_bg
+   91-97 overlay0/sidebar_chrome_bg
+   98-98 -/sidebar_chrome_bg
+   99-103 text/surface1
+   104-104 -/sidebar_chrome_bg
+   105-105 overlay0/sidebar_chrome_bg
+   106-107 -/sidebar_chrome_bg
+   108-108 overlay0/sidebar_chrome_bg
+   109-109 -/sidebar_chrome_bg
+== 7 pages, browser view @ 110
+00| ● header-design-and-navigation  82% ⚭3 ✉1                                         Terminal  Browser  7  ◨  ≡ |
+   00-00 -/sidebar_chrome_bg
+   01-01 yellow/sidebar_chrome_bg
+   02-02 -/sidebar_chrome_bg
+   03-30 text/sidebar_chrome_bg/b
+   31-32 -/sidebar_chrome_bg
+   33-35 yellow/sidebar_chrome_bg
+   36-36 -/sidebar_chrome_bg
+   37-38 subtext0/sidebar_chrome_bg
+   39-39 -/sidebar_chrome_bg
+   40-41 overlay1/sidebar_chrome_bg
+   42-82 -/sidebar_chrome_bg
+   83-90 overlay0/sidebar_chrome_bg
+   91-92 -/sidebar_chrome_bg
+   93-99 accent/sidebar_chrome_bg
+   100-100 -/sidebar_chrome_bg
+   101-103 sidebar_chrome_bg/accent
+   104-104 -/sidebar_chrome_bg
+   105-105 overlay0/sidebar_chrome_bg
+   106-107 -/sidebar_chrome_bg
+   108-108 overlay0/sidebar_chrome_bg
+   109-109 -/sidebar_chrome_bg
+== 7 pages, short form @ 37
+00| ● header-de…  82% ⚭3 ✉1  T  B7 ◨  ≡ |
+   00-00 -/sidebar_chrome_bg
+   01-01 yellow/sidebar_chrome_bg
+   02-02 -/sidebar_chrome_bg
+   03-12 text/sidebar_chrome_bg/b
+   13-14 -/sidebar_chrome_bg
+   15-17 yellow/sidebar_chrome_bg
+   18-18 -/sidebar_chrome_bg
+   19-20 subtext0/sidebar_chrome_bg
+   21-21 -/sidebar_chrome_bg
+   22-23 overlay1/sidebar_chrome_bg
+   24-25 -/sidebar_chrome_bg
+   26-26 accent/sidebar_chrome_bg
+   27-28 -/sidebar_chrome_bg
+   29-29 overlay0/sidebar_chrome_bg
+   30-30 text/surface1
+   31-31 -/sidebar_chrome_bg
+   32-32 overlay0/sidebar_chrome_bg
+   33-34 -/sidebar_chrome_bg
+   35-35 overlay0/sidebar_chrome_bg
+   36-36 -/sidebar_chrome_bg
+== 12 pages, toggle only @ 26
+00| ● head…  82% ⚭3 ✉1  ◨  ≡ |
+   00-00 -/sidebar_chrome_bg
+   01-01 yellow/sidebar_chrome_bg
+   02-02 -/sidebar_chrome_bg
+   03-07 text/sidebar_chrome_bg/b
+   08-09 -/sidebar_chrome_bg
+   10-12 yellow/sidebar_chrome_bg
+   13-13 -/sidebar_chrome_bg
+   14-15 subtext0/sidebar_chrome_bg
+   16-16 -/sidebar_chrome_bg
+   17-18 overlay1/sidebar_chrome_bg
+   19-20 -/sidebar_chrome_bg
+   21-21 overlay0/sidebar_chrome_bg
+   22-23 -/sidebar_chrome_bg
+   24-24 overlay0/sidebar_chrome_bg
+   25-25 -/sidebar_chrome_bg
