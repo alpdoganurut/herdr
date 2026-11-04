@@ -1089,7 +1089,7 @@ fn fork_smoke_status_banners_keep_clear_of_the_docked_band_and_the_browser_view(
     }
     let line = row_text(&frame, header.y);
     assert!(
-        line.contains("Terminal") && line.contains("Browser") && line.contains("◧"),
+        line.contains("Terminal") && line.contains("Browser") && line.contains("◨"),
         "the view tabs and the dock toggle stay: {line}"
     );
 }
