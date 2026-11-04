@@ -37,24 +37,9 @@ fn group_notification_body(
     pane_id: Option<&str>,
     workspace_id: &str,
 ) -> Option<String> {
-    let (index, workspace) = snapshot
-        .workspaces
-        .iter()
-        .enumerate()
-        .find(|(_, workspace)| workspace.workspace_id == workspace_id)?;
-    if !super::tab_sidebar::is_group_index(index) {
-        return None;
-    }
-    let team = teams.and_then(|teams| teams.team(workspace_id));
-    let group = match team {
-        Some(team) => super::teams::header_label(team, &workspace.label).0,
-        None => workspace.label.as_str(),
-    }
-    .trim();
-    if group.is_empty() {
-        return None;
-    }
-    let role = team
+    let group = super::teams::group_name(snapshot, teams, workspace_id)?;
+    let role = teams
+        .and_then(|teams| teams.team(workspace_id))
         .zip(pane_id)
         .and_then(|(team, pane_id)| team.members.iter().find(|member| member.pane_id == pane_id))
         .and_then(|member| member.role.as_deref())

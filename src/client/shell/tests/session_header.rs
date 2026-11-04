@@ -19,6 +19,7 @@ fn header<'a>(name: &'a str, palette: &crate::app::state::Palette) -> SessionHea
     SessionHeader {
         icon: "●",
         icon_color: palette.yellow,
+        group: None,
         name,
         name_color: palette.text,
         context: Some(("82%", palette.yellow)),
@@ -106,6 +107,16 @@ fn golden_session_header_at_several_widths() {
         ..header("zsh", &palette)
     };
     section("shell, no companion", &shell, 60);
+    let grouped = SessionHeader {
+        icon: "○",
+        icon_color: palette.green,
+        group: Some("Search It"),
+        ..header("local clean up", &palette)
+    };
+    // whole, shortened, dropped
+    for width in [80, 62, 59] {
+        section("in a group", &grouped, width);
+    }
     super::tab_sidebar_golden::assert_golden("session_header", &out);
 }
 
@@ -882,4 +893,116 @@ fn fork_smoke_an_older_companion_keeps_the_band_title_bar_over_a_covered_band() 
             "{version:?}"
         );
     }
+}
+
+#[test]
+fn a_tab_in_a_group_names_it_dim_before_the_name() {
+    let palette = ClientShellConfig::from_config(&Config::default()).palette;
+    let grouped = SessionHeader {
+        group: Some("Search It"),
+        ..header("local clean up", &palette)
+    };
+    let wide = text(&grouped, 110);
+    assert!(
+        wide.contains("● Search It · local clean up  82% ⚭3 ✉1"),
+        "{wide}"
+    );
+    assert!(wide.contains("Terminal  Browser ◨  ≡"), "{wide}");
+    // the group is overlay1 and not bold; the name keeps its colour and bold
+    let area = Rect::new(0, 0, 110, 1);
+    let mut buffer = Buffer::empty(area);
+    session_header::render(&mut buffer, area, &grouped, &palette);
+    assert_eq!(buffer[(3, 0)].fg, palette.overlay1);
+    assert!(!buffer[(3, 0)].modifier.contains(Modifier::BOLD));
+    assert_eq!(buffer[(13, 0)].fg, palette.overlay1);
+    assert_eq!(buffer[(15, 0)].fg, palette.text);
+    assert!(buffer[(15, 0)].modifier.contains(Modifier::BOLD));
+    // no group: the row is the same as before
+    let plain = header("local clean up", &palette);
+    assert!(text(&plain, 110).contains("● local clean up  82%"));
+}
+
+#[test]
+fn a_narrow_row_shortens_the_group_then_drops_it_and_keeps_the_name() {
+    let palette = ClientShellConfig::from_config(&Config::default()).palette;
+    let grouped = SessionHeader {
+        group: Some("Search It"),
+        ..header("local clean up", &palette)
+    };
+    let plain = header("local clean up", &palette);
+    for width in [110u16, 72, 65, 64, 62, 60, 59, 52, 44, 36, 26, 12] {
+        let row = text(&grouped, width);
+        let without = text(&plain, width);
+        // the controls and the facts sit where they sit without a group
+        assert_eq!(
+            row.find("◨").map(|at| row[at..].to_owned()),
+            without.find("◨").map(|at| without[at..].to_owned()),
+            "{width}: {row:?}"
+        );
+        assert_eq!(row.contains("82%"), without.contains("82%"), "{width}");
+        // the name is never shorter than without the group
+        let name_of = |row: &str| {
+            row.split(" · ")
+                .last()
+                .and_then(|rest| rest.trim_start_matches(['●', ' ']).split("  ").next())
+                .map(str::to_owned)
+                .unwrap_or_default()
+        };
+        assert_eq!(name_of(&row), name_of(&without), "{width}: {row:?}");
+    }
+    // whole, then shortened with an ellipsis, then gone
+    assert!(text(&grouped, 72).contains("● Search It · local clean up"));
+    let short = text(&grouped, 62);
+    assert!(short.contains("● Searc… · local clean up"), "{short:?}");
+    let gone = text(&grouped, 59);
+    assert!(gone.contains("● local clean up  82%"), "{gone:?}");
+    assert!(!gone.contains('·') && !gone.contains("Sea"), "{gone:?}");
+}
+
+#[test]
+fn the_header_names_the_focused_tabs_group_and_its_team_purpose() {
+    let config = Config::default();
+    let mut state = header_state(&config);
+    // the first space is no group
+    assert_eq!(
+        state.session_header_view().map(|view| view.group),
+        Some(None)
+    );
+    let mut snapshot = state.snapshot.as_deref().cloned().expect("snapshot");
+    let mut group = snapshot.workspaces[0].clone();
+    group.workspace_id = "ws_2".into();
+    group.label = "Marla".into();
+    group.focused = false;
+    snapshot.workspaces.push(group);
+    snapshot.tabs[0].workspace_id = "ws_2".into();
+    let boot_id = snapshot.boot_id.clone();
+    state.set_snapshot(Box::new(snapshot));
+    let view = state.session_header_view().expect("header");
+    assert_eq!((view.group, view.name), (Some("Marla"), "restart screen"));
+    // a team names the group by its purpose, as the sidebar header does
+    let team = crate::api::schema::team::TeamInfo {
+        workspace_id: "ws_2".into(),
+        workspace_label: "Marla".into(),
+        purpose: Some("Search It".into()),
+        purpose_by: None,
+        created_unix: 0,
+        revision: 1,
+        members: Vec::new(),
+        excluded: Vec::new(),
+    };
+    state.teams.insert(
+        ClientEndpointId::Local,
+        super::super::teams::ClientTeamsState::from_payload(
+            crate::server::headless::teams::TeamsPayload {
+                boot_id,
+                revision: 1,
+                teams: vec![team],
+            },
+        ),
+    );
+    let view = state.session_header_view().expect("header");
+    assert_eq!(view.group, Some("Search It"));
+    let frame = state.compose(COLS, ROWS).expect("frame").frame;
+    let row = super::tab_sidebar_golden::sidebar_lines(&frame, COLS, 0, 1).remove(0);
+    assert!(row.contains("Search It · restart screen"), "{row}");
 }

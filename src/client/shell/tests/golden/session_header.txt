@@ -153,3 +153,68 @@
    06-57 -/sidebar_chrome_bg
    58-58 overlay0/sidebar_chrome_bg
    59-59 -/sidebar_chrome_bg
+== in a group @ 80
+00| ○ Search It · local clean up  82% ⚭3 ✉1                 Terminal  Browser ◨  ≡ |
+   00-00 -/sidebar_chrome_bg
+   01-01 green/sidebar_chrome_bg
+   02-02 -/sidebar_chrome_bg
+   03-14 overlay1/sidebar_chrome_bg
+   15-28 text/sidebar_chrome_bg/b
+   29-30 -/sidebar_chrome_bg
+   31-33 yellow/sidebar_chrome_bg
+   34-34 -/sidebar_chrome_bg
+   35-36 subtext0/sidebar_chrome_bg
+   37-37 -/sidebar_chrome_bg
+   38-39 overlay1/sidebar_chrome_bg
+   40-56 -/sidebar_chrome_bg
+   57-64 accent/sidebar_chrome_bg
+   65-66 -/sidebar_chrome_bg
+   67-73 overlay0/sidebar_chrome_bg
+   74-74 -/sidebar_chrome_bg
+   75-75 overlay0/sidebar_chrome_bg
+   76-77 -/sidebar_chrome_bg
+   78-78 overlay0/sidebar_chrome_bg
+   79-79 -/sidebar_chrome_bg
+== in a group @ 62
+00| ○ Searc… · local clean up  82% ⚭3 ✉1  Terminal  Browser ◨  ≡ |
+   00-00 -/sidebar_chrome_bg
+   01-01 green/sidebar_chrome_bg
+   02-02 -/sidebar_chrome_bg
+   03-11 overlay1/sidebar_chrome_bg
+   12-25 text/sidebar_chrome_bg/b
+   26-27 -/sidebar_chrome_bg
+   28-30 yellow/sidebar_chrome_bg
+   31-31 -/sidebar_chrome_bg
+   32-33 subtext0/sidebar_chrome_bg
+   34-34 -/sidebar_chrome_bg
+   35-36 overlay1/sidebar_chrome_bg
+   37-38 -/sidebar_chrome_bg
+   39-46 accent/sidebar_chrome_bg
+   47-48 -/sidebar_chrome_bg
+   49-55 overlay0/sidebar_chrome_bg
+   56-56 -/sidebar_chrome_bg
+   57-57 overlay0/sidebar_chrome_bg
+   58-59 -/sidebar_chrome_bg
+   60-60 overlay0/sidebar_chrome_bg
+   61-61 -/sidebar_chrome_bg
+== in a group @ 59
+00| ○ local clean up  82% ⚭3 ✉1        Terminal  Browser ◨  ≡ |
+   00-00 -/sidebar_chrome_bg
+   01-01 green/sidebar_chrome_bg
+   02-02 -/sidebar_chrome_bg
+   03-16 text/sidebar_chrome_bg/b
+   17-18 -/sidebar_chrome_bg
+   19-21 yellow/sidebar_chrome_bg
+   22-22 -/sidebar_chrome_bg
+   23-24 subtext0/sidebar_chrome_bg
+   25-25 -/sidebar_chrome_bg
+   26-27 overlay1/sidebar_chrome_bg
+   28-35 -/sidebar_chrome_bg
+   36-43 accent/sidebar_chrome_bg
+   44-45 -/sidebar_chrome_bg
+   46-52 overlay0/sidebar_chrome_bg
+   53-53 -/sidebar_chrome_bg
+   54-54 overlay0/sidebar_chrome_bg
+   55-56 -/sidebar_chrome_bg
+   57-57 overlay0/sidebar_chrome_bg
+   58-58 -/sidebar_chrome_bg

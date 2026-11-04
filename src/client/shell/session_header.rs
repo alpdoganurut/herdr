@@ -4,7 +4,9 @@
 //! view strip.
 //!
 //! Left: the focused tab's status as an icon only (its state colour), the
-//! tab's name (bold), then its context use from 75 % (the tab row's rule),
+//! tab's group when it is in one (`overlay1`, then ` · `; named as the
+//! sidebar's group header names it: the team's purpose, else the group
+//! label), the tab's name (bold), then its context use from 75 % (the tab row's rule),
 //! `⚭N` running subagents and `✉N` quiet messages waiting, each only when
 //! there is something to say. Right: the view tabs `Terminal` / `Browser`
 //! and the browser dock toggle `◨` (while the companion browser docks
@@ -15,11 +17,14 @@
 //! `T  B ◨`, then to `◨`; the dock toggles always stay. Once only `◨` is
 //! left the facts stay whole and the name keeps shrinking below `MIN_NAME`
 //! (`● head…  82% ⚭3 ✉1  ◨  ≡` at 26 columns); the facts drop only when
-//! not even one name cell fits beside them.
+//! not even one name cell fits beside them. The group never takes room from
+//! the rest: it gets only the cells the whole name leaves, shortens (`…`)
+//! and drops once fewer than `MIN_GROUP` of its cells fit.
 //!
 //! Client presentation only. Built once per compose from snapshot borrows
 //! and static strings: one pass over the snapshot's agents for the focused
-//! tab (its subagents, context use and resume marks), never per pane, and
+//! tab (its subagents, context use and resume marks) and one over its
+//! spaces for the group, never per pane, and
 //! no allocation (the counts are `StackStr`s, the hits fixed rects).
 
 use std::fmt::Write as _;
@@ -45,6 +50,10 @@ const RESUMING_GLYPH: &str = "\u{21BB}"; // ↻
 const BLOCKED_GLYPH: &str = "\u{25C9}"; // ◉
 /// The cells the name keeps before the view tabs shrink.
 pub(crate) const MIN_NAME: u16 = 8;
+/// The fewest group cells drawn (a shorter group shows whole or not at all).
+const MIN_GROUP: u16 = 4;
+/// Between the group and the tab name (the toasts' `group · role`).
+const GROUP_SEPARATOR: &str = " \u{00B7} "; //  ·
 /// The narrowest notice line on the header (Browser view).
 const BANNER_MIN: u16 = 16;
 
@@ -156,6 +165,8 @@ pub(crate) struct HeaderBrowser {
 pub(crate) struct SessionHeader<'a> {
     pub(crate) icon: &'static str,
     pub(crate) icon_color: Color,
+    /// The tab's group (`teams::group_name`), `None` outside a group.
+    pub(crate) group: Option<&'a str>,
     pub(crate) name: &'a str,
     pub(crate) name_color: Color,
     /// `NN%` from 75 % and its colour.
@@ -372,15 +383,40 @@ pub(crate) fn render(
     let room = end.saturating_sub(name_x);
     let show_facts = facts > 0 && room > facts + 2;
     let name_room = if show_facts { room - facts - 2 } else { room };
+    // The group, dim, before the name: only in the cells the whole name
+    // leaves, so the name, the facts and the controls keep theirs.
+    let mut name_at = name_x;
+    if let Some(group) = header.group {
+        let separator = display_width(GROUP_SEPARATOR);
+        let group_width = display_width(group);
+        let group_room = name_room
+            .saturating_sub(name_width)
+            .saturating_sub(separator)
+            .min(group_width);
+        if group_width > 0 && group_room >= group_width.min(MIN_GROUP) {
+            let group_style = fg(palette.overlay1);
+            put_truncated(buffer, name_x, y, group_room, group, group_style);
+            put_text(
+                buffer,
+                name_x + group_room,
+                y,
+                separator,
+                GROUP_SEPARATOR,
+                group_style,
+            );
+            name_at = name_x + group_room + separator;
+        }
+    }
+    let name_room = name_room - (name_at - name_x);
     put_truncated(
         buffer,
-        name_x,
+        name_at,
         y,
         name_room,
         header.name,
         fg(header.name_color).add_modifier(Modifier::BOLD),
     );
-    let mut content_end = name_x + name_width.min(name_room);
+    let mut content_end = name_at + name_width.min(name_room);
     if show_facts {
         let mut x = content_end + 2;
         let mut first = true;
@@ -471,6 +507,7 @@ impl ClientShellState {
         Some(SessionHeader {
             icon: status_glyph(status, resuming, self.config.status_indicators),
             icon_color: status_glyph_color(status, resuming, palette),
+            group: super::teams::group_name(snapshot, self.active_teams(), &tab.workspace_id),
             name: &tab.label,
             name_color: super::tab_color::tab_label_fg(tab.color, palette).unwrap_or(palette.text),
             context: usage.and_then(|usage| {
