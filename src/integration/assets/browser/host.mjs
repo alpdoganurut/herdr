@@ -27,7 +27,7 @@ const require = createRequire(import.meta.url);
 // not its result) and an in-page eval would hit strict CSPs.
 const extractFn = new Function('args', 'return (' + EXTRACT_SOURCE + ')(args);');
 const linksFn = new Function('args', 'return (' + LINKS_SOURCE + ')(args);');
-const modalsFn = new Function('return (' + MODALS_SOURCE + ')();');
+const modalsFn = new Function('acted', 'return (' + MODALS_SOURCE + ')(acted);');
 const PLAYWRIGHT_VERSION = require('playwright-core/package.json').version;
 const HOST_PROTOCOL = 1;
 const CONSOLE_RING = 1000;
@@ -803,7 +803,9 @@ const ops = {
     // Chromium still holds it, and a second one sent beside it (the quiet
     // retry, the inline copy, another pane's shot) left the tab stretched to
     // its document's height. A viewport shot sends no clip at all.
-    const capture = (params) => laneShot(state.captures, () => state.session.send('Page.captureScreenshot', params));
+    // Past the op's deadline (the caller already has its browser_timeout) no
+    // capture is sent: the lane checks it when the request's turn comes.
+    const capture = (params) => laneShot(state.captures, () => state.session.send('Page.captureScreenshot', params), deadlineAt);
     const shots = [];
     let buffer;
     // The agent's picture is the page: the activity overlay steps aside for
@@ -870,6 +872,7 @@ const ops = {
       // Downscale with CDP's clip.scale (no image library needed), the same
       // region as the file: the element's box, the document or the viewport.
       const scale = maxPx / longEdge;
+      if (Date.now() >= deadlineAt) fail('browser_timeout', 'the screenshot ran out of time before its inline copy');
       const metrics = await state.session.send('Page.getLayoutMetrics');
       const vis = metrics.cssVisualViewport || metrics.visualViewport;
       const content = metrics.cssContentSize || metrics.contentSize;
@@ -1045,7 +1048,9 @@ const ops = {
     // What a click or key press changes besides the URL: an in-page modal (a
     // Vue/React dialog has no CDP dialog event), the title, the focus.
     const probesChanges = kind === 'click' || kind === 'press';
-    const probe = () => withTimeout(page.evaluate(modalsFn), 1000, 'probe_timeout', 'probe').catch(() => null);
+    // `acted` (the after probe): the element acted on, so a focus that landed
+    // on it (Chromium focuses a clicked button) is not reported as moved.
+    const probe = (acted = null) => withTimeout(page.evaluate(modalsFn, acted), 1000, 'probe_timeout', 'probe').catch(() => null);
     const before = probesChanges ? await probe() : null;
     // The activity cursor glides to the element first (the ripple lands with the click).
     if (activity && activity.frame && handle && !state.dialog) {
@@ -1123,7 +1128,14 @@ const ops = {
       page.off('framenavigated', onNav);
       state.inflight--;
     }
-    const changes = probesChanges ? actChanges(before, await probe()) : {};
+    // A JavaScript dialog the act opened blocks the page: the probe would only
+    // wait out its timeout (dialog_open says it). The handle goes along only
+    // while it still lives in the main frame's document.
+    let changes = {};
+    if (probesChanges && !state.dialog) {
+      const acted = handle && !navigated && page.url() === urlBefore && (await handle.ownerFrame().catch(() => null)) === page.mainFrame() ? handle : null;
+      changes = actChanges(before, await probe(acted));
+    }
     return { result: { kind, role: info.role, name: info.name, navigated: navigated || page.url() !== urlBefore, url_before: urlBefore, dispatched, ...changes }, page: await pageInfo(state) };
   },
 

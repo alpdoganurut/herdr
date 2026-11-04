@@ -43,8 +43,10 @@ const DIALOG_FINDER = String.raw`function findDialogs(modalOnly) {
   }`;
 
 // The open modal dialogs and the page's title and focused element, for the
-// act's "what changed" (before and after a click).
-export const MODALS_SOURCE = String.raw`(function () {
+// act's "what changed" (before and after a click). `acted` (optional): the
+// element the act clicked or pressed; `focused.acted` says the focus is on it
+// (or on the control a clicked label targets).
+export const MODALS_SOURCE = String.raw`(function (acted) {
   ` + DIALOG_FINDER + String.raw`
   const modals = findDialogs(true).map((el) => ({ title: dialogTitle(el), buttons: dialogButtons(el) }));
   let el = document.activeElement;
@@ -57,6 +59,7 @@ export const MODALS_SOURCE = String.raw`(function () {
     // never a field's contents
     const name = (el.getAttribute('aria-label') || (el.labels && el.labels[0] && el.labels[0].innerText) || el.placeholder || (editable ? '' : el.innerText) || el.getAttribute('title') || '').replace(/\s+/g, ' ').trim().slice(0, 60);
     focused = { role, name };
+    if (acted && (el === acted || acted.control === el)) focused.acted = true;
   }
   return { modals, title: document.title, focused };
 })`;
@@ -261,7 +264,8 @@ const modalKey = (m) => [m.title || ''].concat(m.buttons || []).join('\u0001');
  * and after it: `modal` (the first modal dialog that was not open before:
  * title + button labels), `title_before` (when the title changed) and
  * `focused` (role + name of the element that has the focus now, when it
- * moved). Empty when nothing changed or a probe failed.
+ * moved to another element than the one acted on: `after.focused.acted`).
+ * Empty when nothing changed or a probe failed.
  */
 export function actChanges(before, after) {
   const out = {};
@@ -272,7 +276,7 @@ export function actChanges(before, after) {
   if (before && typeof after.title === 'string' && after.title !== before.title) out.title_before = before.title;
   const f = after.focused;
   const b = before && before.focused;
-  if (f && (!b || b.role !== f.role || b.name !== f.name)) out.focused = { role: f.role, name: f.name };
+  if (f && !f.acted && (!b || b.role !== f.role || b.name !== f.name)) out.focused = { role: f.role, name: f.name };
   return out;
 }
 

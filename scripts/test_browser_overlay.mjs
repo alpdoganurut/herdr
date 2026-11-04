@@ -252,6 +252,21 @@ check((() => { const o = new Overlay({ session }); o.linger('x'); const ok = o.u
   hold('done'); await blocker; await sleep(10);
   check(sends.length === 0, 'an abandoned shot never reaches Chromium');
 
+  // past the op's deadline (the outer timeout answered already): never sent,
+  // neither a shot asked for afterwards nor one queued before it
+  sends.length = 0;
+  const expired = await laneShot(lane, () => { sends.push('expired'); return Promise.resolve({}); }, Date.now() - 1).wait(1000).catch((e) => e);
+  check(/abandoned/.test(expired.message) && sends.length === 0, `a shot asked for after its deadline is not sent: ${expired.message} / ${sends}`);
+  let hold2;
+  const blocker2 = lane.enqueue(() => new Promise((r) => { hold2 = r; }));
+  const queued = laneShot(lane, () => { sends.push('queued'); return Promise.resolve({}); }, Date.now() + 20);
+  const queuedWait = queued.wait(1000).catch((e) => e);
+  await sleep(50);
+  hold2('done'); await blocker2;
+  check(/abandoned/.test((await queuedWait).message) && sends.length === 0, `a shot whose deadline passed while it waited in the lane is not sent: ${sends}`);
+  const fresh = laneShot(lane, () => { sends.push('fresh'); return Promise.resolve({ data: 'ok' }); }, Date.now() + 5000);
+  check((await fresh.wait(1000)).data === 'ok' && sends.join(',') === 'fresh', `the lane stays free for the next shot: ${sends}`);
+
   // one Chromium never answers does not wedge the page for good
   const short = new CaptureLane({ staleMs: 30 });
   short.enqueue(() => new Promise(() => {}));

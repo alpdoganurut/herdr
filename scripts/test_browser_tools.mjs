@@ -40,6 +40,10 @@ function check(cond, msg) { if (!cond) throw new Error(msg); }
   check(c.modal && c.modal.title === 'Merge this request?' && c.modal.buttons.join() === 'Cancel,Merge', 'a modal that opened is reported with its title and buttons');
   check(c.title_before === 'MR !12', 'a title change keeps the old title');
   check(c.focused && c.focused.name === 'Cancel', 'focus that moved is reported');
+  // Chromium focuses a clicked button: the focus on the element acted on is no change
+  const onActed = actChanges({ modals: [], title: 'MR !12', focused: null }, { modals: [], title: 'MR !12', focused: { role: 'button', name: 'Merge', acted: true } });
+  check(onActed.focused === undefined, `focus that landed on the acted element is not reported: ${JSON.stringify(onActed)}`);
+  check(actChanges({ modals: [], title: 'x', focused: null }, { modals: [], title: 'x', focused: { role: 'textbox', name: 'Search' } }).focused.name === 'Search', 'focus that moved to another element is reported');
   check(Object.keys(actChanges(after, after)).length === 0, 'nothing changed: nothing reported (an already open modal is not new)');
   check(Object.keys(actChanges(null, null)).length === 0, 'a failed probe reports nothing');
   check(actChanges(null, after).modal && actChanges(null, after).title_before === undefined, 'without a before probe a modal still shows, no title change is claimed');
@@ -98,11 +102,12 @@ if (!binary) { console.log('skip: no Chromium binary (set HERDR_TEST_CHROMIUM)')
 const PAGE = `<!doctype html><html><head><title>MR !12</title></head><body>
 <nav>Projects · Groups</nav>
 <main><h1>Merge request !12</h1><p>${'Body text. '.repeat(30)}</p>
-<button id="open">Merge</button> <button id="hidden" style="display:none">Hidden</button> <button id="vanish">Vanish</button>
+<button id="open">Merge</button> <button id="hidden" style="display:none">Hidden</button> <button id="vanish">Vanish</button> <button id="alert">Alert</button>
 <dialog id="closed"><p>closed dialog text</p></dialog></main>
 <div id="modal" role="dialog" aria-modal="true" aria-labelledby="mt" style="display:none"><h2 id="mt">Merge this request?</h2><p>The source branch will be removed.</p><button>Cancel</button><button>Merge now</button></div>
 <script>
 document.getElementById('open').addEventListener('click', () => { document.getElementById('modal').style.display = 'block'; document.title = 'MR !12 · confirm'; });
+document.getElementById('alert').addEventListener('click', () => { setTimeout(() => alert('saved'), 50); });
 </script></body></html>`;
 
 // --- the extraction, in a page of Playwright's own browser
@@ -136,6 +141,10 @@ document.getElementById('open').addEventListener('click', () => { document.getEl
     await page.click('#open');
     const open = await page.evaluate(modalsFn);
     check(open.modals.length === 1 && open.modals[0].title === 'Merge this request?' && open.modals[0].buttons.join() === 'Cancel,Merge now', `the probe reads the modal: ${JSON.stringify(open)}`);
+    const opener = await page.$('#open');
+    const actedProbe = await page.evaluate(new Function('acted', 'return (' + MODALS_SOURCE + ')(acted);'), opener);
+    check(actedProbe.focused && actedProbe.focused.acted === true, `the probe marks a focus on the acted element: ${JSON.stringify(actedProbe)}`);
+    check(!(await page.evaluate(modalsFn)).focused.acted, 'without an acted element nothing is marked');
   } finally {
     await browser.close();
   }
@@ -215,6 +224,7 @@ try {
     check(clicked.result.modal && clicked.result.modal.title === 'Merge this request?' && clicked.result.modal.buttons.includes('Merge now'), `the click reports the modal: ${JSON.stringify(clicked.result)}`);
     check(clicked.result.title_before === 'MR !12' && clicked.page.title === 'MR !12 · confirm', `and the title change: ${JSON.stringify([clicked.result, clicked.page])}`);
     check(clicked.page.dialog_open === false, 'no JavaScript dialog: dialog_open stays false');
+    check(clicked.result.focused === undefined, `the clicked button taking the focus is not reported as a focus change: ${JSON.stringify(clicked.result)}`);
     const read = await call('read', { profile: 't', target, args: { format: 'markdown' } });
     check(read.ok && read.result.content.startsWith('## Dialog: Merge this request?'), `a read shows the modal first: ${read.ok ? read.result.content.slice(0, 80) : JSON.stringify(read.error)}`);
 
@@ -234,6 +244,16 @@ try {
     // host.log (stderr) has the whole message, herdr's log the summary at info
     check(/act timeout .*"elapsed_ms":\d+/.test(stderr) && stderr.includes('Call log'), `host.log gets the full message: ${stderr.slice(-600)}`);
     check(logs.some((l) => l.level === 'info' && l.text.startsWith('act timeout') && l.text.includes('"force"')), 'an info log event with hidden/force and timings');
+    // a JavaScript dialog that opens right after the click (inside the act's
+    // settle; one opened during the click itself answers dialog_open): no after
+    // probe (it would wait out its timeout)
+    const shown = await call('eval', { profile: 't', target, args: { expr: "document.getElementById('modal').style.display = 'none'; true" } });
+    check(shown.ok, `eval: ${JSON.stringify(shown.error)}`);
+    const alerted = await act({ kind: 'click', selector: '#alert' });
+    check(alerted.ok && alerted.page.dialog_open === true, `the click answers with the dialog open: ${JSON.stringify(alerted)}`);
+    check(alerted.result.modal === undefined && alerted.result.focused === undefined && alerted.result.title_before === undefined, `and no after probe: ${JSON.stringify(alerted.result)}`);
+    const answered = await call('dialog', { profile: 't', target, args: { accept: true } });
+    check(answered.ok, `dialog: ${JSON.stringify(answered.error)}`);
     await call('close', { profile: 't', target });
   } finally {
     host.stdin.end();

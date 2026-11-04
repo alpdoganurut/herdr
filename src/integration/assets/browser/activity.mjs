@@ -339,14 +339,19 @@ export function captureTimeout(promise, ms) {
  *  `wait(ms)` queues the request, a later one (the retry after a quiet
  *  select) waits on the same request rather than sending a second one beside
  *  it. `abandon()` (the op is over) keeps a request that has not started yet
- *  from starting; one Chromium already has is left to settle in the lane. */
-export function laneShot(lane, send) {
+ *  from starting; one Chromium already has is left to settle in the lane.
+ *  `deadlineAt` (the op's, epoch ms): a request not sent by then never is. */
+export function laneShot(lane, send, deadlineAt = null) {
   let request = null;
   let abandoned = false;
+  // past the op's deadline its caller has been answered already: the request
+  // is never sent, however long it waited in the lane
+  const wanted = () => !abandoned && (deadlineAt == null || Date.now() < deadlineAt);
   return {
     wait(ms) {
       if (!request) {
-        request = lane.enqueue(send, () => !abandoned);
+        if (!wanted()) return Promise.reject(new Error('capture abandoned before it started'));
+        request = lane.enqueue(send, wanted);
         request.catch(() => {});
       }
       return captureTimeout(request, ms);
