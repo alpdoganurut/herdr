@@ -18,7 +18,7 @@ import { Overlay, Companion, NUDGE_URL, dismissPanes, captureWithQuietRetry, SEL
 import { pathToFileURL } from 'node:url';
 import nodePath from 'node:path';
 // the act's change probe and timeout message (on a line of their own)
-import { MODALS_SOURCE, actChanges, actTimeoutMessage } from './extract.mjs';
+import { MODALS_SOURCE, actChanges, actTimeoutMessage, redactActText } from './extract.mjs';
 /** Kept out of the connect for the post-timeout diagnosis (the page probe: a 1 s list fetch, 1 s probes). */
 const ATTACH_DIAG_RESERVE_MS = 2500;
 
@@ -51,8 +51,9 @@ function event(name, fields) {
 function log(level, text) {
   event('log', { level, text: String(text).slice(0, 500) });
 }
-// An act that timed out: the whole Playwright message (its call log) goes to
-// host.log (the sidecar's stderr), a summary to herdr's log at info.
+// An act that timed out: the whole Playwright message (its call log, a
+// submitted text masked) goes to host.log (the sidecar's stderr), a summary to
+// herdr's log at info; the URL comes without its query or fragment.
 function logActTimeout(fields) {
   try { process.stderr.write(`${new Date().toISOString()} act timeout ${JSON.stringify(fields)}\n`); } catch {}
   const { message, ...rest } = fields;
@@ -1051,15 +1052,26 @@ const ops = {
       if (navigated || page.url() !== urlBefore) await page.waitForLoadState('domcontentloaded', { timeout: Math.max(1000, timeout) }).catch(() => {});
     } catch (err) {
       if (err instanceof OpError) throw err;
+      // Playwright's call log quotes the submitted text (`fill("…")`,
+      // `elementHandle.type("…")`): only its length reaches the answer and the logs.
+      err.message = redactActText(err.message, kind === 'fill' || kind === 'type' ? args.text : null);
       if (/Timeout/i.test(err.message)) {
         // The element resolved before the action: stale only when it has
         // left the page since; otherwise the action itself did not finish
         // (covered, hidden, disabled, a modal in the way).
         const elapsed = Date.now() - started;
-        const connected = handle ? await withTimeout(handle.evaluate((el) => el.isConnected), 1000, 'probe_timeout', 'probe').catch(() => false) : true;
         const targetName = args.ref || args.selector || 'the focused element';
-        logActTimeout({ kind, target: targetName, role: info.role, name: info.name, hidden, force, timeout_ms: timeout, elapsed_ms: elapsed, deadline_ms, connected, url: page.url(), message: err.message });
-        if (args.ref && !connected) fail('stale_ref', `ref ${args.ref} no longer resolves (the element left the page during the ${kind}); re-run browser snapshot`);
+        const url = String(page.url()).split(/[?#]/)[0];
+        // A JavaScript dialog the action opened blocks the page (and the probe).
+        if (await dialogStillOpen(state)) {
+          logActTimeout({ kind, target: targetName, role: info.role, name: info.name, hidden, force, timeout_ms: timeout, elapsed_ms: elapsed, deadline_ms, dialog: true, url, message: err.message });
+          fail('dialog_open', `a ${state.dialog.type()} dialog opened during the ${kind} ("${state.dialog.message().slice(0, 80)}"); browser dialog accept|dismiss, or the user answers it`);
+        }
+        // true / false when the probe answered, null when it could not tell
+        // (a busy renderer): only a clear false is stale.
+        const connected = handle ? await withTimeout(handle.evaluate((el) => el.isConnected), 1000, 'probe_timeout', 'probe').catch(() => null) : true;
+        logActTimeout({ kind, target: targetName, role: info.role, name: info.name, hidden, force, timeout_ms: timeout, elapsed_ms: elapsed, deadline_ms, connected, url, message: err.message });
+        if (args.ref && connected === false) fail('stale_ref', `ref ${args.ref} no longer resolves (the element left the page during the ${kind}); re-run browser snapshot`);
         fail('action_timeout', actTimeoutMessage({ kind, target: targetName, role: info.role, name: info.name, timeout_ms: timeout, force, hidden, connected, message: err.message }));
       }
       throw err;

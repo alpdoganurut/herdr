@@ -1175,15 +1175,23 @@ fn fork_smoke_find_re_extracts_unless_it_directly_follows_a_fresh_read() {
     assert_eq!(read_ops(&shared), 3, "find right after a read reuses it");
     assert_eq!(hit.data["cached"], true);
     assert!(hit.text.contains("[cached copy "), "{}", hit.text);
+    // read → find → find: only the first find reuses the read's copy
+    let again = hub.run(&actor, find_op("abc")).unwrap();
+    assert_eq!(
+        read_ops(&shared),
+        4,
+        "a second find after a read re-extracts"
+    );
+    assert!(again.data.get("cached").is_none());
     // an old copy is not reused, for find or for paging
     hub.run(&actor, read_at(0)).unwrap();
     hub.age_read_cache_for_test(Duration::from_secs(6));
     let miss = hub.run(&actor, find_op("abc")).unwrap();
-    assert_eq!(read_ops(&shared), 5);
+    assert_eq!(read_ops(&shared), 6);
     assert!(miss.data.get("cached").is_none());
     hub.age_read_cache_for_test(Duration::from_secs(6));
     hub.run(&actor, read_at(100)).unwrap();
-    assert_eq!(read_ops(&shared), 6);
+    assert_eq!(read_ops(&shared), 7);
     let _ = std::fs::remove_dir_all(&home);
 }
 

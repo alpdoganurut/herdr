@@ -23,7 +23,7 @@ import { spawn } from 'node:child_process';
 import http from 'node:http';
 import os from 'node:os';
 import readline from 'node:readline';
-import { EXTRACT_SOURCE, MODALS_SOURCE, actChanges, callLogTail, actTimeoutMessage } from '../src/integration/assets/browser/extract.mjs';
+import { EXTRACT_SOURCE, MODALS_SOURCE, actChanges, callLogTail, actTimeoutMessage, redactActText } from '../src/integration/assets/browser/extract.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, '..');
@@ -53,6 +53,18 @@ function check(cond, msg) { if (!cond) throw new Error(msg); }
   check(!text.includes('\n'), 'the timeout message is one line');
   check(text.includes('button "Go" (e5)') && text.includes('3000 ms') && text.includes('forced') && text.includes('playwright: attempting click action · element is not visible') && text.includes('browser_screenshot'), `the timeout message names the element, budget, mode, call log and the next step: ${text}`);
   check(!/stale/i.test(text), 'a timeout is not called stale');
+  // a forced fill on a background tab: Playwright's call log quotes the text
+  // and no waiting line follows, so it would be the tail
+  const secret = 'hunter2 "pw"\nline2';
+  const forced = `locator.fill: Timeout 3000ms exceeded.\nCall log:\n  - waiting for locator('aria-ref=e7')\n    - locator resolved to <input id="p">\n  - fill("${secret}")\n  - elementHandle.type("s3cr3t-typed")\n`;
+  const filled = actTimeoutMessage({ kind: 'fill', target: 'e7', role: 'textbox', name: 'Password', timeout_ms: 3000, force: true, hidden: true, connected: true, message: redactActText(forced, secret) });
+  check(!filled.includes('hunter2') && !filled.includes('s3cr3t') && filled.includes('fill("‹18 chars›")') && filled.includes('type("‹12 chars›")'), `the timeout message carries the text's length, never the text: ${filled}`);
+  const logged = redactActText(forced, secret);
+  check(!logged.includes('hunter2') && !logged.includes('line2') && !logged.includes('s3cr3t'), `the logged message masks the text: ${logged}`);
+  check(!callLogTail(forced).includes('s3cr3t') && !callLogTail(forced).includes('hunter2'), `the tail masks a quoted text even unredacted: ${callLogTail(forced)}`);
+  check(redactActText(redactActText(forced, secret)) === redactActText(forced, secret), 'masking twice changes nothing');
+  check(actTimeoutMessage({ kind: 'click', target: 'button.go', timeout_ms: 3000, connected: false, message }).includes('left the page during the click'), 'a selector target that left the page says so');
+  check(!actTimeoutMessage({ kind: 'click', target: 'e5', timeout_ms: 3000, connected: null, message }).includes('still resolves'), 'an unanswered probe claims nothing');
 }
 console.log('ok: act change report and timeout message');
 

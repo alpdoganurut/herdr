@@ -276,10 +276,24 @@ export function actChanges(before, after) {
   return out;
 }
 
-/** The last `n` steps of a Playwright error's call log (`  - …` lines), one line. */
+const MASKED = /^‹\d+ chars›$/;
+/** A Playwright message with the text an act submitted replaced by its length:
+ *  the call log quotes it verbatim (`fill("…")`, `elementHandle.type("…")`).
+ *  `text`, when known, is masked exactly (quotes and newlines included); any
+ *  other fill/type argument is masked to the end of its line. */
+export function redactActText(message, text) {
+  let out = String(message || '');
+  const t = text == null ? '' : String(text);
+  if (t) for (const op of ['fill', 'type']) out = out.split(`${op}("${t}")`).join(`${op}("‹${[...t].length} chars›")`);
+  // the rest of the line (a text with a newline has no closing `")` on it)
+  return out.replace(/\b(fill|type)\("(.*?)(?:"\))?$/gm, (all, op, v) => (MASKED.test(v) ? all : `${op}("‹${[...v].length} chars›")`));
+}
+
+/** The last `n` steps of a Playwright error's call log (`  - …` lines), one
+ *  line, a submitted text masked (`redactActText`). */
 export function callLogTail(message, n = 2) {
   // eslint-disable-next-line no-control-regex
-  const lines = String(message || '').replace(/\x1b\[[0-9;]*m/g, '').split('\n');
+  const lines = redactActText(String(message || '').replace(/\x1b\[[0-9;]*m/g, '')).split('\n');
   const at = lines.findIndex((l) => /^\s*Call log:/i.test(l));
   const steps = (at >= 0 ? lines.slice(at + 1) : lines)
     .map((l) => l.trim())
@@ -294,10 +308,12 @@ export function callLogTail(message, n = 2) {
 }
 
 /** The one-line action_timeout message: the element, the budget, forced or not, the call log's tail, what to do. */
-export function actTimeoutMessage({ kind, target, role, name, timeout_ms, force, hidden, message }) {
+export function actTimeoutMessage({ kind, target, role, name, timeout_ms, force, hidden, connected, message }) {
   const element = name ? `${role || 'element'} "${name}" (${target})` : `${role || 'element'} (${target})`;
   const mode = force ? 'forced (background tab: no actionability checks)' : (hidden ? 'not forced (background tab)' : 'not forced');
+  // connected: false = left the page, null = the page did not answer the probe
+  const where = connected === false ? `the element left the page during the ${kind}` : connected === null ? 'the page did not answer whether the element is still there' : 'the element still resolves';
   const tail = callLogTail(message);
   // the advice before the call log: the sidecar keeps the first 500 chars
-  return `${kind} on ${element} did not complete within ${timeout_ms} ms; the element still resolves; ${mode}; take browser_screenshot to see what is in the way (a modal, an overlay, a disabled or hidden control) before retrying${tail ? `; playwright: ${tail}` : ''}`;
+  return `${kind} on ${element} did not complete within ${timeout_ms} ms; ${where}; ${mode}; take browser_screenshot to see what is in the way (a modal, an overlay, a disabled or hidden control) before retrying${tail ? `; playwright: ${tail}` : ''}`;
 }
