@@ -1225,7 +1225,7 @@ pub struct UiConfig {
     /// scheduled tabs always keep their own rows. Default: true.
     pub sidebar_collapse_suspended: bool,
     /// Fork: in the "tabs" sidebar layout, show a tab's agent context use: `NN%` on its row
-    /// from 75 % (yellow, red from 90 %) and the tokens in the detail strip. Default: true.
+    /// from 75 % (yellow, red from 90 %), and the same in the session header. Default: true.
     pub sidebar_context_usage: bool,
     /// Terminal width at or below which Herdr uses the mobile single-column layout. Default: 64.
     pub mobile_width_threshold: u16,

@@ -150,7 +150,6 @@ impl ClientShellState {
             });
         let breathe_phase = self.breathe_phase();
         let breathe_reset_rgb = self.breathe_reset_rgb();
-        let browser_row = self.browser_row();
         let browser_marked_tabs = self.browser_marked_tabs();
         let browser_attention_tabs = self.browser_attention_tabs();
         // Fork (companion launcher): tabs with browser pages (one map, O(sessions)).
@@ -158,8 +157,6 @@ impl ClientShellState {
         let active_view = self.active_view();
         let pins_view = self.pins_view();
         let scheduled_view = self.scheduled_view();
-        // Fork (menu design): the toolbar's notes button.
-        let info_pane_open = self.info_dock_open_for_focused_tab();
         // Fork (tab history): the toolbar's back / forward buttons.
         let (history_back, history_forward) = self.tab_history_available();
         let mut render_state = render::ShellRenderState {
@@ -174,7 +171,6 @@ impl ClientShellState {
             idle_reminders: &self.idle_reminders,
             scheduled_reminders: &self.scheduled_reminders,
             news_row,
-            browser_row,
             browser_marked_tabs,
             browser_attention_tabs,
             browser_page_tabs,
@@ -230,7 +226,6 @@ impl ClientShellState {
                 &self.active_endpoint_id,
                 self.snapshot.as_deref(),
             ),
-            info_pane_open,
             history_back,
             history_forward,
         };
@@ -378,7 +373,6 @@ impl ClientShellState {
         };
         let breathe_phase = self.breathe_phase();
         let breathe_reset_rgb = self.breathe_reset_rgb();
-        let browser_row = self.browser_row();
         let browser_marked_tabs = self.browser_marked_tabs();
         let browser_attention_tabs = self.browser_attention_tabs();
         // Fork (companion launcher): tabs with browser pages (one map, O(sessions)).
@@ -392,8 +386,6 @@ impl ClientShellState {
         let active_view = self.active_view();
         let pins_view = self.pins_view();
         let scheduled_view = self.scheduled_view();
-        // Fork (menu design): the toolbar's notes button.
-        let info_pane_open = self.info_dock_open_for_focused_tab();
         // Fork (tab history): the toolbar's back / forward buttons.
         let (history_back, history_forward) = self.tab_history_available();
         let mut buffer = Buffer::empty(Rect::new(0, 0, cols, rows));
@@ -414,7 +406,6 @@ impl ClientShellState {
                 idle_reminders: &self.idle_reminders,
                 scheduled_reminders: &self.scheduled_reminders,
                 news_row,
-                browser_row,
                 browser_marked_tabs,
                 browser_attention_tabs,
                 browser_page_tabs,
@@ -476,7 +467,6 @@ impl ClientShellState {
                     &self.active_endpoint_id,
                     Some(snapshot),
                 ),
-                info_pane_open,
                 history_back,
                 history_forward,
             },
@@ -498,6 +488,7 @@ impl ClientShellState {
                     &super::info_dock::DockComposeInput {
                         tab_label,
                         sized_elsewhere: surface.frame.width != layout.pane_surface.width,
+                        title_bar: !layout.session_header.is_empty(),
                     },
                 );
             }
@@ -514,9 +505,26 @@ impl ClientShellState {
             &self.config.palette,
             &mut self.hits.browser_dock,
         );
-        if browser_view {
+        if browser_view && super::browser_dock::full_area(&layout).intersects(layout.info_dock) {
             // The info dock is under the browser too.
             self.hits.info_dock = super::info_dock::InfoDockHits::default();
+        }
+        // Fork (session header): the tabs layout's header row.
+        if !layout.session_header.is_empty() {
+            // The row keeps its chrome even without a focused tab to describe.
+            buffer.set_style(
+                layout.session_header.intersection(buffer.area),
+                Style::default().bg(self.config.palette.sidebar_chrome()),
+            );
+            let hits = self.session_header_view().map(|header| {
+                super::session_header::render(
+                    &mut buffer,
+                    layout.session_header,
+                    &header,
+                    &self.config.palette,
+                )
+            });
+            self.hits.session_header = hits.unwrap_or_default();
         }
         self.hits.panes = surface
             .panes
@@ -756,8 +764,12 @@ impl ClientShellState {
         // Fork (companion launcher): in Browser view the companion covers
         // the tab; the notice, a toast or the agent cards show as one line
         // on the view strip instead (else the tab bar).
-        let browser_banner =
-            super::browser_dock::banner_area(&layout, browser_view, &self.hits.browser_dock);
+        let browser_banner = super::browser_dock::banner_area(
+            &layout,
+            browser_view,
+            &self.hits.browser_dock,
+            &self.hits.session_header,
+        );
         let has_config_diagnostic = self.config_diagnostic.is_some();
         let active_lifecycle = self
             .endpoints

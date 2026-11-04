@@ -26,8 +26,6 @@ pub(crate) struct ClientAgentTimesState {
     pub(crate) revision: u64,
     /// Public pane id → (state change seq, when that state began).
     pub(crate) panes: HashMap<String, (u64, Instant)>,
-    /// Fork (autosuspend): the panes whose agent herdr parked for idling.
-    pub(crate) auto_suspended: std::collections::HashSet<String>,
     /// Fork (restart screen): the parked panes being relaunched, or whose
     /// relaunch gave up.
     pub(crate) resume_marks: HashMap<String, ClientResumeMark>,
@@ -75,12 +73,6 @@ impl ClientResumeMark {
 impl ClientAgentTimesState {
     pub(crate) fn from_payload(payload: AgentTimesPayload, received: Instant) -> Self {
         let now_ms = payload.server_now_unix_ms;
-        let auto_suspended = payload
-            .panes
-            .iter()
-            .filter(|pane| pane.auto_suspended)
-            .map(|pane| pane.pane_id.clone())
-            .collect();
         let resume_marks = payload
             .panes
             .iter()
@@ -95,7 +87,6 @@ impl ClientAgentTimesState {
         Self {
             boot_id: payload.boot_id,
             revision: payload.revision,
-            auto_suspended,
             resume_marks,
             panes: payload
                 .panes
@@ -107,11 +98,6 @@ impl ClientAgentTimesState {
                 })
                 .collect(),
         }
-    }
-
-    /// Fork (autosuspend): whether herdr parked `pane_id`'s agent for idling.
-    pub(crate) fn auto_suspended(&self, pane_id: &str) -> bool {
-        !self.auto_suspended.is_empty() && self.auto_suspended.contains(pane_id)
     }
 
     /// Fork (restart screen): whether any pane is marked restarting or waking.

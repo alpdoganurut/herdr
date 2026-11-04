@@ -50,14 +50,14 @@ const UNANSWERED_AFTER: Duration = Duration::from_secs(4);
 /// The request id prefix of a placement (its answer is not waited for).
 pub(crate) const PLACEMENT_REQUEST_PREFIX: &str = "client-shell-placement:";
 
-/// A click target of the band, the strip, the placeholder or the Browser row.
+/// A click target of the band, the strip or the placeholder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BrowserDockTarget {
     /// The strip's `▣ Terminal`.
     ViewTerminal,
     /// The strip's `◎ Browser`.
     ViewBrowser,
-    /// The strip's (or the Browser row's) `◨`.
+    /// The strip's `◨`.
     ToggleDock,
     /// The placeholder's `[ Start companion ]` (and the strip's `start`).
     Start,
@@ -65,6 +65,11 @@ pub(crate) enum BrowserDockTarget {
     Restart,
     /// The unbound placeholder: bind to the frontmost terminal window.
     Nudge,
+    /// Fork (session header): the dock title bar's `⤢`: Browser view, the
+    /// dock slot freed.
+    Promote,
+    /// Fork (session header): the dock title bar's `✕`.
+    Close,
 }
 
 /// What the band, strip and placeholder drew (the mouse's targets).
@@ -75,8 +80,6 @@ pub(crate) struct BrowserDockHits {
     pub(crate) divider: Rect,
     /// The Browser view's area (empty while the tab shows its terminal).
     pub(crate) full: Rect,
-    /// The Browser row's `◨`.
-    pub(crate) row_button: Rect,
     pub(crate) targets: Vec<(Rect, BrowserDockTarget)>,
 }
 
@@ -151,7 +154,7 @@ pub(crate) struct ViewStrip {
     pub(crate) stopped: Option<&'static str>,
 }
 
-/// A herdr tab's browser facts for the tab row and the detail strip: its
+/// A herdr tab's browser facts for its row and the Browser overlay: its
 /// pages and the view it is in (`docked`, `browser view`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TabBrowserMark {
@@ -319,10 +322,16 @@ fn client_pids() -> Vec<u32> {
 
 /// The Browser view's area: everything right of the sidebar below the
 /// strip (the pane surface, the info dock and the band), so a toggle never
-/// resizes the panes.
+/// resizes the panes. Fork (session header): in the tabs layout the info
+/// dock is the dock slot and stays beside the Browser view.
 pub(super) fn full_area(layout: &ClientShellLayout) -> Rect {
     let mut area = layout.pane_surface;
-    for rect in [layout.info_dock, layout.browser_band] {
+    let info_dock = if layout.session_header.is_empty() {
+        layout.info_dock
+    } else {
+        Rect::default()
+    };
+    for rect in [info_dock, layout.browser_band] {
         if !rect.is_empty() {
             area = area.union(rect);
         }
@@ -337,11 +346,14 @@ pub(crate) struct BrowserDockView {
     pub(crate) strip: Option<ViewStrip>,
     pub(crate) placeholder: Option<Placeholder>,
     pub(crate) dragging: bool,
+    /// Fork (session header): the band's title bar (the tabs layout): the
+    /// focused tab's page title, else its URL, else `Browser`.
+    pub(crate) title: Option<String>,
 }
 
-/// Draw `view` into the chrome buffer and record its targets in `hits` (the
-/// Browser row's `◨`, drawn by the sidebar, stays). Returns whether the
-/// focused tab is in Browser view (the caller hides its panes).
+/// Draw `view` into the chrome buffer and record its targets in `hits`
+/// (the session header records its own). Returns whether the focused tab
+/// is in Browser view (the caller hides its panes).
 pub(super) fn compose(
     buffer: &mut Buffer,
     layout: &ClientShellLayout,
@@ -370,6 +382,7 @@ pub(super) fn compose(
                 buffer,
                 layout.browser_band,
                 view.dragging,
+                view.title.as_deref(),
                 placeholder,
                 hits,
             );
@@ -383,7 +396,8 @@ const BANNER_MIN: u16 = 16;
 
 /// Where herdr's notice, toast or agent cards show while the focused tab is
 /// in Browser view (the companion covers the whole tab, cards drawn there
-/// would be under it): one line on the view strip, between its switch and
+/// would be under it): one line on the session header's gap before its view
+/// tabs (the tabs layout), else on the view strip, between its switch and
 /// its `◨` (as composed into `hits`), else the right half of the tab bar.
 /// `None` outside Browser view, or with neither row (the cards stay where
 /// they are, under the browser).
@@ -391,9 +405,14 @@ pub(super) fn banner_area(
     layout: &ClientShellLayout,
     browser_view: bool,
     hits: &BrowserDockHits,
+    header: &super::session_header::SessionHeaderHits,
 ) -> Option<Rect> {
     if !browser_view {
         return None;
+    }
+    // Fork (session header): the header's gap before the view tabs.
+    if !layout.session_header.is_empty() {
+        return (!header.banner.is_empty()).then_some(header.banner);
     }
     let strip = layout.view_strip;
     if !strip.is_empty() {
@@ -445,7 +464,31 @@ impl ClientShellState {
             placeholder: (browser_view || !layout.browser_band.is_empty())
                 .then(|| self.browser_placeholder(Instant::now())),
             dragging: matches!(self.chrome_drag, Some(ClientChromeDrag::BrowserDockWidth)),
+            title: (!layout.session_header.is_empty() && !layout.browser_band.is_empty())
+                .then(|| self.browser_dock_title()),
         }
+    }
+
+    /// Fork (session header): the browser dock's title: the focused tab's
+    /// active page (`browser.get` `sessions`), its title else its URL, else
+    /// `Browser`.
+    fn browser_dock_title(&self) -> String {
+        self.browser_dock_focused_tab()
+            .and_then(|tab_id| {
+                self.browser
+                    .info
+                    .as_ref()?
+                    .sessions
+                    .iter()
+                    .find(|session| session.tab_id == tab_id)
+            })
+            .and_then(|session| {
+                [session.title.trim(), session.url.trim()]
+                    .into_iter()
+                    .find(|text| !text.is_empty())
+                    .map(str::to_owned)
+            })
+            .unwrap_or_else(|| "Browser".to_owned())
     }
 
     fn browser_dock_focused_tab(&self) -> Option<&str> {
@@ -526,7 +569,7 @@ impl ClientShellState {
     }
 
     /// Tabs with browser pages, or the dock or Browser view (the dim `◎`
-    /// and the detail strip's chips): one map per compose, O(sessions).
+    /// and the Browser overlay's views): one map per compose, O(sessions).
     pub(crate) fn browser_page_tabs(&self) -> HashMap<String, TabBrowserMark> {
         let mut tabs = HashMap::new();
         if let Some(info) = self.browser.info.as_ref() {
@@ -656,6 +699,22 @@ impl ClientShellState {
             .last_composed_size
             .map(|(cols, rows)| self.surface_size(cols, rows));
         let focused = self.browser_dock_focused_tab() == Some(tab_id.as_str());
+        // Fork (session header): one dock slot in the tabs layout; the
+        // notes give way only to a band that fits the window (else they
+        // stay and the notice says why).
+        if !self.browser_dock_open_for(&tab_id) {
+            let endpoint = self.active_endpoint_id.clone();
+            if focused && self.dock_slot_holds_notes(&tab_id) && !self.browser_band_fits_alone() {
+                outcome.repaint |= self.push_endpoint_notice(
+                    ClientEndpointNoticeKind::Rejected,
+                    "browser_dock:narrow",
+                    "Browser dock",
+                    "The window is too narrow for the browser dock; it appears once the window is wider.",
+                );
+                return;
+            }
+            self.free_dock_slot_of_notes(&endpoint, &tab_id);
+        }
         let opened = if unlist_tab(
             &mut self.browser_dock.docked,
             &self.active_endpoint_id,
@@ -699,6 +758,47 @@ impl ClientShellState {
                 "The window is too narrow for the browser dock; it appears once the window is wider.",
             );
         }
+    }
+
+    /// Fork (session header): the tabs layout has one dock slot, so the
+    /// notes dock opening closes `tab_id`'s browser dock (state only; the
+    /// caller resizes). Returns whether it was open.
+    pub(crate) fn free_dock_slot_of_browser(
+        &mut self,
+        endpoint: &ClientEndpointId,
+        tab_id: &str,
+    ) -> bool {
+        if self.config.sidebar_layout != crate::config::SidebarLayoutConfig::Tabs {
+            return false;
+        }
+        let closed = unlist_tab(&mut self.browser_dock.docked, endpoint, tab_id);
+        if closed {
+            self.browser_dock.dragging = false;
+        }
+        closed
+    }
+
+    /// Fork (session header): whether the focused tab's band would be drawn
+    /// at the last composed size with no info dock beside it (`true`
+    /// before a frame: nothing to judge by).
+    pub(crate) fn browser_band_fits_alone(&self) -> bool {
+        let Some((cols, rows)) = self.last_composed_size else {
+            return true;
+        };
+        !self
+            .config
+            .layout_with_browser(
+                cols,
+                rows,
+                self.sidebar_collapsed,
+                self.focused_tab_count(),
+                self.sidebar_width,
+                None,
+                Some(self.browser_dock.percent),
+                self.browser_view_strip_for_focused_tab(),
+            )
+            .browser_band
+            .is_empty()
     }
 
     /// The `toggle_browser_dock` keybind: the focused tab.
@@ -851,19 +951,15 @@ impl ClientShellState {
 
     // ------------------------------------------------------------ mouse
 
-    /// A left press on the band, the strip, the Browser view's area or the
-    /// Browser row's `◨` (checked before any pane hit). Returns whether the
-    /// press was theirs.
+    /// A left press on the band (its title bar included), the strip or the
+    /// Browser view's area (checked before any pane hit). Returns whether
+    /// the press was theirs.
     pub(crate) fn browser_dock_press(
         &mut self,
         point: (u16, u16),
         outcome: &mut ClientShellInput,
     ) -> bool {
         let hits = &self.hits.browser_dock;
-        if super::contains(hits.row_button, point) {
-            self.toggle_browser_dock_for_focused_tab(outcome);
-            return true;
-        }
         if !hits.divider.is_empty() && super::contains(hits.divider, point) {
             let now = Instant::now();
             let double_click = self
@@ -916,6 +1012,15 @@ impl ClientShellState {
                 self.browser_dock.nudge = self.browser_dock.nudge.wrapping_add(1);
                 outcome.repaint = true;
             }
+            BrowserDockTarget::Promote => {
+                if let Some(tab_id) = tab_id {
+                    self.set_browser_view(tab_id.clone(), true, outcome);
+                    if self.browser_view_open_for(&tab_id) && self.browser_dock_open_for(&tab_id) {
+                        self.toggle_browser_dock(tab_id, outcome);
+                    }
+                }
+            }
+            BrowserDockTarget::Close => self.toggle_browser_dock_for_focused_tab(outcome),
         }
         true
     }
@@ -1221,11 +1326,13 @@ impl ClientShellState {
             (BrowserPlacementKind::Full, area, !area.is_empty())
         } else if !layout.browser_band.is_empty() {
             let band = layout.browser_band;
+            // Fork (session header): below the band's title bar.
+            let top = u16::from(!layout.session_header.is_empty()).min(band.height);
             let area = Rect::new(
                 band.x.saturating_add(1),
-                band.y,
+                band.y + top,
                 band.width.saturating_sub(1),
-                band.height,
+                band.height - top,
             );
             (BrowserPlacementKind::Side, area, !area.is_empty())
         } else {

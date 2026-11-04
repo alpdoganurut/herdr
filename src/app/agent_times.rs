@@ -1,5 +1,5 @@
 //! Agent state times (fork): when each pane's agent entered its current
-//! state, for the tabs sidebar's Active agents block and detail strip.
+//! state, for the tabs sidebar's Active agents block.
 //!
 //! The state-change block in `AppState::update_terminal_state_with_completion_policy`
 //! (src/app/actions.rs) stamps `TerminalState::agent_state_since_unix_ms`
@@ -153,7 +153,8 @@ pub struct AgentTimePane {
     /// Wall-clock milliseconds (server clock) of that change.
     pub since_unix_ms: u64,
     /// Fork (autosuspend): the pane's agent is parked by herdr for idling
-    /// (the detail strip says so). Absent when false; older clients ignore it.
+    /// (clients of this version no longer show it). Absent when false; older
+    /// clients ignore it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub auto_suspended: bool,
     /// Fork (restart screen): the parked agent is being relaunched:

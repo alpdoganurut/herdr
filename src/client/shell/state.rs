@@ -105,6 +105,10 @@ pub(super) struct ClientShellLayout {
     /// Fork (companion launcher): the focused tab's [Terminal | Browser]
     /// strip, the pane area's top row (empty when not shown).
     pub view_strip: Rect,
+    /// Fork (session header): the `tabs` layout's one-row header on top of
+    /// the session area (empty in the spaces layout, on mobile, or when the
+    /// area is too short).
+    pub session_header: Rect,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -147,8 +151,6 @@ pub(super) struct ShellHitMap {
     pub(super) sidebar_toolbar: Rect,
     pub(super) sidebar_search: Rect,
     pub(super) sidebar_recency: Rect,
-    /// Fork (menu design): the toolbar's `◧` notes button.
-    pub(super) sidebar_notes: Rect,
     /// Fork (tab history): the toolbar's `‹` and `›` buttons.
     pub(super) sidebar_history_back: Rect,
     pub(super) sidebar_history_forward: Rect,
@@ -165,15 +167,15 @@ pub(super) struct ShellHitMap {
     pub(super) group_new: Rect,
     /// The `tabs` layout's pinned News row (not a `sidebar_tabs` row: no drag).
     pub(super) news_row: Rect,
-    /// The `tabs` layout's pinned Browser row, directly above the News row.
-    pub(super) browser_row: Rect,
     /// Fork: the `tabs` layout's pinned coordinator row, the bottom-most.
     pub(super) coordinator_row: Rect,
     /// Fork: the info dock (`info_dock.rs`).
     pub(super) info_dock: super::info_dock::InfoDockHits,
-    /// Fork (companion launcher): the browser band, view strip, Browser
-    /// view placeholder and the Browser row's `◨`.
+    /// Fork (companion launcher): the browser band (and its title bar),
+    /// the view strip and the Browser view placeholder.
     pub(super) browser_dock: super::browser_dock::BrowserDockHits,
+    /// Fork (session header): the tabs layout's header row.
+    pub(super) session_header: super::session_header::SessionHeaderHits,
     pub(super) panes: Vec<PaneHit>,
     pub(super) popup: Option<PaneHit>,
     pub(super) pane_splits: Vec<PaneSplitHit>,
@@ -252,8 +254,6 @@ pub(super) struct ShellHitMap {
     pub(super) sidebar_active_rows: Vec<(Rect, String)>,
     /// Fork (sidebar v2): the Active agents `+N more` / `show fewer` row.
     pub(super) sidebar_active_more: Rect,
-    /// Fork (sidebar v2): the detail strip under the list.
-    pub(super) sidebar_detail: Rect,
     /// Fork (sidebar v2): when a displayed duration next changes its text
     /// (the minute clock's repaint).
     pub(super) sidebar_clock_deadline: Option<std::time::Instant>,
@@ -963,22 +963,6 @@ pub(super) enum ClientContextMenuTarget {
     /// The `tabs` layout's pinned News row; `enabled` is the schedule state
     /// when the menu opened (the toggle item flips it).
     News { enabled: bool },
-    /// The `tabs` layout's pinned Browser row: the profile the items act on,
-    /// whether it runs, and whether the endpoint is local (focus/start/stop).
-    Browser {
-        profile: String,
-        running: bool,
-        local: bool,
-        /// Fork (companion launcher): the companion's state on a server
-        /// that runs it (its items lead the menu).
-        companion: Option<String>,
-        /// Fork (companion launcher): the herdr+ window is on (its items
-        /// show in a "Window" section).
-        window: bool,
-        /// Fork (companion launcher): the focused tab's dock (open or not)
-        /// where the browser docks.
-        dock: Option<bool>,
-    },
     /// Fork: the `tabs` layout's pinned coordinator row, with its items as
     /// they were when the menu opened.
     Coordinator {
@@ -1494,6 +1478,8 @@ pub(crate) struct ClientShellState {
     /// Fork (companion launcher): the browser dock and Browser view
     /// (`browser_dock.rs`).
     pub(super) browser_dock: super::browser_dock::ClientBrowserDockState,
+    /// Fork (session header): the hovered header control.
+    pub(super) header_hover: Option<super::session_header::HeaderTarget>,
     /// Tabs with a scheduled reminder, keyed like `idle_reminders`.
     pub(super) scheduled_reminders:
         HashMap<(ClientEndpointId, String), super::idle_reminders::ClientScheduledReminder>,
@@ -1749,6 +1735,7 @@ impl ClientShellState {
                 browser_dock_percent,
                 browser_dock_default,
             ),
+            header_hover: None,
             reminder_epochs: HashMap::new(),
             reminder_local_time: None,
             reminder_daily_minutes: None,

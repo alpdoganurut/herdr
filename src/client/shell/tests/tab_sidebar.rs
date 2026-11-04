@@ -112,8 +112,8 @@ fn tabs_layout_lists_every_tab_in_order_and_hides_space_rows() {
     assert!(state.hits.agent_body.height >= 3);
     assert_eq!(
         state.hits.sidebar_tabs[0].0.y,
-        state.hits.sidebar_detail.bottom(),
-        "the list starts right under the toolbar and the detail strip"
+        state.hits.sidebar_toolbar.bottom(),
+        "the list starts right under the toolbar"
     );
 }
 
@@ -197,7 +197,13 @@ fn tabs_layout_drops_the_horizontal_tab_bar() {
     assert_eq!(state.hits.new_tab, ratatui::layout::Rect::default());
     let layout = state.layout(106, 20);
     assert!(layout.tab_bar.is_empty());
-    assert_eq!(layout.pane_surface.height, 20);
+    // Fork (session header): the header row takes the tab bar's place.
+    assert_eq!(
+        layout.session_header,
+        ratatui::layout::Rect::new(26, 0, 80, 1)
+    );
+    assert_eq!(layout.pane_surface.y, 1);
+    assert_eq!(layout.pane_surface.height, 19);
 
     let spaces = ClientShellState::new(ClientShellConfig::from_config(&spaces_config()));
     assert!(!spaces.layout(106, 20).tab_bar.is_empty());
@@ -2905,11 +2911,10 @@ fn menu_y(state: &ClientShellState) -> u16 {
     state.hits.sidebar_divider.bottom() - 1
 }
 
-/// The rows the list and the detail strip share between the toolbar and
-/// the pinned rows / status footer (the strip's lower rule shows only above
-/// a footer).
+/// The rows the list takes between the toolbar and the pinned rows /
+/// status footer (the detail strip that shared them is gone).
 fn list_and_detail(state: &ClientShellState) -> u16 {
-    state.hits.agent_body.height + state.hits.sidebar_detail.height
+    state.hits.agent_body.height
 }
 
 /// The status footer's last row, right above the menu row.
@@ -2961,8 +2966,7 @@ fn tabs_sidebar_footer_shows_the_tab_bar_status_with_its_separator() {
 #[test]
 fn tabs_sidebar_without_status_segments_keeps_the_full_list_height() {
     let (state, frame) = composed(&tabs_config(), two_space_snapshot());
-    // 20 rows: one toolbar row and one menu row around the list and the
-    // detail strip.
+    // 20 rows: one toolbar row and one menu row around the list.
     assert_eq!(list_and_detail(&state), 18);
     assert_eq!(menu_y(&state), 19);
     let body = state.hits.agent_body;
@@ -3466,20 +3470,43 @@ fn marks_pack_flush_right_in_order() {
 #[test]
 fn pinned_rows_align_with_the_headers_and_take_the_hover_band() {
     let mut state = marked_state(&tabs_config());
+    state.news.info = Some(crate::api::schema::NewsGetInfo {
+        enabled: true,
+        times: vec![],
+        quiet_hours: String::new(),
+        model: None,
+        tab_id: None,
+        pane_id: None,
+        next_run_at: None,
+        run: None,
+        last_run: None,
+        unread: false,
+        consecutive_failures: 0,
+        pending_notifications: 0,
+        last_read_edition: None,
+        new_stories: None,
+    });
     let frame = state.compose(106, 20).expect("composed frame");
     let palette = state.config.palette.clone();
-    let row = state.hits.browser_row;
-    assert_eq!(row.height, 1, "the Browser row is pinned");
+    let row = state.hits.news_row;
+    assert_eq!(row.height, 1, "the News row is pinned");
     // The glyph in the headers' icon slot, the label at x=5.
-    assert_eq!(cell_of(&frame, row.x + 3, row.y).0, "◌");
-    assert!(row_text(&frame, row).starts_with("   ◌ Browser"));
+    assert_ne!(cell_of(&frame, row.x + 3, row.y).0, " ");
+    assert_eq!(
+        &row_text(&frame, row)[..]
+            .chars()
+            .skip(5)
+            .take(4)
+            .collect::<String>(),
+        "News"
+    );
     assert_eq!(cell_of(&frame, row.x, row.y).2, rgb(palette.sidebar_bg));
 
     state.sidebar_hover = Some(super::super::sidebar_model::SidebarHover::Fixed(
-        super::super::sidebar_model::FixedKind::Browser,
+        super::super::sidebar_model::FixedKind::News,
     ));
     let frame = state.compose(106, 20).expect("composed frame");
-    let row = state.hits.browser_row;
+    let row = state.hits.news_row;
     let (bar, fg, bg, _) = cell_of(&frame, row.x, row.y);
     assert_eq!(bar, super::super::tab_sidebar::HOVER_BAR);
     assert_eq!(fg, rgb(palette.accent));
@@ -3487,11 +3514,7 @@ fn pinned_rows_align_with_the_headers_and_take_the_hover_band() {
     assert_eq!(
         cell_of(&frame, row.right() - 1, row.y).2,
         rgb(palette.sidebar_hover_bg()),
-        "the band spans the row"
     );
-    // A hovered pinned row leaves the glyph on the focused tab.
-    let (rect, _) = state.hits.sidebar_tabs[0];
-    assert!(row_text(&frame, rect).ends_with("◎ ★ ◷ \u{29C6} "));
 }
 
 #[test]
@@ -3624,11 +3647,6 @@ fn chrome_rows_use_sidebar_chrome_and_list_keeps_sidebar_bg() {
             assert_eq!(cell_of(frame, x, menu).2, chrome, "menu x={x}");
             assert_eq!(cell_of(frame, x, menu - 1).2, chrome, "footer x={x}");
         }
-        let detail = state.hits.sidebar_detail;
-        assert!(detail.height > 0, "the detail strip shows at 40 rows");
-        for y in detail.y..detail.bottom() {
-            assert_eq!(cell_of(frame, body.x, y).2, chrome, "detail y={y}");
-        }
         for y in body.y..body.bottom() {
             assert_eq!(
                 cell_of(frame, body.x, y).2,
@@ -3725,7 +3743,6 @@ mod plan_layout {
     fn assert_tiles(plan: &SidebarPlan, height: u16) {
         let stack = [
             plan.toolbar,
-            plan.detail,
             plan.list,
             plan.active,
             plan.pins,
@@ -3752,30 +3769,28 @@ mod plan_layout {
         plan
     }
 
-    fn wants(detail_lines: u16, active_cap: u16) -> LayoutWants {
+    fn wants(active_cap: u16) -> LayoutWants {
         LayoutWants {
             fixed: 1,
             status_lines: 3,
             active_cap,
-            detail_lines,
             ..LayoutWants::default()
         }
     }
 
     #[test]
     fn everything_fits_when_tall() {
-        let plan = plan(40, wants(3, 8));
+        let plan = plan(40, wants(8));
         assert_eq!(plan.active.height, 11);
         assert_eq!(plan.fixed.height, 1);
-        assert_eq!(plan.detail.height, 4, "three lines and the rule under them");
         assert_eq!(
-            plan.detail.y,
+            plan.list.y,
             plan.toolbar.bottom(),
-            "the strip heads the sidebar"
+            "the list heads the sidebar"
         );
         assert_eq!(plan.footer.height, 3, "one row per line");
         assert_eq!(plan.fixed_rule.height, 1, "a rule above the fixed rows");
-        assert_eq!(plan.list.height, 18);
+        assert_eq!(plan.list.height, 22);
         assert_eq!(
             plan.active.y,
             plan.list.bottom(),
@@ -3784,45 +3799,42 @@ mod plan_layout {
     }
 
     #[test]
-    fn the_footer_joins_below_30_rows_and_the_strip_keeps_its_rule_without_it() {
-        let plan = plan(20, wants(1, 4));
+    fn the_footer_joins_below_30_rows() {
+        let plan = plan(20, wants(4));
         assert_eq!(plan.footer.height, 1);
-        assert_eq!(plan.detail.height, 2);
         let no_footer = plan_layout(
             Rect::new(0, 0, 30, 20),
             LayoutWants {
                 status_lines: 0,
-                ..wants(1, 4)
+                ..wants(4)
             },
             SectionRows::active_only(&active),
         );
         assert_eq!(no_footer.footer.height, 0);
-        assert_eq!(no_footer.detail.height, 2, "the line and its rule");
+        assert_eq!(no_footer.list.height, plan.list.height + 1);
     }
 
     #[test]
     fn the_optional_rows_give_way_in_order_for_three_list_rows() {
         let rows = SectionRows::active_only(&active);
-        // The detail strip goes first.
-        let plan = plan(15, wants(1, 4));
-        assert_eq!(plan.detail.height, 0);
+        let plan = plan(15, wants(4));
         assert_eq!(plan.active.height, 7);
         assert_eq!(plan.list.height, 3);
         // Then the Active block's lines step down.
-        let plan = plan_layout(Rect::new(0, 0, 30, 13), wants(1, 4), rows);
-        assert_eq!((plan.detail.height, plan.active.height), (0, 5));
+        let plan = plan_layout(Rect::new(0, 0, 30, 13), wants(4), rows);
+        assert_eq!(plan.active.height, 5);
         assert_eq!(plan.list.height, 3);
         // Then the whole block.
-        let plan = plan_layout(Rect::new(0, 0, 30, 10), wants(1, 4), rows);
+        let plan = plan_layout(Rect::new(0, 0, 30, 10), wants(4), rows);
         assert_eq!(plan.active.height, 0);
         assert_eq!(plan.footer.height, 1);
         assert_eq!(plan.list.height, 5, "the fixed row's rule keeps its row");
         // Then the footer; the fixed row keeps the list one row.
-        let plan = plan_layout(Rect::new(0, 0, 30, 5), wants(1, 4), rows);
+        let plan = plan_layout(Rect::new(0, 0, 30, 5), wants(4), rows);
         assert_eq!(plan.footer.height, 0);
         assert_eq!(plan.fixed.height, 1);
         assert_eq!(plan.list.height, 2);
-        let plan = plan_layout(Rect::new(0, 0, 30, 4), wants(1, 4), rows);
+        let plan = plan_layout(Rect::new(0, 0, 30, 4), wants(4), rows);
         assert_eq!((plan.fixed.height, plan.list.height), (1, 1));
     }
 
@@ -3833,7 +3845,6 @@ mod plan_layout {
             fixed,
             status_lines: 4,
             active_cap: 8,
-            detail_lines: 0,
             ..LayoutWants::default()
         };
         let none = SectionRows::active_only(&nothing);
@@ -3872,7 +3883,6 @@ mod plan_layout {
             active_cap: super::super::super::tab_sidebar_active::active_cap(height),
             pins_cap: super::super::super::tab_sidebar_pins::pins_cap(height),
             scheduled_cap: super::super::super::tab_sidebar_scheduled::scheduled_cap(height),
-            detail_lines: super::super::super::tab_sidebar_detail::detail_lines(height),
         }
     }
 
@@ -3908,10 +3918,6 @@ mod plan_layout {
                 // Each step: (it ran, it ran fully).
                 let steps = [
                     (
-                        wants.detail_lines > 0 && plan.detail.height == 0,
-                        plan.detail.height == 0,
-                    ),
-                    (
                         plan.scheduled.height < (rows.scheduled)(wants.scheduled_cap),
                         plan.scheduled.height <= (rows.scheduled)(1),
                     ),
@@ -3945,7 +3951,6 @@ mod plan_layout {
                 let optional_shown = plan.active.height
                     + plan.pins.height
                     + plan.scheduled.height
-                    + plan.detail.height
                     + plan.footer.height
                     > 0;
                 if optional_shown {
@@ -4225,35 +4230,6 @@ fn suspended_runs_follow_their_config_toggle() {
     state.compose(106, 30).expect("composed frame");
     assert!(state.hits.sidebar_runs.is_empty());
     assert_eq!(listed_ids(&state).len(), 6);
-}
-
-#[test]
-fn hovering_a_run_lists_its_tabs_in_the_detail_strip() {
-    let mut state = run_state(run_snapshot(3));
-    state.compose(106, 40).expect("composed frame");
-    let run = state.hits.sidebar_runs[0].0;
-    state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
-        kind: MouseEventKind::Moved,
-        column: run.x + 4,
-        row: run.y,
-        modifiers: KeyModifiers::empty(),
-    })]);
-    let frame = state.compose(106, 40).expect("composed frame");
-    let detail = state.hits.sidebar_detail;
-    let text = (detail.y..detail.bottom())
-        .map(|y| {
-            row_text(
-                &frame,
-                ratatui::layout::Rect::new(detail.x, y, detail.width, 1),
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(" ");
-    assert!(text.contains("3 suspended"), "{text:?}");
-    assert!(
-        text.contains("parked 1") && text.contains("parked 2"),
-        "{text:?}"
-    );
 }
 
 #[test]

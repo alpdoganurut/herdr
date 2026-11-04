@@ -116,7 +116,7 @@
           "key": "theme.custom.sidebar_chrome_bg",
           "type": "color",
           "default": "unset",
-          "description": "Override the background of the tabs sidebar's toolbar, active-agents block, detail strip, status footer and menu row. Defaults to surface_dim. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+          "description": "Override the background of the tabs sidebar's toolbar, active-agents block, status footer and menu row, and the session header. Defaults to surface_dim. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
         },
         {
           "key": "theme.custom.overlay0",
@@ -236,7 +236,7 @@
           "key": "theme.custom.light.sidebar_chrome_bg",
           "type": "color",
           "default": "unset",
-          "description": "Override the background of the tabs sidebar's toolbar, active-agents block, detail strip, status footer and menu row when auto_switch selects a light appearance. Defaults to surface_dim. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+          "description": "Override the background of the tabs sidebar's toolbar, active-agents block, status footer and menu row, and the session header when auto_switch selects a light appearance. Defaults to surface_dim. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
         },
         {
           "key": "theme.custom.light.overlay0",
@@ -356,7 +356,7 @@
           "key": "theme.custom.dark.sidebar_chrome_bg",
           "type": "color",
           "default": "unset",
-          "description": "Override the background of the tabs sidebar's toolbar, active-agents block, detail strip, status footer and menu row when auto_switch selects a dark appearance. Defaults to surface_dim. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+          "description": "Override the background of the tabs sidebar's toolbar, active-agents block, status footer and menu row, and the session header when auto_switch selects a dark appearance. Defaults to surface_dim. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
         },
         {
           "key": "theme.custom.dark.overlay0",
@@ -1099,7 +1099,7 @@
           "key": "ui.sidebar_context_usage",
           "type": "boolean",
           "default": "true",
-          "description": "In the \"tabs\" sidebar layout, show how full a tab's agent context window is (Claude Code and Codex, read from their session files): \"NN%\" on the tab row from 75% (yellow, red from 90%), left of the marks, and \"ctx NN% · used/window\" in the detail strip at any level. With several agents in a tab the fullest counts."
+          "description": "In the \"tabs\" sidebar layout, show how full a tab's agent context window is (Claude Code and Codex, read from their session files): \"NN%\" on the tab row from 75% (yellow, red from 90%), left of the marks, and the same in the session header. With several agents in a tab the fullest counts."
         },
         {
           "key": "ui.mobile_width_threshold",

@@ -479,7 +479,7 @@ pub(super) fn sidebar_lines(frame: &FrameData, width: u16, y0: u16, y1: u16) -> 
 
 /// Compare `actual` with `golden/<name>.txt`, or rewrite it when
 /// `HERDR_UPDATE_GOLDEN` is set.
-fn assert_golden(name: &str, actual: &str) {
+pub(super) fn assert_golden(name: &str, actual: &str) {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("src/client/shell/tests/golden")
         .join(format!("{name}.txt"));
@@ -604,11 +604,7 @@ fn golden_short_height_keeps_the_last_tab() {
 fn golden_footer_and_pinned_rows() {
     let (state, frame) = compose_golden(40);
     let body = state.hits.agent_body;
-    assert_ne!(
-        state.hits.browser_row,
-        Rect::default(),
-        "browser row pinned"
-    );
+    // Fork (session header): no Browser row (its menu is Settings → Browser).
     let dump = sidebar_dump(
         &frame,
         &state.config.palette,

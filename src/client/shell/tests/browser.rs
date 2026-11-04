@@ -206,10 +206,9 @@ fn frame_text(frame: &FrameData) -> String {
 }
 
 #[test]
-fn the_browser_row_is_pulled_on_attach_and_shows_the_running_state() {
+fn the_browser_state_is_pulled_on_attach_and_the_sidebar_draws_no_browser_row() {
     let mut state = tabs_state(browser_snapshot());
     state.compose(106, 20).expect("composed frame");
-    assert_eq!(state.hits.browser_row, ratatui::layout::Rect::default());
     let list_height = state.hits.agent_body.height;
 
     deliver(&mut state, running_info(5, now()));
@@ -219,19 +218,13 @@ fn the_browser_row_is_pulled_on_attach_and_shows_the_running_state() {
             .is_empty(),
         "just pulled: no second pull"
     );
+    // Fork (session header): the row is gone, the list keeps its rows.
     let frame = state.compose(106, 20).expect("composed frame");
-    let row = state.hits.browser_row;
-    assert_ne!(row, ratatui::layout::Rect::default());
-    assert_eq!(
-        row.y,
-        state.hits.agent_body.bottom() + 1,
-        "under the list and the rule"
-    );
-    assert_eq!(state.hits.agent_body.height, list_height - 2);
-    let text = row_text(&frame, row);
-    assert!(text.contains("Browser"), "{text:?}");
-    assert!(text.contains("2 tabs"), "{text:?}");
-    assert!(text.trim_start().starts_with('◎'), "{text:?}");
+    assert_eq!(state.hits.agent_body.height, list_height);
+    assert!(!frame_text(&frame).contains("2 tabs"));
+    assert!(state
+        .browser_row()
+        .is_some_and(|row| row.status == "2 tabs · 1 agent"));
 
     // while a profile runs the record is pulled again after 2 s, with since_seq
     let later = tick(
@@ -320,43 +313,6 @@ fn the_row_shows_crashed_dialog_starting_running_and_stopped_in_that_order() {
     assert!(state.browser_row().is_none());
     state.browser.seen_running = true;
     assert!(state.browser_row().is_some());
-}
-
-#[test]
-fn the_browser_row_sits_above_the_news_row_and_news_keeps_its_row() {
-    let mut state = tabs_state(browser_snapshot());
-    state.compose(106, 20).expect("composed frame");
-    deliver(&mut state, running_info(1, now()));
-    // a news record without a tab, enabled: the News row shows too
-    state.news.info = Some(crate::api::schema::NewsGetInfo {
-        enabled: true,
-        times: vec![],
-        quiet_hours: String::new(),
-        model: None,
-        tab_id: None,
-        pane_id: None,
-        next_run_at: None,
-        run: None,
-        last_run: None,
-        unread: false,
-        consecutive_failures: 0,
-        pending_notifications: 0,
-        last_read_edition: None,
-        new_stories: None,
-    });
-    let frame = state.compose(106, 20).expect("composed frame");
-    let browser = state.hits.browser_row;
-    let news = state.hits.news_row;
-    assert_ne!(browser, ratatui::layout::Rect::default());
-    assert_ne!(news, ratatui::layout::Rect::default());
-    assert_eq!(
-        browser.y,
-        state.hits.agent_body.bottom() + 1,
-        "under the rule"
-    );
-    assert_eq!(news.y, browser.y + 1, "News directly under Browser");
-    assert!(row_text(&frame, browser).contains("Browser"));
-    assert!(row_text(&frame, news).contains("News"));
 }
 
 #[test]
@@ -455,20 +411,50 @@ fn an_installed_stopped_companion_is_pulled_every_2_s_and_a_missing_one_every_15
     assert_eq!(pulls(never, two), 0, "nothing installed to start");
 }
 
+/// Fork (session header): the Browser row's menu is Settings → Browser's
+/// live rows: open the section (with a settings record) and list them.
+fn open_live_rows(state: &mut ClientShellState) -> Vec<String> {
+    state.open_settings_overlay();
+    if let Some(ClientShellOverlay::Settings(settings)) = state.overlay.as_mut() {
+        settings.section = ClientSettingsSection::Browser;
+        settings.browser.info = Some(Default::default());
+    }
+    state.sync_browser_settings_live();
+    match &state.overlay {
+        Some(ClientShellOverlay::Settings(settings)) => settings
+            .browser
+            .actions
+            .iter()
+            .map(|row| row.label.clone())
+            .collect(),
+        other => panic!("expected Settings, got {other:?}"),
+    }
+}
+
+/// Run the live row at `index` as a click or ↵ would.
+fn run_live_row(state: &mut ClientShellState, index: usize) -> ClientShellInput {
+    open_live_rows(state);
+    let mut outcome = ClientShellInput::default();
+    state.apply_browser_choice(super::super::settings_browser::ROWS + index, &mut outcome);
+    outcome
+}
+
 #[test]
-fn the_row_opens_the_overlay_and_its_menu_focuses_starts_and_stops() {
+fn settings_browser_focuses_the_window_and_opens_the_overlay() {
     let mut state = tabs_state(browser_snapshot());
     state.compose(106, 20).expect("composed frame");
     deliver(&mut state, running_info(1, now()));
-    state.compose(106, 20).expect("composed frame");
-    let row = state.hits.browser_row;
-
-    let outcome = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
-        column: row.x + 2,
-        row: row.y,
-        modifiers: KeyModifiers::empty(),
-    })]);
+    assert_eq!(
+        open_live_rows(&mut state),
+        ["focus the browser window", "open the Browser overlay…"]
+    );
+    let outcome = run_live_row(&mut state, 0);
+    let requests = endpoint_requests(&outcome);
+    assert!(
+        matches!(&requests[..], [(_, Method::BrowserFocus(target))] if target.tab == "t1" && target.profile.as_deref() == Some("main")),
+        "the selected tab: {requests:?}"
+    );
+    run_live_row(&mut state, 1);
     assert!(matches!(
         state.overlay,
         Some(ClientShellOverlay::Browser(_))
@@ -479,76 +465,11 @@ fn the_row_opens_the_overlay_and_its_menu_focuses_starts_and_stops() {
         matches!(&requests[..], [(_, Method::BrowserGet(_))]),
         "opening the overlay pulls again: {requests:?}"
     );
-    let (_, _) = state.handle_endpoint_result(
-        "boot-1",
-        &requests[0].0,
-        Ok(ResponseResult::BrowserGet {
-            browser: running_info(2, now()),
-        }),
-    );
-    drop(outcome);
+    // a stopped profile: only the overlay (the section's open / stop
+    // browser row starts it)
     state.overlay = None;
-
-    state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Right),
-        column: row.x + 2,
-        row: row.y,
-        modifiers: KeyModifiers::empty(),
-    })]);
-    let labels = match &state.overlay {
-        Some(ClientShellOverlay::ContextMenu(menu)) => {
-            assert!(matches!(
-                &menu.target,
-                ClientContextMenuTarget::Browser {
-                    running: true,
-                    local: true,
-                    ..
-                }
-            ));
-            menu.items()
-                .iter()
-                .map(|item| item.label.to_string())
-                .collect::<Vec<_>>()
-        }
-        other => panic!("expected the Browser menu, got {other:?}"),
-    };
-    assert_eq!(labels, ["Focus window", "Stop profile", "Open overlay"]);
-
-    let mut outcome = ClientShellInput::default();
-    state.activate_context_menu_item(0, &mut outcome);
-    let requests = endpoint_requests(&outcome);
-    assert!(
-        matches!(&requests[..], [(_, Method::BrowserFocus(target))] if target.tab == "t1" && target.profile.as_deref() == Some("main")),
-        "the selected tab: {requests:?}"
-    );
-    state.open_browser_context_menu(row.x, row.y);
-    let mut outcome = ClientShellInput::default();
-    state.activate_context_menu_item(1, &mut outcome);
-    assert!(matches!(
-        &endpoint_requests(&outcome)[..],
-        [(_, Method::BrowserStop(params))] if params.profile.as_deref() == Some("main")
-    ));
-    // a stopped profile offers Start
     state.browser.info = Some(stopped_info(2));
-    state.open_browser_context_menu(row.x, row.y);
-    let mut outcome = ClientShellInput::default();
-    state.activate_context_menu_item(0, &mut outcome);
-    assert!(matches!(
-        &endpoint_requests(&outcome)[..],
-        [(_, Method::BrowserStart(params))] if params.profile.as_deref() == Some("main")
-    ));
-    // the reply triggers a fresh pull
-    let (_, _) = state.handle_endpoint_result(
-        "boot-1",
-        &endpoint_requests(&outcome)[0].0,
-        Ok(ResponseResult::BrowserGet {
-            browser: running_info(3, now()),
-        }),
-    );
-    assert!(matches!(
-        &endpoint_requests(&tick(&mut state, std::time::Instant::now()))[..],
-        [(_, Method::BrowserGet(_))]
-    ));
+    assert_eq!(open_live_rows(&mut state), ["open the Browser overlay…"]);
 }
 
 #[test]
@@ -698,56 +619,6 @@ fn a_moved_pane_marks_its_current_tab_not_the_recorded_one() {
     );
 }
 
-#[test]
-fn with_room_for_one_pinned_row_news_keeps_it() {
-    let news = || crate::api::schema::NewsGetInfo {
-        enabled: true,
-        times: vec![],
-        quiet_hours: String::new(),
-        model: None,
-        tab_id: None,
-        pane_id: None,
-        next_run_at: None,
-        run: None,
-        last_run: None,
-        unread: false,
-        consecutive_failures: 0,
-        pending_notifications: 0,
-        last_read_edition: None,
-        new_stories: None,
-    };
-    // Growing heights: the first that shows a pinned row shows News alone.
-    let mut seen_single = false;
-    for height in 1u16..20 {
-        let mut state = tabs_state(browser_snapshot());
-        if state.compose(106, height).is_none() {
-            continue;
-        }
-        deliver(&mut state, running_info(1, now()));
-        state.news.info = Some(news());
-        if state.compose(106, height).is_none() {
-            continue;
-        }
-        let browser = state.hits.browser_row != ratatui::layout::Rect::default();
-        let news_shown = state.hits.news_row != ratatui::layout::Rect::default();
-        if browser && news_shown {
-            assert!(
-                seen_single,
-                "a single row must have shown before both fit (height {height})"
-            );
-            break;
-        }
-        if browser || news_shown {
-            seen_single = true;
-            assert!(
-                news_shown && !browser,
-                "News has priority at height {height}"
-            );
-        }
-    }
-    assert!(seen_single, "no height showed exactly one pinned row");
-}
-
 /// Fork (companion launcher): a server that runs the companion.
 fn companion_info(seq: u64, state: &str) -> BrowserGetInfo {
     let running = state == "running";
@@ -778,17 +649,6 @@ fn companion_info(seq: u64, state: &str) -> BrowserGetInfo {
         }),
         window_off: true,
         ..Default::default()
-    }
-}
-
-fn menu_labels(state: &ClientShellState) -> Vec<String> {
-    match &state.overlay {
-        Some(ClientShellOverlay::ContextMenu(menu)) => menu
-            .items()
-            .iter()
-            .map(|item| item.label.to_string())
-            .collect(),
-        other => panic!("expected a menu, got {other:?}"),
     }
 }
 
@@ -965,12 +825,13 @@ fn deliver_unchanged_companion(state: &mut ClientShellState, info: BrowserGetInf
 pub(crate) mod fork_smoke {
     use super::*;
 
-    /// Fork (companion launcher): while the server runs the companion the
-    /// pinned row is its: state, counts and an update; its menu starts,
-    /// stops, restarts and focuses it; the herdr+ window's items show only
-    /// while that window is on.
+    /// Fork (companion launcher; session header): while the server runs
+    /// the companion the browser's live state is its: state, counts and an
+    /// update; Settings → Browser's rows (the old Browser row's menu)
+    /// start, stop, restart and focus it, dock the focused tab, and the
+    /// herdr+ window's start / stop shows only while that window is on.
     #[test]
-    fn the_browser_row_shows_the_companion_state_and_offers_start_stop_restart_focus() {
+    fn settings_browser_shows_the_companion_state_and_offers_start_stop_restart_focus() {
         use crate::api::schema::BrowserCompanionAction as Action;
         let mut state = tabs_state(browser_snapshot());
         state.compose(106, 20).expect("composed frame");
@@ -981,32 +842,31 @@ pub(crate) mod fork_smoke {
             crate::client::shell::browser::BrowserRowState::Running
         );
         assert_eq!(row.status, "companion · 3 tabs · 2 agents");
-        let frame = state.compose(106, 20).expect("composed frame");
-        let rect = state.hits.browser_row;
-        let text = row_text(&frame, rect);
-        assert!(text.trim_start().starts_with("◎ Browser"), "{text:?}");
-
-        state.open_browser_context_menu(rect.x, rect.y);
         assert_eq!(
-            menu_labels(&state),
+            open_live_rows(&mut state),
             [
-                "Focus companion",
-                "Restart companion",
-                "Stop companion",
-                "Dock browser here",
-                "Open overlay"
+                "focus companion",
+                "restart companion",
+                "stop companion",
+                "browser dock on this tab: off",
+                "open the Browser overlay…"
             ]
         );
+        // the live state leads the facts
+        let frame = state.compose(110, 40).expect("settings frame").frame;
+        let text = frame_text(&frame);
+        assert!(text.contains("◎ companion · 3 tabs · 2 agents"), "{text}");
         for (index, action) in [(0, Action::Focus), (1, Action::Restart), (2, Action::Stop)] {
-            state.open_browser_context_menu(rect.x, rect.y);
-            let mut outcome = ClientShellInput::default();
-            state.activate_context_menu_item(index, &mut outcome);
+            let outcome = run_live_row(&mut state, index);
             assert_eq!(companion_request(&outcome), action);
         }
-        // Fork (companion launcher, phase B): the dock item docks the focused tab
-        state.open_browser_context_menu(rect.x, rect.y);
-        state.activate_context_menu_item(3, &mut ClientShellInput::default());
+        // the dock row docks the focused tab
+        run_live_row(&mut state, 3);
         assert!(state.browser_dock_open_for_focused_tab());
+        assert_eq!(
+            open_live_rows(&mut state)[3],
+            "browser dock on this tab: on"
+        );
         state.toggle_browser_dock_for_focused_tab(&mut ClientShellInput::default());
         assert!(!state.browser_dock_open_for_focused_tab());
         // its reply lands at once; a note (a companion started by hand) shows
@@ -1026,13 +886,15 @@ pub(crate) mod fork_smoke {
         let row = state.browser_row().unwrap();
         assert_eq!(row.status, "companion stopped");
         assert_eq!(row.state.glyph(), "◌");
-        state.open_browser_context_menu(rect.x, rect.y);
         assert_eq!(
-            menu_labels(&state),
-            ["Start companion", "Dock browser here", "Open overlay"]
+            open_live_rows(&mut state),
+            [
+                "start companion",
+                "browser dock on this tab: off",
+                "open the Browser overlay…"
+            ]
         );
-        let mut outcome = ClientShellInput::default();
-        state.activate_context_menu_item(0, &mut outcome);
+        let outcome = run_live_row(&mut state, 0);
         assert_eq!(companion_request(&outcome), Action::Start);
 
         // restarting after a crash: the countdown; failed: the red ×; an update
@@ -1054,10 +916,13 @@ pub(crate) mod fork_smoke {
             (row.state.glyph(), row.status.as_str()),
             ("×", "companion failed")
         );
-        state.open_browser_context_menu(rect.x, rect.y);
         assert_eq!(
-            menu_labels(&state),
-            ["Restart companion", "Dock browser here", "Open overlay"]
+            open_live_rows(&mut state),
+            [
+                "restart companion",
+                "browser dock on this tab: off",
+                "open the Browser overlay…"
+            ]
         );
         deliver_unchanged_companion(&mut state, companion_info(1, "not_installed"));
         assert_eq!(
@@ -1075,7 +940,7 @@ pub(crate) mod fork_smoke {
             "companion · 3 tabs · 2 agents · update"
         );
 
-        // the herdr+ window on: its items in their own section
+        // the herdr+ window on: its own start / stop
         let mut window_on = companion_info(3, "running");
         window_on.window_off = false;
         window_on.profiles.push(BrowserProfileInfo {
@@ -1085,43 +950,62 @@ pub(crate) mod fork_smoke {
         });
         state.browser.refresh_due = true;
         deliver(&mut state, window_on);
-        state.open_browser_context_menu(rect.x, rect.y);
         assert_eq!(
-            menu_labels(&state),
+            open_live_rows(&mut state),
             [
-                "Focus companion",
-                "Restart companion",
-                "Stop companion",
-                "Dock browser here",
-                "Start profile",
-                "Open overlay"
+                "focus companion",
+                "restart companion",
+                "stop companion",
+                "browser dock on this tab: off",
+                "start the browser window",
+                "open the Browser overlay…"
             ]
         );
-        state.open_browser_context_menu(rect.x, rect.y);
-        let mut outcome = ClientShellInput::default();
-        state.activate_context_menu_item(4, &mut outcome);
+        let outcome = run_live_row(&mut state, 4);
         assert!(matches!(
             &endpoint_requests(&outcome)[..],
             [(_, Method::BrowserStart(params))] if params.profile.as_deref() == Some("main")
         ));
     }
 
-    /// The pinned Browser row reaches the tabs sidebar above the footer with
-    /// the running state's glyph, count and the agent lighting it up.
+    /// Fork (session header): the tabs sidebar draws no Browser row; the
+    /// News row sits right under the rule.
     #[test]
-    fn browser_row_shows_the_running_browser_above_the_footer() {
+    fn the_tabs_sidebar_has_no_browser_row_and_news_keeps_its_row() {
         let mut state = tabs_state(browser_snapshot());
         state.compose(106, 20).expect("composed frame");
         deliver(&mut state, running_info(1, now()));
+        state.news.info = Some(crate::api::schema::NewsGetInfo {
+            enabled: true,
+            times: vec![],
+            quiet_hours: String::new(),
+            model: None,
+            tab_id: None,
+            pane_id: None,
+            next_run_at: None,
+            run: None,
+            last_run: None,
+            unread: false,
+            consecutive_failures: 0,
+            pending_notifications: 0,
+            last_read_edition: None,
+            new_stories: None,
+        });
         let frame = state.compose(106, 20).expect("composed frame");
-        let row = state.hits.browser_row;
-        assert_eq!(row.y, state.hits.agent_body.bottom() + 1, "under the rule");
-        let text = row_text(&frame, row);
-        assert!(text.trim_start().starts_with("◎ Browser"), "{text:?}");
-        assert!(text.contains("2 tabs"), "{text:?}");
-        // The glyph sits in the headers' icon slot (x=3), the label at x=5.
-        let cell = &frame.cells[(row.y * frame.width + row.x + 3) as usize];
-        assert_eq!(cell.symbol, "◎");
+        let news = state.hits.news_row;
+        assert_eq!(news.y, state.hits.agent_body.bottom() + 1, "under the rule");
+        assert!(row_text(&frame, news).contains("News"));
+        let sidebar = state.layout(106, 20).sidebar;
+        let sidebar_text: String = (sidebar.y..sidebar.bottom())
+            .map(|y| {
+                row_text(
+                    &frame,
+                    ratatui::layout::Rect::new(sidebar.x, y, sidebar.width, 1),
+                )
+            })
+            .collect();
+        assert!(!sidebar_text.contains("Browser"), "{sidebar_text}");
+        assert!(!sidebar_text.contains("2 tabs"), "{sidebar_text}");
     }
 }
 
@@ -1186,7 +1070,7 @@ fn tabs_with_pages_wear_a_dim_browser_mark_below_activity_and_attention() {
         mark("tab_3"),
         Some(("◎".to_string(), color(palette.overlay0)))
     );
-    // the page counts and the views for the detail strip
+    // the page counts and the views
     let marks = state.browser_page_tabs();
     assert_eq!(marks["tab_2"].pages, 3);
     assert_eq!(marks["tab_3"].view, None);

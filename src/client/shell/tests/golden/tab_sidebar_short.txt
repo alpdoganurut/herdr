@@ -1,13 +1,11 @@
-00| ⏶ ‹ ›                   ◧  + │|
+00| ⏶ ‹ ›                      + │|
    00-00 -/sidebar_chrome_bg
    01-01 overlay0/sidebar_chrome_bg
    02-02 -/sidebar_chrome_bg
    03-03 overlay0/sidebar_chrome_bg
    04-04 -/sidebar_chrome_bg
    05-05 overlay0/sidebar_chrome_bg
-   06-24 -/sidebar_chrome_bg
-   25-25 overlay0/sidebar_chrome_bg
-   26-27 -/sidebar_chrome_bg
+   06-27 -/sidebar_chrome_bg
    28-28 overlay0/sidebar_chrome_bg
    29-29 -/sidebar_chrome_bg
    30-30 surface1/sidebar_bg
@@ -41,7 +39,7 @@
    23-26 -/active_row_bg
    27-27 #02d97757/active_row_bg
    28-28 -/active_row_bg
-   29-29 surface_dim/sidebar_bg
+   29-29 overlay0/sidebar_bg
    30-30 surface1/sidebar_bg
 04|     ● review api          ★ ▕│|
    00-04 -/sidebar_bg
@@ -51,14 +49,38 @@
    17-26 -/sidebar_bg
    27-27 red/sidebar_bg
    28-28 -/sidebar_bg
+   29-29 overlay0/sidebar_bg
+   30-30 surface1/sidebar_bg
+05|     ○ notes               ◑ ▕│|
+   00-04 -/sidebar_bg
+   05-05 green/sidebar_bg
+   06-06 -/sidebar_bg
+   07-11 #02b06cf5/sidebar_bg
+   12-26 -/sidebar_bg
+   27-27 overlay0/sidebar_bg
+   28-28 -/sidebar_bg
    29-29 surface_dim/sidebar_bg
    30-30 surface1/sidebar_bg
-05| ──────────────────────────── │|
+06| ▾ ◆ Search It           3 ● ▕│|
+   00-00 -/sidebar_bg
+   01-01 subtext0/sidebar_bg
+   02-02 -/sidebar_bg
+   03-03 accent/sidebar_bg
+   04-04 -/sidebar_bg
+   05-13 subtext0/sidebar_bg/b
+   14-24 -/sidebar_bg
+   25-25 overlay0/sidebar_bg
+   26-26 -/sidebar_bg
+   27-27 teal/sidebar_bg
+   28-28 -/sidebar_bg
+   29-29 surface_dim/sidebar_bg
+   30-30 surface1/sidebar_bg
+07| ──────────────────────────── │|
    00-00 -/sidebar_chrome_bg
    01-28 surface1/sidebar_chrome_bg
    29-29 -/sidebar_chrome_bg
    30-30 surface1/sidebar_bg
-06| ▾ Scheduled              1   │|
+08| ▾ Scheduled              1   │|
    00-00 -/sidebar_chrome_bg
    01-01 overlay1/sidebar_chrome_bg
    02-02 -/sidebar_chrome_bg
@@ -67,7 +89,7 @@
    26-26 overlay0/sidebar_chrome_bg
    27-29 -/sidebar_chrome_bg
    30-30 surface1/sidebar_bg
-07|   ◑ notes Planni… 1h in 1h00 │|
+09|   ◑ notes Planni… 1h in 1h00 │|
    00-02 -/sidebar_chrome_bg
    03-03 overlay0/sidebar_chrome_bg
    04-04 -/sidebar_chrome_bg
@@ -79,20 +101,6 @@
    21-21 -/sidebar_chrome_bg
    22-28 subtext0/sidebar_chrome_bg
    29-29 -/sidebar_chrome_bg
-   30-30 surface1/sidebar_bg
-08| ──────────────────────────── │|
-   00-00 -/sidebar_chrome_bg
-   01-28 surface1/sidebar_chrome_bg
-   29-29 -/sidebar_chrome_bg
-   30-30 surface1/sidebar_bg
-09|   ◌ Browser          stopped │|
-   00-02 -/sidebar_bg
-   03-03 overlay0/sidebar_bg
-   04-04 -/sidebar_bg
-   05-11 subtext0/sidebar_bg
-   12-21 -/sidebar_bg
-   22-28 overlay1/sidebar_bg
-   29-29 -/sidebar_bg
    30-30 surface1/sidebar_bg
 10| cpu 12%  mem 80%  net ok     │|
    00-00 -/sidebar_chrome_bg

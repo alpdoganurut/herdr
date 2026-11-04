@@ -38,6 +38,11 @@ pub(crate) enum InfoDockTarget {
     ConflictReload,
     ConflictKeepMine,
     Retry,
+    /// Fork (session header): the title bar's `✎`: edit the notes (or
+    /// leave the editor).
+    Edit,
+    /// Fork (session header): the title bar's `✕`: close the dock.
+    Close,
 }
 
 /// One drawn run of text.
@@ -294,6 +299,37 @@ pub(crate) fn tab_strip(width: usize) -> Row {
     ];
     let used = segs_width(&segs);
     segs.push(seg("─".repeat(width.saturating_sub(used)), fg(DUSK.rule)));
+    Row::new(segs, None)
+}
+
+/// Fork (session header): the tabs layout's title bar, `▤ Notes` left and
+/// `✎  ✕` flush right (`✎` lit while editing).
+pub(crate) fn title_bar(width: usize, editing: bool) -> Row {
+    let mut segs = vec![
+        seg(super::session_header::NOTES_DOCK_GLYPH, fg(DUSK.accent)),
+        seg(" Notes", bold(fg(DUSK.ink))),
+    ];
+    let actions = [
+        (
+            "\u{270E}", // ✎
+            if editing { DUSK.accent } else { DUSK.body },
+            InfoDockTarget::Edit,
+        ),
+        ("\u{2715}", DUSK.body, InfoDockTarget::Close), // ✕
+    ];
+    // `✎  ✕` and a one-cell margin.
+    let used = segs_width(&segs) + 1 + 2 + 1 + 1;
+    if width > used {
+        segs.push(seg(" ".repeat(width - used), fg(DUSK.body)));
+        let mut first = true;
+        for (glyph, color, target) in actions {
+            if !first {
+                segs.push(seg("  ", fg(DUSK.body)));
+            }
+            first = false;
+            segs.push(hit(glyph, fg(color), target));
+        }
+    }
     Row::new(segs, None)
 }
 

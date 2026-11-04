@@ -1,10 +1,10 @@
-//! The tabs sidebar's Active block, detail strip and derived model
-//! (sidebar v2).
+//! The tabs sidebar's Active block and derived model (sidebar v2; the
+//! detail strip is gone, its facts are the session header's).
 //!
 //! The fixture has a blocked tab, a tab in live voice mode, two working tabs
 //! (the older state change first), a finished tab and a parked one, spread
 //! over the ungrouped bucket and two groups. Assertions read the block's
-//! own hit rects (`sidebar_active_*`, `sidebar_detail`) so they hold however
+//! own hit rects (`sidebar_active_*`) so they hold however
 //! the layout plan places the block.
 
 use std::time::{Duration, Instant};
@@ -260,16 +260,6 @@ pub(super) fn endpoint_methods(outcome: &ClientShellInput) -> Vec<&crate::api::s
         .collect()
 }
 
-/// The detail strip's text rows (its rule rows left out).
-pub(super) fn detail_text(state: &ClientShellState, frame: &FrameData) -> Vec<String> {
-    let strip = state.hits.sidebar_detail;
-    assert!(strip.height >= 2, "a detail strip: {strip:?}");
-    (strip.y..strip.bottom())
-        .map(|y| row_text(frame, Rect::new(strip.x, y, strip.width, 1)))
-        .filter(|text| !text.contains("\u{2500}\u{2500}"))
-        .collect()
-}
-
 fn list_row(state: &ClientShellState, rows: &[(Rect, String)], id: &str) -> Rect {
     let _ = state;
     rows.iter()
@@ -436,12 +426,6 @@ fn active_block_lists_idle_tabs_running_subagents_after_working() {
     let text = row_text(&frame, row);
     assert!(!text.trim_end().ends_with('m'), "{text:?}");
 
-    // Hovering the header counts the class.
-    mouse(&mut state, MouseEventKind::Moved, header.x + 4, header.y);
-    let frame = state.compose(COLS, ROWS).expect("composed frame");
-    let joined = detail_text(&state, &frame).join(" ");
-    assert!(joined.contains("1 subagents"), "{joined:?}");
-
     // Folded: the subagent mark sits between working and done.
     mouse(
         &mut state,
@@ -506,8 +490,8 @@ fn active_block_is_hidden_when_nothing_is_active() {
     assert!(state.hits.sidebar_active_rows.is_empty());
     assert_eq!(
         state.hits.sidebar_tabs[0].0.y,
-        state.hits.sidebar_detail.bottom(),
-        "the list starts right under the toolbar and the detail strip"
+        state.hits.sidebar_toolbar.bottom(),
+        "the list starts right under the toolbar"
     );
 }
 
@@ -522,8 +506,8 @@ fn active_block_respects_the_opt_out() {
     assert!(state.sidebar_model.active.is_empty());
     assert_eq!(
         state.hits.agent_body.y,
-        state.hits.sidebar_detail.bottom(),
-        "under the toolbar and the detail strip"
+        state.hits.sidebar_toolbar.bottom(),
+        "under the toolbar"
     );
 }
 
@@ -734,23 +718,13 @@ fn stale_times_push_shows_no_duration() {
 }
 
 #[test]
-fn detail_strip_describes_hover_then_focused_tab() {
+fn hovering_an_active_entry_wears_the_bar_and_leaving_clears_it() {
     let mut state = active_state();
-    let frame = state.compose(COLS, ROWS).expect("composed frame");
-    let lines = detail_text(&state, &frame);
-    assert!(
-        lines[0].contains("focus work"),
-        "the focused tab: {lines:?}"
-    );
-    assert!(lines[0].contains("Alpha"), "{lines:?}");
-
-    // Hovering an Active entry describes it.
+    state.compose(COLS, ROWS).expect("composed frame");
     let (row, _) = state.hits.sidebar_active_rows[0];
     let outcome = mouse(&mut state, MouseEventKind::Moved, row.x + 6, row.y);
     assert!(outcome.repaint);
     let frame = state.compose(COLS, ROWS).expect("composed frame");
-    let lines = detail_text(&state, &frame);
-    assert!(lines[0].contains("needs input"), "{lines:?}");
     assert_eq!(
         cell(&frame, row.x, row.y).symbol,
         "\u{258E}",
@@ -761,81 +735,10 @@ fn detail_strip_describes_hover_then_focused_tab() {
         crate::protocol::color_to_u32(state.config.palette.sidebar_hover_bg())
     );
 
-    // Hovering the header describes the block.
-    let header = state.hits.sidebar_active_header;
-    mouse(&mut state, MouseEventKind::Moved, header.x + 4, header.y);
-    let frame = state.compose(COLS, ROWS).expect("composed frame");
-    let lines = detail_text(&state, &frame);
-    assert!(
-        lines[0].contains("Active") && !lines[0].contains("agents"),
-        "{lines:?}"
-    );
-    assert!(lines.join(" ").contains("1 blocked"), "{lines:?}");
-
-    // A stale hover (the tab is gone) falls back to the focused tab.
-    state.sidebar_hover = Some(SidebarHover::Tab("t_gone".into()));
-    let frame = state.compose(COLS, ROWS).expect("composed frame");
-    assert!(detail_text(&state, &frame)[0].contains("focus work"));
-
     // Leaving the sidebar clears the hover.
     let outcome = mouse(&mut state, MouseEventKind::Moved, COLS - 2, ROWS - 2);
     assert!(outcome.repaint);
     assert_eq!(state.sidebar_hover, None);
-}
-
-#[test]
-fn detail_strip_lists_only_applicable_facts() {
-    let mut state = active_state();
-    state.compose(COLS, ROWS).expect("composed frame");
-    // The blocked tab, hovered in the list.
-    let row = list_row(&state, &state.hits.sidebar_tabs, "t_block");
-    mouse(&mut state, MouseEventKind::Moved, row.x + 8, row.y);
-    let frame = state.compose(COLS, ROWS).expect("composed frame");
-    let joined = detail_text(&state, &frame).join(" ");
-    assert!(joined.contains("blocked"), "{joined:?}");
-    assert!(joined.contains("claude"), "{joined:?}");
-    for absent in ["panes", "live", "muted", "(suspended)", "\u{26AD}"] {
-        assert!(!joined.contains(absent), "{absent}: {joined:?}");
-    }
-    // The voice tab says so.
-    let row = list_row(&state, &state.hits.sidebar_tabs, "t_voice");
-    mouse(&mut state, MouseEventKind::Moved, row.x + 8, row.y);
-    let frame = state.compose(COLS, ROWS).expect("composed frame");
-    let joined = detail_text(&state, &frame).join(" ");
-    assert!(joined.contains("live"), "{joined:?}");
-    // The group header names the group and counts its tabs by status.
-    let row = list_row(&state, &state.hits.sidebar_groups, "ws_b");
-    mouse(&mut state, MouseEventKind::Moved, row.x + 8, row.y);
-    let frame = state.compose(COLS, ROWS).expect("composed frame");
-    let lines = detail_text(&state, &frame);
-    assert!(lines[0].contains("Beta"), "{lines:?}");
-    assert!(lines.join(" ").contains("1 working"), "{lines:?}");
-}
-
-#[test]
-fn detail_strip_names_a_team_members_role() {
-    let mut state = active_state();
-    let mut team = super::teams::team(Some("ship it"));
-    team.workspace_id = "ws_b".into();
-    team.members[0].pane_id = pane_of("t_work");
-    team.members[0].tab_id = Some("t_work".into());
-    team.members[1].tab_id = Some("t_gone".into());
-    assert!(state.receive_teams(
-        &ClientEndpointId::Local,
-        super::teams::payload("boot-1", 1, vec![team])
-    ));
-    state.compose(COLS, ROWS).expect("composed frame");
-    let row = list_row(&state, &state.hits.sidebar_tabs, "t_work");
-    mouse(&mut state, MouseEventKind::Moved, row.x + 8, row.y);
-    let frame = state.compose(COLS, ROWS).expect("composed frame");
-    let joined = detail_text(&state, &frame).join(" ");
-    assert!(joined.contains("\u{25C6} fixer"), "{joined:?}");
-    // A tab of the same group that holds no member gets no chip.
-    let row = list_row(&state, &state.hits.sidebar_tabs, "t_done");
-    mouse(&mut state, MouseEventKind::Moved, row.x + 8, row.y);
-    let frame = state.compose(COLS, ROWS).expect("composed frame");
-    let joined = detail_text(&state, &frame).join(" ");
-    assert!(!joined.contains('\u{25C6}'), "{joined:?}");
 }
 
 #[test]
@@ -1035,25 +938,4 @@ pub(super) mod fork_smoke {
             "the list takes the block's rows"
         );
     }
-}
-
-/// Fork (autosuspend): an agent herdr parked for idling reads
-/// `suspended (auto)` in the detail strip; one its user parked does not.
-#[test]
-fn detail_strip_marks_an_auto_suspended_agent() {
-    let mut state = active_state();
-    state.compose(COLS, ROWS).expect("composed frame");
-    let row = list_row(&state, &state.hits.sidebar_tabs, "t_park");
-    mouse(&mut state, MouseEventKind::Moved, row.x + 8, row.y);
-    let frame = state.compose(COLS, ROWS).expect("composed frame");
-    let joined = detail_text(&state, &frame).join(" ");
-    assert!(joined.contains("suspended"), "{joined:?}");
-    assert!(!joined.contains("(auto)"), "{joined:?}");
-
-    let mut payload = times_payload(1, &[("p_park", 4, 60_000)]);
-    payload.panes[0].auto_suspended = true;
-    assert!(state.receive_agent_times(&ClientEndpointId::Local, payload));
-    let frame = state.compose(COLS, ROWS).expect("composed frame");
-    let joined = detail_text(&state, &frame).join(" ");
-    assert!(joined.contains("suspended (auto)"), "{joined:?}");
 }

@@ -248,8 +248,6 @@ pub(super) struct ShellRenderState<'a> {
         &'a HashMap<(ClientEndpointId, String), super::idle_reminders::ClientScheduledReminder>,
     /// The `tabs` layout's pinned News row, when there is one.
     pub(super) news_row: Option<super::news::NewsRow>,
-    /// The `tabs` layout's pinned Browser row, drawn above the News row.
-    pub(super) browser_row: Option<super::browser::BrowserRow>,
     /// Herdr tabs whose panes used the browser recently: the `◎` marker.
     pub(super) browser_marked_tabs: HashSet<String>,
     /// Fork (companion browser): herdr tabs whose browser pages need the
@@ -306,9 +304,6 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) sidebar_filter: Option<&'a super::sidebar_filter::SidebarFilter>,
     /// Fork: the active endpoint's quiet state (the one-off model's input).
     pub(super) quiet: Option<&'a super::quiet::ClientQuietState>,
-    /// Fork (menu design): the focused tab's info pane is open (the
-    /// toolbar's notes button is lit).
-    pub(super) info_pane_open: bool,
     /// Fork (tab history): the history has a live tab back / forward (the
     /// toolbar's `‹` / `›` are lit).
     pub(super) history_back: bool,

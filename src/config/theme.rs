@@ -120,7 +120,7 @@ pub struct CustomThemeColors {
     pub teal: Option<String>,
     pub peach: Option<String>,
     /// Fork (sidebar v2): the tabs sidebar's chrome background (toolbar,
-    /// Active agents block, detail strip, status footer, menu row);
+    /// Active agents block, status footer, menu row) and the session header;
     /// defaults to `surface_dim`.
     pub sidebar_chrome_bg: Option<String>,
     /// Overrides applied when `auto_switch` selects a light appearance.

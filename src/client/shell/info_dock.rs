@@ -403,6 +403,9 @@ impl Default for ClientInfoDockState {
 pub(super) struct DockComposeInput<'a> {
     pub(super) tab_label: &'a str,
     pub(super) sized_elsewhere: bool,
+    /// Fork (session header): the tabs layout's title bar in place of the
+    /// Notes strip.
+    pub(super) title_bar: bool,
 }
 
 /// The local UTC offset in seconds (the one in effect now).
@@ -704,7 +707,11 @@ impl ClientInfoDockState {
         key: &str,
     ) -> InfoDockHits {
         let width = usize::from(area.width.saturating_sub(2));
-        let strip = model::tab_strip(width);
+        let strip = if input.title_bar {
+            model::title_bar(width, self.editing())
+        } else {
+            model::tab_strip(width)
+        };
         let conflict = self.editor.as_ref().and_then(|editor| {
             editor.conflict.as_ref().map(|theirs| {
                 model::theirs_added(
@@ -884,7 +891,31 @@ impl ClientShellState {
             .last_composed_size
             .map(|(cols, rows)| self.surface_size(cols, rows));
         let focused = self.info_dock_focused_tab() == Some(tab_id.as_str());
-        let key = (self.active_endpoint_id.clone(), tab_id);
+        let endpoint = self.active_endpoint_id.clone();
+        // Fork (session header): one dock slot in the tabs layout; the
+        // browser gives way only to notes that fit the window (else it stays
+        // and the notice says why).
+        if !self
+            .info_dock
+            .as_deref()
+            .is_some_and(|dock| dock.open_tabs.contains(&(endpoint.clone(), tab_id.clone())))
+        {
+            if focused
+                && self.config.sidebar_layout == crate::config::SidebarLayoutConfig::Tabs
+                && self.browser_dock_open_for(&tab_id)
+                && !self.info_dock_fits_alone()
+            {
+                outcome.repaint |= self.push_endpoint_notice(
+                    ClientEndpointNoticeKind::Rejected,
+                    "info_pane:narrow",
+                    "Info pane",
+                    "The window is too narrow for the info pane; it appears once the window is wider.",
+                );
+                return;
+            }
+            self.free_dock_slot_of_browser(&endpoint, &tab_id);
+        }
+        let key = (endpoint, tab_id);
         let dock = self.info_dock.get_or_insert_with(Box::default);
         let opened = if dock.open_tabs.remove(&key) {
             if focused {
@@ -935,7 +966,8 @@ impl ClientShellState {
     /// An `endpoint.notes-reveal.v1` push (an agent's `agents_notes_write
     /// reveal=true`): open that tab's dock unless it is open, never taking
     /// the keyboard (a tab of another endpoint, or not focused, opens in
-    /// state only). Each revision acts once per server boot.
+    /// state only). Each revision acts once per server boot. In the tabs
+    /// layout a tab whose browser is docked keeps it: the reveal is skipped.
     pub(crate) fn receive_notes_reveal(
         &mut self,
         endpoint_id: &ClientEndpointId,
@@ -960,6 +992,17 @@ impl ClientShellState {
         if dock.open_tabs.contains(&key) {
             return outcome;
         }
+        // Fork (session header): an agent's reveal never takes the dock slot
+        // from a browser the user docked on that tab; the notes stay closed.
+        if self.config.sidebar_layout == crate::config::SidebarLayoutConfig::Tabs
+            && self
+                .browser_dock
+                .docked
+                .get(endpoint_id)
+                .is_some_and(|tabs| tabs.contains(&payload.tab_id))
+        {
+            return outcome;
+        }
         if *endpoint_id == self.active_endpoint_id {
             self.toggle_info_pane(payload.tab_id, &mut outcome);
         } else {
@@ -968,6 +1011,98 @@ impl ClientShellState {
             dock.dragging = false;
         }
         outcome
+    }
+
+    /// Fork (session header): whether the info dock would be drawn at the
+    /// last composed size with no browser band beside it (`true` before a
+    /// frame).
+    pub(crate) fn info_dock_fits_alone(&self) -> bool {
+        let Some((cols, rows)) = self.last_composed_size else {
+            return true;
+        };
+        !self
+            .config
+            .layout(
+                cols,
+                rows,
+                self.sidebar_collapsed,
+                self.focused_tab_count(),
+                self.sidebar_width,
+                Some(self.info_dock_width),
+            )
+            .info_dock
+            .is_empty()
+    }
+
+    /// Fork (session header): the focused tab's notes hold the tabs
+    /// layout's dock slot.
+    pub(crate) fn dock_slot_holds_notes(&self, tab_id: &str) -> bool {
+        self.config.sidebar_layout == crate::config::SidebarLayoutConfig::Tabs
+            && self.info_dock.as_deref().is_some_and(|dock| {
+                dock.open_tabs
+                    .contains(&(self.active_endpoint_id.clone(), tab_id.to_owned()))
+            })
+    }
+
+    /// Fork (session header): a live switch to the tabs layout leaves one
+    /// dock per tab: a tab with both keeps the browser, its notes close
+    /// (the editor committed; the tick sends a dirty buffer's save even
+    /// with the dock closed).
+    pub(crate) fn reconcile_dock_slot(&mut self) {
+        if self.config.sidebar_layout != crate::config::SidebarLayoutConfig::Tabs
+            || self.browser_dock.docked.is_empty()
+        {
+            return;
+        }
+        let both: Vec<(ClientEndpointId, String)> = self
+            .info_dock
+            .as_deref()
+            .map(|dock| {
+                dock.open_tabs
+                    .iter()
+                    .filter(|(endpoint, tab_id)| {
+                        self.browser_dock
+                            .docked
+                            .get(endpoint)
+                            .is_some_and(|tabs| tabs.contains(tab_id))
+                    })
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        for (endpoint, tab_id) in both {
+            self.free_dock_slot_of_notes(&endpoint, &tab_id);
+        }
+    }
+
+    /// Fork (session header): the tabs layout has one dock slot, so the
+    /// browser dock opening closes `tab_id`'s notes dock (state only; the
+    /// caller resizes), committing its editor. Returns whether it was open.
+    pub(crate) fn free_dock_slot_of_notes(
+        &mut self,
+        endpoint: &ClientEndpointId,
+        tab_id: &str,
+    ) -> bool {
+        if self.config.sidebar_layout != crate::config::SidebarLayoutConfig::Tabs {
+            return false;
+        }
+        let focused =
+            self.info_dock_focused_tab() == Some(tab_id) && *endpoint == self.active_endpoint_id;
+        let Some(dock) = self.info_dock.as_deref_mut() else {
+            return false;
+        };
+        if !dock
+            .open_tabs
+            .remove(&(endpoint.clone(), tab_id.to_owned()))
+        {
+            return false;
+        }
+        if focused {
+            dock.commit_editor(true);
+            dock.focused = false;
+            dock.dragging = false;
+        }
+        true
     }
 
     /// Whether `tab_id` of the active endpoint has its dock open while the
@@ -1170,10 +1305,24 @@ impl ClientShellState {
         now: Instant,
         outcome: &mut ClientShellInput,
     ) {
+        if target == InfoDockTarget::Close {
+            self.toggle_info_pane_for_focused_tab(outcome);
+            return;
+        }
         let Some(dock) = self.info_dock.as_deref_mut() else {
             return;
         };
         match target {
+            InfoDockTarget::Close => {}
+            InfoDockTarget::Edit => {
+                if dock.editing() {
+                    dock.commit_editor(true);
+                    dock.bump_editor();
+                } else if dock.start_edit(None, now) {
+                    let key = dock.ui_key();
+                    dock.ui_for(&key).follow = true;
+                }
+            }
             InfoDockTarget::Task { line, revision } => dock_tick_task(dock, line, &revision, now),
             InfoDockTarget::EditAt {
                 line,

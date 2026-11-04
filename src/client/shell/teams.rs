@@ -5,11 +5,9 @@
 //! A team is a server-side fact of a group (a space). The server pushes the
 //! whole list whenever its team view changes (never on an agent status
 //! flip); the client keeps the last list per endpoint and two lookup maps
-//! built once per push, so the `tabs` sidebar's group-header mark and the
-//! member rows' dim `◆` are O(1) lookups in render:
-//!
-//! - `by_workspace`: workspace id → index into `teams`;
-//! - `member_tabs`: tab ids holding a member.
+//! built once per push, so the `tabs` sidebar's group-header mark is an
+//! O(1) lookup in render (`by_workspace`: workspace id → index into
+//! `teams`).
 //!
 //! The push carries no status; the Team info overlay (`team_overlay.rs`)
 //! pulls `team.get` for status and time in state. A state is used only while
@@ -17,7 +15,7 @@
 //! old server's teams. Every menu item and overlay action is gated on the
 //! endpoint advertising `team.get`: an old server shows nothing.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use super::*;
 use crate::api::schema::team::{TeamInfo, TeamMemberInfo};
@@ -37,30 +35,20 @@ pub(crate) struct ClientTeamsState {
     pub(crate) teams: Vec<TeamInfo>,
     /// Workspace id → index into `teams`; rebuilt only when a push arrives.
     pub(crate) by_workspace: HashMap<String, usize>,
-    /// Tabs holding a team member; rebuilt only when a push arrives.
-    pub(crate) member_tabs: HashSet<String>,
 }
 
 impl ClientTeamsState {
     /// The state for a push, with its lookup maps.
     pub(crate) fn from_payload(payload: TeamsPayload) -> Self {
         let mut by_workspace = HashMap::with_capacity(payload.teams.len());
-        let mut member_tabs = HashSet::new();
         for (index, team) in payload.teams.iter().enumerate() {
             by_workspace.insert(team.workspace_id.clone(), index);
-            member_tabs.extend(
-                team.members
-                    .iter()
-                    .filter_map(|member| member.tab_id.as_deref())
-                    .map(str::to_owned),
-            );
         }
         Self {
             boot_id: payload.boot_id,
             revision: payload.revision,
             teams: payload.teams,
             by_workspace,
-            member_tabs,
         }
     }
 
@@ -69,11 +57,6 @@ impl ClientTeamsState {
         self.by_workspace
             .get(workspace_id)
             .and_then(|index| self.teams.get(*index))
-    }
-
-    /// Whether `tab_id` holds a member: an O(1) lookup.
-    pub(crate) fn is_member_tab(&self, tab_id: &str) -> bool {
-        self.member_tabs.contains(tab_id)
     }
 }
 

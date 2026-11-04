@@ -1,5 +1,6 @@
-//! Fork (sidebar v3): the tabs sidebar's detail strip on top and the
-//! Pinned and Scheduled blocks under the list.
+//! Fork (sidebar v3): the tabs sidebar's list right under the toolbar
+//! (the detail strip is gone: session header) and the Pinned and
+//! Scheduled blocks under the list.
 //!
 //! The fixture is sidebar_active.rs's (a blocked, a live voice, two
 //! working, a finished, a parked and an idle tab over the ungrouped bucket
@@ -9,8 +10,8 @@
 use std::time::{Duration, Instant};
 
 use super::sidebar_active::{
-    active_snapshot, active_state, active_state_with, cell, detail_text, endpoint_methods, mouse,
-    row_text, tabs_config, COLS, ROWS,
+    active_snapshot, active_state, active_state_with, cell, endpoint_methods, mouse, row_text,
+    tabs_config, COLS, ROWS,
 };
 use super::*;
 use crate::api::schema::{Method, TabRemindInterval};
@@ -598,23 +599,16 @@ fn sections_rebuild_the_model_on_data_change_only() {
 }
 
 #[test]
-fn detail_strip_sits_under_the_toolbar_with_its_rule_above_the_list() {
+fn the_list_sits_right_under_the_toolbar() {
     let mut state = active_state();
-    let frame = state.compose(COLS, ROWS).expect("composed frame");
-    let detail = state.hits.sidebar_detail;
-    assert_eq!(detail.y, 1, "right under the toolbar");
-    assert_eq!(
-        cell(&frame, detail.x + 2, detail.bottom() - 1).symbol,
-        "\u{2500}",
-        "its rule is its last row"
-    );
+    state.compose(COLS, ROWS).expect("composed frame");
+    let toolbar = state.hits.sidebar_toolbar;
+    assert_eq!(toolbar.y, 0);
     assert_eq!(
         state.hits.agent_body.y,
-        detail.bottom(),
-        "the list starts under it"
+        toolbar.bottom(),
+        "the list starts under the toolbar"
     );
-    assert!(detail_text(&state, &frame)[0].contains("focus work"));
-    // No row sits between the strip and the list's first tab.
     let (row, _) = &state.hits.sidebar_tabs[0];
     assert_eq!(row.y, state.hits.agent_body.y);
 }
@@ -633,54 +627,28 @@ fn active_block_sits_under_the_list_with_its_rule_on_top() {
     );
 }
 
-#[test]
-fn section_headers_describe_themselves_in_the_detail_strip() {
-    let t0 = Instant::now();
-    let mut state = scheduled_state(t0);
-    assert!(state.receive_tab_pins(&ClientEndpointId::Local, pins_payload(1, &["t_done"])));
-    state.sidebar_clock = Some(t0 + Duration::from_secs(90));
-    state.compose(COLS, ROWS).expect("composed frame");
-    let header = state.hits.sidebar_pins_header;
-    mouse(&mut state, MouseEventKind::Moved, header.x + 4, header.y);
-    let frame = state.compose(COLS, ROWS).expect("composed frame");
-    let text = detail_text(&state, &frame).join(" ");
-    assert!(text.contains("1 pinned"), "{text:?}");
-    let header = state.hits.sidebar_scheduled_header;
-    mouse(&mut state, MouseEventKind::Moved, header.x + 4, header.y);
-    let frame = state.compose(COLS, ROWS).expect("composed frame");
-    let text = detail_text(&state, &frame).join(" ");
-    assert!(text.contains("3 scheduled"), "{text:?}");
-    assert!(text.contains("next scratch in 4m"), "{text:?}");
-    // A pinned tab's own facts say so.
-    let entry = row_of(&state.hits.sidebar_pins_rows, "t_done");
-    mouse(&mut state, MouseEventKind::Moved, entry.x + 6, entry.y);
-    let frame = state.compose(COLS, ROWS).expect("composed frame");
-    let text = detail_text(&state, &frame).join(" ");
-    assert!(text.contains("pinned"), "{text:?}");
-}
-
 /// Fork smoke tests: FORK.md section 10 lists them by name and the sync gate
 /// runs them with `-E 'test(fork_smoke)'`.
 mod fork_smoke {
     use super::*;
 
-    /// The detail strip under the toolbar, the Active block under the list
-    /// and the Pinned and Scheduled blocks under it all reach the composed
-    /// frame.
+    /// The list under the toolbar, the Active block under the list and the
+    /// Pinned and Scheduled blocks under it all reach the composed frame.
     #[test]
-    fn detail_on_top_and_bottom_blocks_reach_the_renderer() {
+    fn list_on_top_and_bottom_blocks_reach_the_renderer() {
         let t0 = Instant::now();
         let mut state = scheduled_state(t0);
         assert!(state.receive_tab_pins(&ClientEndpointId::Local, pins_payload(1, &["t_done"])));
         let frame = state.compose(COLS, ROWS).expect("composed frame");
         let hits = &state.hits;
-        assert_eq!(hits.sidebar_detail.y, 1);
         let list = hits.agent_body;
-        assert_eq!(list.y, hits.sidebar_detail.bottom());
+        assert_eq!(list.y, hits.sidebar_toolbar.bottom());
         assert!(hits.sidebar_active_header.y > list.bottom());
         assert!(hits.sidebar_pins_header.y > hits.sidebar_active_header.y);
         assert!(hits.sidebar_scheduled_header.y > hits.sidebar_pins_header.y);
-        assert!(detail_text(&state, &frame)[0].contains("focus work"));
+        assert!(frame_rows(&frame)
+            .iter()
+            .any(|row| row.contains("focus work")));
     }
 
     #[test]

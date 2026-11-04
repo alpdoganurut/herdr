@@ -191,7 +191,8 @@ fn the_browser_section_pulls_the_record_and_shows_rows_and_facts() {
     assert!(!text.contains("shell hook"), "{text}");
     // the tab strip holds every section including the new one
     assert!(text.contains(" browser "), "{text}");
-    assert_eq!(state.browser_section_rows(), 10);
+    // the ten rows and (session header) the Browser overlay's
+    assert_eq!(state.browser_section_rows(), 11);
 }
 
 /// The fixture with every check ok but the extension, whose detail is `detail`.
@@ -811,4 +812,149 @@ fn an_unchanged_browser_get_reply_still_carries_the_setup_hint() {
         Some("stopped !".to_string()),
         "the hint arrives with an unchanged reply"
     );
+}
+
+/// Fork (session header): the tabs sidebar's Browser row is gone; its
+/// menu's actions follow the section's rows (from the shell's
+/// `browser.get`), its glyph and status lead the facts as `now`, and ↓ / ↵
+/// reach and run them like any row.
+#[test]
+fn the_browser_row_menu_lives_on_as_rows_after_the_install_row() {
+    use crate::api::schema::{BrowserCompanionAppInfo, BrowserGetInfo, BrowserProfileInfo};
+    use crate::client::shell::settings_browser::ROWS;
+    let mut state = tabs_state();
+    state.browser.info = Some(BrowserGetInfo {
+        seq: 1,
+        enabled: true,
+        profiles: vec![BrowserProfileInfo {
+            name: "companion".into(),
+            state: "running".into(),
+            tabs: 3,
+            agents: 2,
+            ..Default::default()
+        }],
+        companion_app: Some(BrowserCompanionAppInfo {
+            state: "running".into(),
+            ..Default::default()
+        }),
+        window_off: true,
+        ..Default::default()
+    });
+    state.compose(110, 40).expect("composed frame");
+    let outcome = open_browser_section(&mut state);
+    let [(request_id, _)] = &endpoint_requests(&outcome)[..] else {
+        panic!("one pull");
+    };
+    reply(&mut state, request_id, info());
+    assert_eq!(state.browser_section_rows(), ROWS + 5);
+    let frame = state.compose(110, 40).expect("settings frame");
+    let text = frame_rows(&frame).join("\n");
+    for label in [
+        "focus companion",
+        "restart companion",
+        "stop companion",
+        "browser dock on this tab: off",
+        "open the Browser overlay…",
+    ] {
+        assert!(text.contains(label), "{label}: {text}");
+    }
+    assert!(text.contains("◎ companion · 3 tabs · 2 agents"), "{text}");
+    // ↓ past the install row reaches them; ↵ on the last opens the overlay
+    for _ in 0..ROWS + 4 {
+        state.handle_input_bytes(b"\x1b[B");
+    }
+    assert_eq!(selected_row(&state), ROWS + 4);
+    state.handle_input_bytes(b"\r");
+    assert!(matches!(
+        state.overlay,
+        Some(ClientShellOverlay::Browser(_))
+    ));
+    // a remote endpoint keeps only the overlay
+    let rows = crate::client::shell::settings_browser::live_actions(
+        state.browser_row().as_ref(),
+        false,
+        false,
+    );
+    assert_eq!(
+        rows.iter()
+            .map(|row| row.label.as_str())
+            .collect::<Vec<_>>(),
+        ["open the Browser overlay…"]
+    );
+}
+
+/// Audit: on a short terminal the section scrolls like Theme: the last live
+/// row is drawn while selected, and a click on it runs that row.
+#[test]
+fn a_short_terminal_scrolls_the_section_to_the_selected_live_row() {
+    use crate::api::schema::{BrowserCompanionAppInfo, BrowserGetInfo};
+    use crate::client::shell::settings_browser::ROWS;
+    let mut state = tabs_state();
+    state.browser.info = Some(BrowserGetInfo {
+        seq: 1,
+        enabled: true,
+        companion_app: Some(BrowserCompanionAppInfo {
+            state: "running".into(),
+            ..Default::default()
+        }),
+        window_off: true,
+        ..Default::default()
+    });
+    state.compose(110, 24).expect("composed frame");
+    let outcome = open_browser_section(&mut state);
+    let [(request_id, _)] = &endpoint_requests(&outcome)[..] else {
+        panic!("one pull");
+    };
+    reply(&mut state, request_id, info());
+    let last = state.browser_section_rows() - 1;
+    assert!(last >= ROWS, "live rows follow the section's own");
+    for _ in 0..last {
+        state.handle_input_bytes(b"\x1b[B");
+    }
+    assert_eq!(selected_row(&state), last);
+    let frame = state.compose(110, 24).expect("settings frame");
+    assert!(
+        frame_rows(&frame)
+            .join("\n")
+            .contains("open the Browser overlay…"),
+        "{}",
+        frame_rows(&frame).join("\n")
+    );
+    let (rect, _) = *state
+        .hits
+        .settings_choices
+        .iter()
+        .find(|(_, index)| *index == last)
+        .expect("the last row is hit-tested");
+    assert!(rect.bottom() <= 24);
+    // a click on a row higher up maps to that row
+    let (above, above_index) = *state
+        .hits
+        .settings_choices
+        .iter()
+        .find(|(_, index)| *index == last - 1)
+        .expect("the row above");
+    let click = |column: u16, row: u16| {
+        vec![
+            RawInputEvent::Mouse(MouseEvent {
+                kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                column,
+                row,
+                modifiers: KeyModifiers::empty(),
+            }),
+            RawInputEvent::Mouse(MouseEvent {
+                kind: crossterm::event::MouseEventKind::Up(crossterm::event::MouseButton::Left),
+                column,
+                row,
+                modifiers: KeyModifiers::empty(),
+            }),
+        ]
+    };
+    assert_eq!(above.y + 1, rect.y);
+    let _ = above_index;
+    state.handle_raw_events(click(rect.x + 4, rect.y));
+    assert!(matches!(
+        state.overlay,
+        Some(ClientShellOverlay::Browser(_))
+    ));
 }

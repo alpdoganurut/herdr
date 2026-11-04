@@ -337,36 +337,6 @@ pub(super) fn render_scheduled_block(
     }
 }
 
-/// The soonest countdown among the shown Scheduled entries (the header's
-/// detail strip): the entry's tab index and when it fires.
-pub(super) fn soonest_countdown(
-    snapshot: &ClientShellSnapshot,
-    model: &SidebarModel,
-    state: &ShellRenderState<'_>,
-) -> Option<(u32, std::time::Instant)> {
-    let mut soonest: Option<(u32, std::time::Instant)> = None;
-    for ((endpoint_id, tab_id), reminder) in state.scheduled_reminders.iter() {
-        if endpoint_id != state.active_endpoint_id {
-            continue;
-        }
-        let Some(next_fire) = reminder.next_fire().filter(|fire| *fire > state.now) else {
-            continue;
-        };
-        let Some(&index) = model.scheduled.iter().find(|index| {
-            snapshot
-                .tabs
-                .get(**index as usize)
-                .is_some_and(|tab| tab.tab_id == *tab_id)
-        }) else {
-            continue;
-        };
-        if soonest.is_none_or(|(_, current)| next_fire < current) {
-            soonest = Some((index, next_fire));
-        }
-    }
-    soonest
-}
-
 /// The input side of the block (`mouse.rs` calls in).
 impl ClientShellState {
     /// A left press on the Scheduled block: the header folds it

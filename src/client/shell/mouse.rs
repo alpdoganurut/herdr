@@ -2035,11 +2035,6 @@ impl ClientShellState {
                     outcome.repaint = true;
                     return;
                 }
-                if super::contains(self.hits.browser_row, point) {
-                    self.open_browser_context_menu(mouse.column, mouse.row);
-                    outcome.repaint = true;
-                    return;
-                }
                 if super::contains(self.hits.news_row, point) {
                     self.open_news_context_menu(mouse.column, mouse.row);
                     outcome.repaint = true;
@@ -2183,13 +2178,17 @@ impl ClientShellState {
                 // Fork (sidebar filters): a press away from the search field
                 // lets go of the keyboard.
                 self.sidebar_search_pressed_elsewhere(point, outcome);
+                // Fork (session header): the header row, before any pane hit.
+                if self.session_header_press(point, outcome) {
+                    return;
+                }
                 // Fork: the info dock, before any pane hit, so a dock press
                 // never starts a pane gesture or a selection.
                 if self.info_dock_press(point, outcome) {
                     return;
                 }
-                // Fork (companion launcher): the browser band, its strip,
-                // the Browser view's area and the Browser row's `◨`.
+                // Fork (companion launcher): the browser band, its strip
+                // and the Browser view's area.
                 if self.browser_dock_press(point, outcome) {
                     return;
                 }
@@ -2363,11 +2362,6 @@ impl ClientShellState {
                 if super::contains(self.hits.group_new, point) {
                     self.toolbar_new_tab(outcome);
                     outcome.repaint = true;
-                    return;
-                }
-                if super::contains(self.hits.browser_row, point) {
-                    // The pinned Browser row opens the overlay on the press.
-                    self.activate_browser_row(outcome);
                     return;
                 }
                 if super::contains(self.hits.news_row, point) {
@@ -2624,6 +2618,8 @@ impl ClientShellState {
             MouseEventKind::Moved => {
                 // Fork (sidebar v2): the hovered tabs sidebar row.
                 self.update_sidebar_hover(point, outcome);
+                // Fork (session header): the hovered header control.
+                self.update_header_hover(point, outcome);
                 if let Some(hit) = self
                     .hits
                     .panes

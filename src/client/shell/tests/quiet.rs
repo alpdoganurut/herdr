@@ -1,13 +1,13 @@
 //! Fork: quiet messages and do-not-disturb on the client: the
 //! `endpoint.quiet.v1` state, the moon mark in the row's gutter (it takes
-//! the muted mark's cell), the `✉N` pending mark, the detail chips and the
-//! tab menu's Do not disturb item.
+//! the muted mark's cell), the `✉N` pending mark and the tab menu's Do not
+//! disturb item.
 //!
 //! The fixture is sidebar_active.rs's (`t_block` blocked, `t_done`
 //! finished, `t_focus` focused, all on the `boot-1` server).
 
 use super::sidebar_active::{
-    active_state, active_state_with, detail_text, endpoint_methods, mouse, tabs_config, COLS, ROWS,
+    active_state, active_state_with, endpoint_methods, mouse, tabs_config, COLS, ROWS,
 };
 use super::*;
 use crate::api::schema::Method;
@@ -154,19 +154,6 @@ fn pending_quiet_messages_show_as_a_count_in_the_row_and_the_detail_strip() {
         "{:?}",
         text("t_block")
     );
-
-    let row = row_of(&state, "t_work");
-    mouse(&mut state, MouseEventKind::Moved, row.x + 8, row.y);
-    let frame = state.compose(COLS, ROWS).expect("composed frame");
-    let detail = detail_text(&state, &frame).join(" ");
-    assert!(detail.contains("do not disturb"), "{detail:?}");
-    assert!(detail.contains("3 quiet"), "{detail:?}");
-    let row = row_of(&state, "t_block");
-    mouse(&mut state, MouseEventKind::Moved, row.x + 8, row.y);
-    let frame = state.compose(COLS, ROWS).expect("composed frame");
-    let detail = detail_text(&state, &frame).join(" ");
-    assert!(!detail.contains("do not disturb"), "{detail:?}");
-    assert!(!detail.contains("quiet"), "{detail:?}");
 }
 
 #[test]

@@ -326,8 +326,6 @@ fn the_maps_are_built_once_per_push_and_answer_in_constant_time() {
     let state = team_state(Some("ship it"));
     let teams = state.active_teams().expect("teams");
     assert_eq!(teams.by_workspace.get("ws_2"), Some(&0));
-    assert!(teams.is_member_tab("tab_2") && teams.is_member_tab("tab_3"));
-    assert!(!teams.is_member_tab("tab_4"));
     assert!(teams.team("ws_1").is_none());
 }
 
@@ -375,7 +373,7 @@ fn render_does_no_team_work_without_teams() {
     let after = plain.compose(106, 24).expect("frame");
     assert_eq!(frame_rows(&before), frame_rows(&after));
     let teams = plain.active_teams().expect("teams");
-    assert!(teams.by_workspace.is_empty() && teams.member_tabs.is_empty());
+    assert!(teams.by_workspace.is_empty());
 }
 
 #[test]

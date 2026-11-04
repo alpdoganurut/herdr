@@ -9,8 +9,8 @@
 use std::time::{Duration, Instant};
 
 use super::sidebar_active::{
-    active_snapshot, active_state, active_state_with, detail_text, endpoint_methods, mouse,
-    tabs_config, COLS, ROWS,
+    active_snapshot, active_state, active_state_with, endpoint_methods, mouse, tabs_config, COLS,
+    ROWS,
 };
 use super::*;
 use crate::api::schema::{AgentNoticeInfo, AgentNoticeKind, Method};
@@ -117,35 +117,6 @@ fn the_muted_mark_takes_the_tab_agent_glyphs_override() {
         .find(|(id, _, _)| id == "t_done")
         .expect("t_done row");
     assert_eq!(symbol, "M");
-}
-
-#[test]
-fn a_muted_tab_says_so_in_the_detail_strip() {
-    let mut state = active_state();
-    state.receive_tab_mutes(
-        &ClientEndpointId::Local,
-        mutes_payload("boot-1", 1, &["t_work"]),
-    );
-    state.compose(COLS, ROWS).expect("composed frame");
-    let row_of = |state: &ClientShellState, tab_id: &str| {
-        state
-            .hits
-            .sidebar_tabs
-            .iter()
-            .find(|(_, id)| id == tab_id)
-            .map(|(rect, _)| *rect)
-            .expect("tab row")
-    };
-    let row = row_of(&state, "t_work");
-    mouse(&mut state, MouseEventKind::Moved, row.x + 8, row.y);
-    let frame = state.compose(COLS, ROWS).expect("composed frame");
-    let text = detail_text(&state, &frame).join(" ");
-    assert!(text.contains("notifications off"), "{text:?}");
-    let row = row_of(&state, "t_done");
-    mouse(&mut state, MouseEventKind::Moved, row.x + 8, row.y);
-    let frame = state.compose(COLS, ROWS).expect("composed frame");
-    let text = detail_text(&state, &frame).join(" ");
-    assert!(!text.contains("notifications off"), "{text:?}");
 }
 
 #[test]

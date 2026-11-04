@@ -8,10 +8,9 @@
 //!
 //! - the tabs sidebar model (one set and one map lookup per tab, only while
 //!   the push lists something): a tab in do-not-disturb shows `dnd_mark` in
-//!   the row's left gutter (the muted mark's cell, which it takes over) and
-//!   a `do not disturb` chip in the detail strip; a tab whose agents have
-//!   quiet messages waiting shows `✉N` first in its right-hand marks and a
-//!   `N quiet` chip.
+//!   the row's left gutter (the muted mark's cell, which it takes over); a
+//!   tab whose agents have quiet messages waiting shows `✉N` first in its
+//!   right-hand marks (and in the session header).
 //! - the tab menu (`active_tab_dnd`), once when it opens.
 
 use std::collections::{HashMap, HashSet};
