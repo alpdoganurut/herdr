@@ -17,6 +17,8 @@ import { EXTRACT_SOURCE, LINKS_SOURCE } from './extract.mjs';
 import { Overlay, Companion, NUDGE_URL, dismissPanes, captureWithQuietRetry, CaptureLane, laneShot, shotParams, SELECT_BUDGET_MS, describe, probePages, ControlPage, ViewWatches, isFurnitureUrl, VIEW_MARKER, CompanionDialog, reconcileDialogs, pruneAnswered, DIALOG_BINDING } from './activity.mjs';
 import { pathToFileURL } from 'node:url';
 import nodePath from 'node:path';
+// the act's change probe and timeout message (on a line of their own)
+import { MODALS_SOURCE, actChanges, actTimeoutMessage, redactActText } from './extract.mjs';
 /** Kept out of the connect for the post-timeout diagnosis (the page probe: a 1 s list fetch, 1 s probes). */
 const ATTACH_DIAG_RESERVE_MS = 2500;
 
@@ -25,6 +27,7 @@ const require = createRequire(import.meta.url);
 // not its result) and an in-page eval would hit strict CSPs.
 const extractFn = new Function('args', 'return (' + EXTRACT_SOURCE + ')(args);');
 const linksFn = new Function('args', 'return (' + LINKS_SOURCE + ')(args);');
+const modalsFn = new Function('return (' + MODALS_SOURCE + ')();');
 const PLAYWRIGHT_VERSION = require('playwright-core/package.json').version;
 const HOST_PROTOCOL = 1;
 const CONSOLE_RING = 1000;
@@ -47,6 +50,14 @@ function event(name, fields) {
 }
 function log(level, text) {
   event('log', { level, text: String(text).slice(0, 500) });
+}
+// An act that timed out: the whole Playwright message (its call log, a
+// submitted text masked) goes to host.log (the sidecar's stderr), a summary to
+// herdr's log at info; the URL comes without its query or fragment.
+function logActTimeout(fields) {
+  try { process.stderr.write(`${new Date().toISOString()} act timeout ${JSON.stringify(fields)}\n`); } catch {}
+  const { message, ...rest } = fields;
+  log('info', `act timeout ${JSON.stringify(rest)} ${String(message || '').split('\n')[0]}`);
 }
 class OpError extends Error {
   constructor(code, message) { super(message); this.code = code; }
@@ -756,7 +767,8 @@ const ops = {
       }
       const r = await state.page.evaluate(extractFn, { selector: args.selector || null });
       if (!r || r.error) fail('invalid_request', (r && r.error) || 'extraction failed');
-      return (args.selector ? r.markdown : (r.markdown && r.markdown.length >= 200 ? r.markdown : r.full_markdown));
+      // the main content when it has some (an open dialog comes first in both)
+      return (args.selector ? r.markdown : (r.markdown && r.main_chars >= 200 ? r.markdown : r.full_markdown));
     };
     let outcome;
     try {
@@ -1030,6 +1042,11 @@ const ops = {
       fail('password_field_refused', `that is a password field (${info.role} "${info.name}"); ask the user to type it — \`herdr browser focus\` brings the window up ([browser] type_into_password_fields = false)`);
     }
     const urlBefore = page.url();
+    // What a click or key press changes besides the URL: an in-page modal (a
+    // Vue/React dialog has no CDP dialog event), the title, the focus.
+    const probesChanges = kind === 'click' || kind === 'press';
+    const probe = () => withTimeout(page.evaluate(modalsFn), 1000, 'probe_timeout', 'probe').catch(() => null);
+    const before = probesChanges ? await probe() : null;
     // The activity cursor glides to the element first (the ripple lands with the click).
     if (activity && activity.frame && handle && !state.dialog) {
       const t0 = Date.now();
@@ -1052,8 +1069,9 @@ const ops = {
     let dispatched = false;
     const onNav = (frame) => { if (frame === page.mainFrame()) navigated = true; };
     page.on('framenavigated', onNav);
+    const force = hidden;
+    const started = Date.now();
     try {
-      const force = hidden;
       if (kind === 'click') await scope.click({ force, timeout });
       else if (kind === 'hover') {
         // A hidden tab has no pointer: the events are dispatched to the element
@@ -1078,13 +1096,35 @@ const ops = {
       if (navigated || page.url() !== urlBefore) await page.waitForLoadState('domcontentloaded', { timeout: Math.max(1000, timeout) }).catch(() => {});
     } catch (err) {
       if (err instanceof OpError) throw err;
-      if (/Timeout/i.test(err.message)) fail(args.ref ? 'stale_ref' : 'browser_timeout', `${kind} did not complete within ${timeout} ms${args.ref ? ' (the ref may be stale; re-run browser snapshot)' : ''}`);
+      // Playwright's call log quotes the submitted text (`fill("…")`,
+      // `elementHandle.type("…")`): only its length reaches the answer and the logs.
+      err.message = redactActText(err.message, kind === 'fill' || kind === 'type' ? args.text : null);
+      if (/Timeout/i.test(err.message)) {
+        // The element resolved before the action: stale only when it has
+        // left the page since; otherwise the action itself did not finish
+        // (covered, hidden, disabled, a modal in the way).
+        const elapsed = Date.now() - started;
+        const targetName = args.ref || args.selector || 'the focused element';
+        const url = String(page.url()).split(/[?#]/)[0];
+        // A JavaScript dialog the action opened blocks the page (and the probe).
+        if (await dialogStillOpen(state)) {
+          logActTimeout({ kind, target: targetName, role: info.role, name: info.name, hidden, force, timeout_ms: timeout, elapsed_ms: elapsed, deadline_ms, dialog: true, url, message: err.message });
+          fail('dialog_open', `a ${state.dialog.type()} dialog opened during the ${kind} ("${state.dialog.message().slice(0, 80)}"); browser dialog accept|dismiss, or the user answers it`);
+        }
+        // true / false when the probe answered, null when it could not tell
+        // (a busy renderer): only a clear false is stale.
+        const connected = handle ? await withTimeout(handle.evaluate((el) => el.isConnected), 1000, 'probe_timeout', 'probe').catch(() => null) : true;
+        logActTimeout({ kind, target: targetName, role: info.role, name: info.name, hidden, force, timeout_ms: timeout, elapsed_ms: elapsed, deadline_ms, connected, url, message: err.message });
+        if (args.ref && connected === false) fail('stale_ref', `ref ${args.ref} no longer resolves (the element left the page during the ${kind}); re-run browser snapshot`);
+        fail('action_timeout', actTimeoutMessage({ kind, target: targetName, role: info.role, name: info.name, timeout_ms: timeout, force, hidden, connected, message: err.message }));
+      }
       throw err;
     } finally {
       page.off('framenavigated', onNav);
       state.inflight--;
     }
-    return { result: { kind, role: info.role, name: info.name, navigated: navigated || page.url() !== urlBefore, url_before: urlBefore, dispatched }, page: await pageInfo(state) };
+    const changes = probesChanges ? actChanges(before, await probe()) : {};
+    return { result: { kind, role: info.role, name: info.name, navigated: navigated || page.url() !== urlBefore, url_before: urlBefore, dispatched, ...changes }, page: await pageInfo(state) };
   },
 
   // The pinned dashboard follows [browser] pin_dashboard live.

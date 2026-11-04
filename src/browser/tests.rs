@@ -55,6 +55,9 @@ pub(crate) struct FakeHostState {
     companion: Option<Value>,
     /// New tab page pushes (`ntp` ops), kept apart so op indices stay stable.
     ntp: Vec<Value>,
+    /// The URL act, navigate and history replies report instead of their
+    /// defaults (an action that leaves the URL as it was).
+    page_url: Option<String>,
 }
 
 pub(crate) type Shared = Arc<Mutex<FakeHostState>>;
@@ -202,11 +205,11 @@ pub(crate) fn fake_host(hub: &BrowserHub) -> (Shared, UnixStream) {
                             } else if args["ref"].as_str() == Some("e99") {
                                 json!({ "id": id, "ok": false, "error": { "code": "stale_ref", "message": "ref e99 no longer resolves; re-run browser snapshot" } })
                             } else {
-                                json!({ "id": id, "ok": true, "result": { "kind": kind, "role": if kind == "click" { "button" } else { "textbox" }, "name": if kind == "click" { "Press me" } else { "Name" }, "navigated": kind == "click", "url_before": "https://site.test/T1" }, "page": { "url": "https://site.test/after", "title": "After", "dialog_open": false } })
+                                json!({ "id": id, "ok": true, "result": { "kind": kind, "role": if kind == "click" { "button" } else { "textbox" }, "name": if kind == "click" { "Press me" } else { "Name" }, "navigated": kind == "click", "url_before": "https://site.test/T1" }, "page": { "url": state.page_url.clone().unwrap_or_else(|| "https://site.test/after".into()), "title": "After", "dialog_open": false } })
                             }
                         }
                         "navigate" | "history" | "focus" | "select" => {
-                            json!({ "id": id, "ok": true, "result": {}, "page": { "url": args["url"].as_str().unwrap_or("https://site.test/after"), "title": "After", "status": 200 } })
+                            json!({ "id": id, "ok": true, "result": {}, "page": { "url": state.page_url.clone().unwrap_or_else(|| args["url"].as_str().unwrap_or("https://site.test/after").to_string()), "title": "After", "status": 200 } })
                         }
                         "close" | "close_browser" | "detach" | "watch" | "unwatch"
                         | "control_quit" | "control_raise" => {
@@ -1049,6 +1052,181 @@ fn paging_reuses_the_last_extraction_and_a_fresh_read_re_extracts() {
     .unwrap();
     hub.run(&actor, read(100)).unwrap();
     assert_eq!(reads(&shared), 4);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+fn read_ops(shared: &Shared) -> usize {
+    shared
+        .lock()
+        .unwrap()
+        .ops
+        .iter()
+        .filter(|(op, _, _)| op == "read")
+        .count()
+}
+
+fn read_at(offset: u64) -> BrowserRunParams {
+    params(BrowserOp::Read {
+        format: None,
+        selector: None,
+        ref_: None,
+        offset: Some(offset),
+        max: Some(100),
+        all: false,
+        interactive: false,
+    })
+}
+
+fn find_op(query: &str) -> BrowserRunParams {
+    params(BrowserOp::Find {
+        query: query.into(),
+        max: None,
+        context: None,
+    })
+}
+
+fn click_op() -> BrowserRunParams {
+    params(BrowserOp::Click {
+        ref_: Some("e5".into()),
+        selector: None,
+    })
+}
+
+#[test]
+fn fork_smoke_a_same_url_navigate_or_a_click_drops_the_cached_read() {
+    let (hub, shared, _stream, home) = hub("read-cache-actions");
+    let actor = pane("w2:pD");
+    // every action here leaves the URL as the read saw it
+    shared.lock().unwrap().page_url = Some("https://site.test/T1".into());
+    hub.run(&actor, params(open_op("https://a.test/"))).unwrap();
+    hub.run(&actor, read_at(0)).unwrap();
+    let cached = hub.run(&actor, read_at(100)).unwrap();
+    assert_eq!(read_ops(&shared), 1, "paging right after a read reuses it");
+    assert_eq!(cached.data["cached"], true);
+    assert!(cached.data["age_ms"].is_u64());
+    assert!(cached.text.contains("[cached copy "), "{}", cached.text);
+    // a navigation to the very URL the tab shows (a reload, a rebase's
+    // refresh) still drops the copy
+    let url = hub.with_state(|state| state.tabs[&TabKey::new("main", "T1")].url.clone());
+    hub.run(
+        &actor,
+        params(BrowserOp::Navigate {
+            url: url.clone(),
+            wait: None,
+        }),
+    )
+    .unwrap();
+    assert_eq!(
+        hub.with_state(|state| state.tabs[&TabKey::new("main", "T1")].url.clone()),
+        url
+    );
+    let fresh = hub.run(&actor, read_at(100)).unwrap();
+    assert_eq!(read_ops(&shared), 2, "a same-URL navigate re-extracts");
+    assert!(fresh.data.get("cached").is_none());
+    assert!(!fresh.text.contains("cached copy"));
+    hub.run(
+        &actor,
+        params(BrowserOp::History {
+            action: "reload".into(),
+        }),
+    )
+    .unwrap();
+    hub.run(&actor, find_op("abc")).unwrap();
+    assert_eq!(read_ops(&shared), 3, "a reload: find re-extracts");
+    // a click (an in-page modal, a merge) drops it too: paging and find
+    hub.run(&actor, read_at(0)).unwrap();
+    assert_eq!(read_ops(&shared), 4);
+    hub.run(&actor, click_op()).unwrap();
+    hub.run(&actor, read_at(100)).unwrap();
+    assert_eq!(read_ops(&shared), 5, "a click: paging re-extracts");
+    hub.run(&actor, click_op()).unwrap();
+    hub.run(&actor, find_op("abc")).unwrap();
+    assert_eq!(read_ops(&shared), 6, "a click: find re-extracts");
+    // a failed action counts as well (it may have half-happened)
+    hub.run(&actor, read_at(0)).unwrap();
+    shared.lock().unwrap().errors.push((
+        "act".into(),
+        "action_timeout".into(),
+        "click did not complete".into(),
+    ));
+    assert!(hub.run(&actor, click_op()).is_err());
+    hub.run(&actor, read_at(100)).unwrap();
+    assert_eq!(read_ops(&shared), 8);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn fork_smoke_find_re_extracts_unless_it_directly_follows_a_fresh_read() {
+    let (hub, shared, _stream, home) = hub("read-cache-find");
+    let actor = pane("w2:pD");
+    hub.run(&actor, params(open_op("https://a.test/"))).unwrap();
+    hub.run(&actor, find_op("abc")).unwrap();
+    hub.run(&actor, find_op("abc")).unwrap();
+    assert_eq!(
+        read_ops(&shared),
+        2,
+        "a find never reuses another find's copy"
+    );
+    // paging around a match reuses the find's extraction (same offsets)
+    hub.run(&actor, read_at(100)).unwrap();
+    assert_eq!(read_ops(&shared), 2);
+    hub.run(&actor, read_at(0)).unwrap();
+    let hit = hub.run(&actor, find_op("abc")).unwrap();
+    assert_eq!(read_ops(&shared), 3, "find right after a read reuses it");
+    assert_eq!(hit.data["cached"], true);
+    assert!(hit.text.contains("[cached copy "), "{}", hit.text);
+    // read → find → find: only the first find reuses the read's copy
+    let again = hub.run(&actor, find_op("abc")).unwrap();
+    assert_eq!(
+        read_ops(&shared),
+        4,
+        "a second find after a read re-extracts"
+    );
+    assert!(again.data.get("cached").is_none());
+    // an old copy is not reused, for find or for paging
+    hub.run(&actor, read_at(0)).unwrap();
+    hub.age_read_cache_for_test(Duration::from_secs(6));
+    let miss = hub.run(&actor, find_op("abc")).unwrap();
+    assert_eq!(read_ops(&shared), 6);
+    assert!(miss.data.get("cached").is_none());
+    hub.age_read_cache_for_test(Duration::from_secs(6));
+    hub.run(&actor, read_at(100)).unwrap();
+    assert_eq!(read_ops(&shared), 7);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn fork_smoke_a_cached_read_writes_no_old_page_back_and_respects_an_open_dialog() {
+    let (hub, shared, _stream, home) = hub("read-cache-page");
+    let actor = pane("w2:pD");
+    let key = TabKey::new("main", "T1");
+    hub.run(&actor, params(open_op("https://a.test/"))).unwrap();
+    hub.run(&actor, read_at(0)).unwrap();
+    // the page renames itself; `focus` keeps the copy and brings the event in
+    shared.lock().unwrap().events.push(
+        json!({ "event": "tab", "profile": "main", "target": "T1", "kind": "title", "title": "Renamed" }).to_string(),
+    );
+    hub.run(&actor, params(BrowserOp::Focus)).unwrap();
+    assert_eq!(
+        hub.with_state(|state| state.tabs[&key].title.clone()),
+        "Renamed"
+    );
+    let cached = hub.run(&actor, read_at(100)).unwrap();
+    assert_eq!(read_ops(&shared), 1);
+    assert_eq!(
+        hub.with_state(|state| state.tabs[&key].title.clone()),
+        "Renamed",
+        "the cached copy's page is not written back"
+    );
+    assert!(cached.header.contains("Renamed"), "{}", cached.header);
+    // a dialog opened: the read goes to the sidecar (its guard answers)
+    shared.lock().unwrap().events.push(
+        json!({ "event": "dialog", "profile": "main", "target": "T1", "type": "alert", "message": "hi", "state": "open" }).to_string(),
+    );
+    hub.run(&actor, params(BrowserOp::Focus)).unwrap();
+    assert!(hub.with_state(|state| state.tabs[&key].dialog_open));
+    hub.run(&actor, read_at(100)).unwrap();
+    assert_eq!(read_ops(&shared), 2, "no cached read past an open dialog");
     let _ = std::fs::remove_dir_all(&home);
 }
 

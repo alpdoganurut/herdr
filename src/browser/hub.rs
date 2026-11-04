@@ -117,7 +117,7 @@ struct Inner {
     /// bookkeeping).
     flush_lock: Mutex<()>,
     /// The last extraction per tab, so paging and `find` are stable and cheap.
-    read_cache: Mutex<HashMap<TabKey, ReadCache>>,
+    read_cache: Mutex<ReadCaches>,
     /// The companion extension's state per attached profile (`ready`,
     /// `missing`, `off`, …) for status and doctor.
     companion: Mutex<HashMap<String, String>>,
@@ -173,6 +173,58 @@ struct ReadCache {
     url: String,
     content: String,
     page: PageInfo,
+    /// When the extraction ran: older than `READ_CACHE_MAX_AGE` is not reused.
+    stored_at: Instant,
+    /// Stored by a `read` (a `find` reuses only a read's copy, never another find's).
+    from_read: bool,
+}
+
+/// The cached extractions and, per tab, a generation every action bumps
+/// (before and after its request): a read that started before an action
+/// stores nothing, so a read racing a click never caches its pre-click copy.
+#[derive(Default)]
+struct ReadCaches {
+    entries: HashMap<TabKey, ReadCache>,
+    generation: HashMap<TabKey, u64>,
+}
+
+/// Drops the tab's cached extraction again when an action returns (or fails).
+struct ForgetReadOnDrop<'a> {
+    hub: &'a BrowserHub,
+    key: TabKey,
+}
+
+impl Drop for ForgetReadOnDrop<'_> {
+    fn drop(&mut self) {
+        self.hub.forget_read(&self.key);
+    }
+}
+
+/// A cached extraction is reused (paging, `find` right after a read) for at
+/// most this long; any action on the tab drops it at once.
+const READ_CACHE_MAX_AGE: Duration = Duration::from_secs(5);
+
+/// A cache hit: the content and how old the copy is.
+struct CachedRead {
+    content: String,
+    status: Option<u16>,
+    age: Duration,
+}
+
+/// Ops that leave the page as it was: they keep the tab's cached extraction.
+/// Everything else (an act, eval, dialog, scroll, wait, navigation, history,
+/// close) may change the page, so the next paged read or find re-extracts.
+fn keeps_read_cache(op: &BrowserOp) -> bool {
+    matches!(
+        op,
+        BrowserOp::Read { .. }
+            | BrowserOp::Find { .. }
+            | BrowserOp::Links { .. }
+            | BrowserOp::Screenshot { .. }
+            | BrowserOp::Console { .. }
+            | BrowserOp::Network { .. }
+            | BrowserOp::Focus
+    )
 }
 
 #[derive(Clone)]
@@ -206,7 +258,7 @@ impl BrowserHub {
                 auto_repaired: std::sync::Once::new(),
                 test_mode: AtomicBool::new(false),
                 flush_lock: Mutex::new(()),
-                read_cache: Mutex::new(HashMap::new()),
+                read_cache: Mutex::new(ReadCaches::default()),
                 companion: Mutex::new(HashMap::new()),
                 released: Mutex::new(HashSet::new()),
                 release_backoff: Mutex::new(HashMap::new()),
@@ -1525,6 +1577,8 @@ impl BrowserHub {
                 }
                 let key = TabKey::new(profile, &target);
                 let page = reply.page.clone().unwrap_or_default();
+                // a fresh page: never a copy cached for this target before
+                self.forget_read(&key);
                 {
                     let mut state = self.inner.state.lock().unwrap();
                     state.adopt_tab(
@@ -1716,6 +1770,18 @@ impl BrowserHub {
                         );
                     }
                 }
+                // An action may change the page (even a reload of the same
+                // URL): the next paged read or find re-extracts. Dropped
+                // before the request, so a failed or timed-out action counts,
+                // and again when it returns, so a read that ran alongside it
+                // is not kept either.
+                let _forget_after = (!keeps_read_cache(op)).then(|| {
+                    self.forget_read(&key);
+                    ForgetReadOnDrop {
+                        hub: self,
+                        key: key.clone(),
+                    }
+                });
                 let target = record.target_id.as_str();
                 let (result, detail) = match op {
                     BrowserOp::Navigate { url, wait } => {
@@ -1773,15 +1839,22 @@ impl BrowserHub {
                             .or_else(|| selector.as_deref().map(|s| format!("sel:{s}")))
                             .unwrap_or_default();
                         // Paging (offset > 0) reuses the last extraction of the same
-                        // format/scope/URL; a fresh read at offset 0 re-extracts.
+                        // format/scope/URL while it is fresh and nothing acted on
+                        // the tab since; a read at offset 0 always re-extracts.
                         let cached = if offset.unwrap_or(0) > 0 {
-                            self.cached_read(&key, format, &scope, *interactive, &record.url)
+                            self.cached_read(&key, format, &scope, *interactive, &record.url, false)
                         } else {
                             None
                         };
-                        let (content, page) = match cached {
-                            Some((content, page)) => (content, page),
+                        let (content, page, age) = match cached {
+                            // A cached copy writes nothing back to the ledger.
+                            Some(hit) => (
+                                hit.content,
+                                self.current_page(&key, hit.status)?,
+                                Some(hit.age),
+                            ),
                             None => {
+                                let generation = self.read_generation(&key);
                                 let reply = self.request(
                                     "read",
                                     Some(profile),
@@ -1801,11 +1874,13 @@ impl BrowserHub {
                                     *interactive,
                                     &page,
                                     &content,
+                                    true,
+                                    generation,
                                 );
-                                (content, page)
+                                self.note_page(&key, &page);
+                                (content, page, None)
                             }
                         };
-                        self.note_page(&key, &page);
                         let record = self.record(&key)?;
                         let default_max = if format == "snapshot" {
                             config.snapshot_max_chars()
@@ -1830,6 +1905,7 @@ impl BrowserHub {
                                 &paged,
                                 ref_.as_deref(),
                                 selector.as_deref(),
+                                age,
                             ),
                             detail,
                         )
@@ -1839,28 +1915,44 @@ impl BrowserHub {
                         max,
                         context,
                     } => {
-                        // `find` reuses the last whole-page markdown of this URL.
-                        let (content, page) =
-                            match self.cached_read(&key, "markdown", "", false, &record.url) {
-                                Some(hit) => hit,
-                                None => {
-                                    let reply = self.request(
-                                        "read",
-                                        Some(profile),
-                                        Some(target),
-                                        json!({ "format": "markdown" }),
-                                        deadline,
-                                    )?;
-                                    let page = reply.page.clone().unwrap_or_default();
-                                    let content = reply.result["content"]
-                                        .as_str()
-                                        .unwrap_or_default()
-                                        .to_string();
-                                    self.store_read(&key, "markdown", "", false, &page, &content);
-                                    (content, page)
-                                }
-                            };
-                        self.note_page(&key, &page);
+                        // `find` reuses the whole-page markdown only right after a
+                        // read of it (fresh, no action since); otherwise it
+                        // re-extracts. Its own extraction is kept for paging
+                        // around a match, not for another find.
+                        let (content, page, age) = match self.cached_read(
+                            &key,
+                            "markdown",
+                            "",
+                            false,
+                            &record.url,
+                            true,
+                        ) {
+                            Some(hit) => (
+                                hit.content,
+                                self.current_page(&key, hit.status)?,
+                                Some(hit.age),
+                            ),
+                            None => {
+                                let generation = self.read_generation(&key);
+                                let reply = self.request(
+                                    "read",
+                                    Some(profile),
+                                    Some(target),
+                                    json!({ "format": "markdown" }),
+                                    deadline,
+                                )?;
+                                let page = reply.page.clone().unwrap_or_default();
+                                let content = reply.result["content"]
+                                    .as_str()
+                                    .unwrap_or_default()
+                                    .to_string();
+                                self.store_read(
+                                    &key, "markdown", "", false, &page, &content, false, generation,
+                                );
+                                self.note_page(&key, &page);
+                                (content, page, None)
+                            }
+                        };
                         let record = self.record(&key)?;
                         let content = content.as_str();
                         let matches = shape::find_matches(
@@ -1877,6 +1969,7 @@ impl BrowserHub {
                                 query,
                                 &matches,
                                 content.chars().count(),
+                                age,
                             ),
                             detail,
                         )
@@ -3201,9 +3294,14 @@ impl BrowserHub {
                     });
                 }
             }
-            HostEvent::Log { level, text } => {
-                tracing::debug!(event = "browser.host.log", level = %level, "{text}");
-            }
+            // the sidecar's error, warn and info lines (an act timeout) keep
+            // their level in herdr's log; anything else stays at debug
+            HostEvent::Log { level, text } => match level.as_str() {
+                "error" => tracing::error!(event = "browser.host.log", "{text}"),
+                "warn" => tracing::warn!(event = "browser.host.log", "{text}"),
+                "info" => tracing::info!(event = "browser.host.log", "{text}"),
+                _ => tracing::debug!(event = "browser.host.log", level = %level, "{text}"),
+            },
             HostEvent::Unknown => {}
         }
         if persist_now {
@@ -3454,6 +3552,11 @@ impl BrowserHub {
         }
     }
 
+    /// The tab's cached extraction when it still stands for the page: same
+    /// format/scope/URL, younger than `READ_CACHE_MAX_AGE`, no action since
+    /// (actions drop it), no dialog open (the sidecar's guard refuses a read
+    /// then, so the call goes there), and for `find` only a read's copy, once
+    /// (the next find re-extracts).
     fn cached_read(
         &self,
         key: &TabKey,
@@ -3461,14 +3564,75 @@ impl BrowserHub {
         scope: &str,
         interactive: bool,
         url: &str,
-    ) -> Option<(String, PageInfo)> {
-        let cache = self.inner.read_cache.lock().unwrap();
-        let entry = cache.get(key)?;
-        (entry.format == format
+        for_find: bool,
+    ) -> Option<CachedRead> {
+        let dialog_open = self
+            .inner
+            .state
+            .lock()
+            .unwrap()
+            .tabs
+            .get(key)
+            .is_some_and(|record| record.dialog_open);
+        if dialog_open {
+            return None;
+        }
+        let mut cache = self.inner.read_cache.lock().unwrap();
+        let entry = cache.entries.get_mut(key)?;
+        let age = entry.stored_at.elapsed();
+        if age > READ_CACHE_MAX_AGE {
+            cache.entries.remove(key);
+            return None;
+        }
+        let hit = entry.format == format
             && entry.scope == scope
             && entry.interactive == interactive
-            && entry.url == url)
-            .then(|| (entry.content.clone(), entry.page.clone()))
+            && entry.url == url
+            && (!for_find || entry.from_read);
+        if hit && for_find {
+            // a find used the read's copy: the next find reads the page again
+            entry.from_read = false;
+        }
+        hit.then(|| CachedRead {
+            content: entry.content.clone(),
+            status: entry.page.status,
+            age,
+        })
+    }
+
+    /// The tab's action generation now (a read takes it before its request).
+    fn read_generation(&self, key: &TabKey) -> u64 {
+        let cache = self.inner.read_cache.lock().unwrap();
+        cache.generation.get(key).copied().unwrap_or(0)
+    }
+
+    /// Drops the tab's cached extraction (an action may have changed the page).
+    fn forget_read(&self, key: &TabKey) {
+        let mut cache = self.inner.read_cache.lock().unwrap();
+        cache.entries.remove(key);
+        *cache.generation.entry(key.clone()).or_default() += 1;
+    }
+
+    /// The page as the ledger knows it now (a cached read reports this, never
+    /// the cached copy's page, and writes nothing back).
+    fn current_page(&self, key: &TabKey, status: Option<u16>) -> Result<PageInfo, BrowserError> {
+        let record = self.record(key)?;
+        Ok(PageInfo {
+            url: record.url,
+            title: record.title,
+            dialog_open: record.dialog_open,
+            status,
+        })
+    }
+
+    /// Tests: makes the tab's cached extraction look `by` older.
+    #[cfg(test)]
+    pub fn age_read_cache_for_test(&self, by: Duration) {
+        for entry in self.inner.read_cache.lock().unwrap().entries.values_mut() {
+            if let Some(earlier) = entry.stored_at.checked_sub(by) {
+                entry.stored_at = earlier;
+            }
+        }
     }
 
     fn store_read(
@@ -3479,6 +3643,8 @@ impl BrowserHub {
         interactive: bool,
         page: &PageInfo,
         content: &str,
+        from_read: bool,
+        generation: u64,
     ) {
         let url = if page.url.is_empty() {
             self.inner
@@ -3492,7 +3658,12 @@ impl BrowserHub {
         } else {
             page.url.clone()
         };
-        self.inner.read_cache.lock().unwrap().insert(
+        let mut cache = self.inner.read_cache.lock().unwrap();
+        // an action started or finished since the read began: keep nothing
+        if cache.generation.get(key).copied().unwrap_or(0) != generation {
+            return;
+        }
+        cache.entries.insert(
             key.clone(),
             ReadCache {
                 format,
@@ -3501,6 +3672,8 @@ impl BrowserHub {
                 url,
                 content: content.to_string(),
                 page: page.clone(),
+                stored_at: Instant::now(),
+                from_read,
             },
         );
     }
