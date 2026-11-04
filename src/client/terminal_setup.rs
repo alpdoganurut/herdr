@@ -49,6 +49,7 @@ pub(super) fn setup_terminal_with_capabilities(
     let mut terminal_guard = TerminalGuard {
         host_escape_disambiguation_active: false,
         host_sgr_pixel_mouse: None,
+        host_scroll: crate::protocol::render_ansi::HostScrollSupport::Off,
         buffered_host_input: Vec::new(),
         reset_keyboard_enhancements: false,
         reset_modify_other_keys: false,
@@ -125,6 +126,7 @@ pub(super) fn setup_terminal_with_capabilities(
 
     terminal_guard.host_escape_disambiguation_active = host_probe.escape_disambiguation;
     terminal_guard.host_sgr_pixel_mouse = host_probe.sgr_pixel_mouse;
+    terminal_guard.host_scroll = host_probe.host_scroll;
     terminal_guard.buffered_host_input = buffered_host_input;
     Ok(terminal_guard)
 }
@@ -137,6 +139,8 @@ pub(super) fn should_enable_host_color_scheme_reports(enable_client_protocols: b
 pub(super) struct TerminalGuard {
     host_escape_disambiguation_active: bool,
     host_sgr_pixel_mouse: Option<bool>,
+    /// Fork (scrollback scroll): what the client blit may scroll on the host.
+    host_scroll: crate::protocol::render_ansi::HostScrollSupport,
     buffered_host_input: Vec<u8>,
     reset_keyboard_enhancements: bool,
     reset_modify_other_keys: bool,
@@ -170,6 +174,8 @@ pub(super) struct HostTerminalProbe {
     pub(super) escape_disambiguation: bool,
     /// None when the host did not answer; exact pixel input stays disabled.
     pub(super) sgr_pixel_mouse: Option<bool>,
+    /// Fork (scrollback scroll): Off when no probe ran (Windows) or the host did not answer.
+    pub(super) host_scroll: crate::protocol::render_ansi::HostScrollSupport,
 }
 
 #[cfg(not(windows))]
@@ -229,14 +235,10 @@ fn query_host_capabilities(query_keyboard: bool) -> (HostTerminalProbe, Vec<u8>)
         }
     }
 
+    let probe = host_terminal_probe(&responses);
     // Fork (scrollback scroll): what the client blit may scroll on the host.
-    let host_scroll = crate::protocol::render_ansi::support_from_probe(
-        responses.primary_device_attributes,
-        responses.left_right_margin_status,
-    );
-    tracing::info!(?host_scroll, "host scroll regions");
-    crate::protocol::render_ansi::set_host_scroll_support(host_scroll);
-    (host_terminal_probe(&responses), buffered_input)
+    tracing::info!(host_scroll = ?probe.host_scroll, "host scroll regions");
+    (probe, buffered_input)
 }
 
 #[cfg(not(windows))]
@@ -256,6 +258,10 @@ fn host_terminal_probe(responses: &HostKeyboardProbeResponses) -> HostTerminalPr
     HostTerminalProbe {
         escape_disambiguation: host_escape_disambiguation_confirmed(responses),
         sgr_pixel_mouse,
+        host_scroll: crate::protocol::render_ansi::support_from_probe(
+            responses.primary_device_attributes,
+            responses.left_right_margin_status,
+        ),
     }
 }
 
@@ -410,10 +416,11 @@ fn host_control_string_end(bytes: &[u8]) -> Option<Option<usize>> {
 #[cfg(windows)]
 fn query_host_capabilities(_query_keyboard: bool) -> (HostTerminalProbe, Vec<u8>) {
     // Fork (scrollback scroll): no probe runs here, so the blit never scrolls the host.
-    crate::protocol::render_ansi::set_host_scroll_support(
-        crate::protocol::render_ansi::support_from_probe(false, None),
-    );
-    (HostTerminalProbe::default(), Vec::new())
+    let probe = HostTerminalProbe {
+        host_scroll: crate::protocol::render_ansi::support_from_probe(false, None),
+        ..HostTerminalProbe::default()
+    };
+    (probe, Vec::new())
 }
 
 pub(super) fn write_host_color_scheme_report_mode(
@@ -433,25 +440,6 @@ pub(super) fn write_terminal_restore_postlude(
     writer: &mut impl io::Write,
     reset_host_color_scheme_reports: bool,
 ) -> io::Result<()> {
-    // Fork (scrollback scroll): an interrupted scroll frame may have left margins set.
-    let reset_scroll_margins = crate::protocol::render_ansi::host_scroll_support()
-        != crate::protocol::render_ansi::HostScrollSupport::Off;
-    write_terminal_restore_postlude_with(
-        writer,
-        reset_host_color_scheme_reports,
-        reset_scroll_margins,
-    )
-}
-
-/// Fork (scrollback scroll): upstream's postlude body plus the margin reset.
-fn write_terminal_restore_postlude_with(
-    writer: &mut impl io::Write,
-    reset_host_color_scheme_reports: bool,
-    reset_scroll_margins: bool,
-) -> io::Result<()> {
-    if reset_scroll_margins {
-        crate::protocol::render_ansi::write_margin_reset(writer);
-    }
     if reset_host_color_scheme_reports {
         writer.write_all(
             crate::terminal_theme::HOST_COLOR_SCHEME_REPORT_DISABLE_SEQUENCE.as_bytes(),
@@ -460,6 +448,14 @@ fn write_terminal_restore_postlude_with(
     // Restore a visible cursor and reset DECSCUSR back to the terminal default.
     writer.write_all(b"\x1b[?25h\x1b[0 q")?;
     writer.flush()
+}
+
+/// Fork (scrollback scroll): clears DECLRMM and the scroll margins on exit
+/// when the blit may have set them.
+fn write_restore_scroll_margin_reset(writer: &mut impl io::Write, reset_scroll_margins: bool) {
+    if reset_scroll_margins {
+        crate::protocol::render_ansi::write_margin_reset(writer);
+    }
 }
 
 pub(super) fn should_draw_host_cursor(mode: crate::config::HostCursorModeConfig) -> bool {
@@ -712,6 +708,7 @@ fn restore_terminal_state_once(
     reset_keyboard_enhancements: bool,
     reset_modify_other_keys: bool,
     reset_host_color_scheme_reports: bool,
+    reset_scroll_margins: bool,
     #[cfg(windows)] restore_windows_input_mode: &WindowsInputModeRestore,
 ) -> io::Result<()> {
     if restore_claimed.swap(true, Ordering::AcqRel) {
@@ -723,6 +720,7 @@ fn restore_terminal_state_once(
         reset_keyboard_enhancements,
         reset_modify_other_keys,
         reset_host_color_scheme_reports,
+        reset_scroll_margins,
         #[cfg(windows)]
         restore_windows_input_mode,
     )
@@ -732,6 +730,7 @@ fn restore_terminal_state(
     reset_keyboard_enhancements: bool,
     reset_modify_other_keys: bool,
     reset_host_color_scheme_reports: bool,
+    reset_scroll_margins: bool,
     #[cfg(windows)] restore_windows_input_mode: Option<u32>,
 ) -> io::Result<()> {
     let _ = clear_received_kitty_graphics(&mut io::stdout());
@@ -763,6 +762,8 @@ fn restore_terminal_state(
     }
 
     let restore_result = ratatui::try_restore();
+    // Fork (scrollback scroll): an interrupted scroll frame may have left margins set.
+    write_restore_scroll_margin_reset(&mut io::stdout(), reset_scroll_margins);
     let postlude_result =
         write_terminal_restore_postlude(&mut io::stdout(), reset_host_color_scheme_reports);
 
@@ -859,6 +860,15 @@ impl TerminalGuard {
         self.host_sgr_pixel_mouse
     }
 
+    /// Fork (scrollback scroll): what the startup probe allows the blit to scroll.
+    pub(super) fn host_scroll(&self) -> crate::protocol::render_ansi::HostScrollSupport {
+        self.host_scroll
+    }
+
+    fn resets_scroll_margins(&self) -> bool {
+        self.host_scroll != crate::protocol::render_ansi::HostScrollSupport::Off
+    }
+
     pub(super) fn take_buffered_host_input(&mut self) -> Vec<u8> {
         std::mem::take(&mut self.buffered_host_input)
     }
@@ -907,6 +917,7 @@ impl TerminalGuard {
         let reset_keyboard_enhancements = self.reset_keyboard_enhancements;
         let reset_modify_other_keys = self.reset_modify_other_keys;
         let reset_host_color_scheme_reports = self.reset_host_color_scheme_reports;
+        let reset_scroll_margins = self.resets_scroll_margins();
         #[cfg(windows)]
         let restore_windows_input_mode = self.restore_windows_input_mode.clone();
         move || {
@@ -915,6 +926,7 @@ impl TerminalGuard {
                 reset_keyboard_enhancements,
                 reset_modify_other_keys,
                 reset_host_color_scheme_reports,
+                reset_scroll_margins,
                 #[cfg(windows)]
                 &restore_windows_input_mode,
             );
@@ -923,11 +935,13 @@ impl TerminalGuard {
 
     pub(super) fn restore(mut self) -> io::Result<()> {
         self.restored = true;
+        let reset_scroll_margins = self.resets_scroll_margins();
         restore_terminal_state_once(
             &self.restore_claimed,
             self.reset_keyboard_enhancements,
             self.reset_modify_other_keys,
             self.reset_host_color_scheme_reports,
+            reset_scroll_margins,
             #[cfg(windows)]
             &self.restore_windows_input_mode,
         )
@@ -937,11 +951,13 @@ impl TerminalGuard {
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         if !self.restored {
+            let reset_scroll_margins = self.resets_scroll_margins();
             let _ = restore_terminal_state_once(
                 &self.restore_claimed,
                 self.reset_keyboard_enhancements,
                 self.reset_modify_other_keys,
                 self.reset_host_color_scheme_reports,
+                reset_scroll_margins,
                 #[cfg(windows)]
                 &self.restore_windows_input_mode,
             );
@@ -1021,6 +1037,7 @@ mod tests {
         TerminalGuard {
             host_escape_disambiguation_active: kitty_confirmed,
             host_sgr_pixel_mouse: None,
+            host_scroll: crate::protocol::render_ansi::HostScrollSupport::Off,
             buffered_host_input: Vec::new(),
             reset_keyboard_enhancements: client_protocols,
             reset_modify_other_keys: modify_other_keys_sequence.is_some(),
@@ -1175,13 +1192,18 @@ mod tests {
 
     // Fork (scrollback scroll): leaving herdr clears any margins a torn scroll frame left.
     #[test]
-    fn fork_smoke_the_restore_postlude_resets_scroll_margins_when_host_scroll_is_on() {
+    fn fork_smoke_the_terminal_restore_resets_scroll_margins_when_host_scroll_is_on() {
         let mut output = Vec::new();
-        write_terminal_restore_postlude_with(&mut output, false, true).unwrap();
-        assert_eq!(output, b"\x1b[?69l\x1b[r\x1b[?25h\x1b[0 q");
+        write_restore_scroll_margin_reset(&mut output, true);
+        assert_eq!(output, b"\x1b[?69l\x1b[r");
         let mut output = Vec::new();
-        write_terminal_restore_postlude_with(&mut output, false, false).unwrap();
-        assert_eq!(output, b"\x1b[?25h\x1b[0 q");
+        write_restore_scroll_margin_reset(&mut output, false);
+        assert!(output.is_empty());
+        // The guard asks for it exactly when the probe allowed host scrolling.
+        let mut guard = refresh_test_guard(true, true, None);
+        assert!(!guard.resets_scroll_margins());
+        guard.host_scroll = crate::protocol::render_ansi::HostScrollSupport::FullWidth;
+        assert!(guard.resets_scroll_margins());
     }
 
     // Fork (scrollback scroll): the DECLRMM answer is consumed, never typed into a pane.

@@ -224,6 +224,7 @@ fn run_client_with_mode(
         mouse_capture_active: mouse_capture,
         host_escape_disambiguation_active: false,
         host_sgr_pixel_mouse: None,
+        host_scroll: protocol::render_ansi::HostScrollSupport::Off,
         initial_host_input: Vec::new(),
         endpoint_keybindings,
         remote_image_paste_key,
@@ -273,6 +274,7 @@ fn run_client_with_mode(
     loop_config.host_escape_disambiguation_active =
         terminal_guard.host_escape_disambiguation_active();
     loop_config.host_sgr_pixel_mouse = terminal_guard.host_sgr_pixel_mouse();
+    loop_config.host_scroll = terminal_guard.host_scroll();
     loop_config.initial_host_input = terminal_guard.take_buffered_host_input();
 
     let shell_surface_size = loop_config
@@ -473,6 +475,7 @@ async fn run_client_loop(
         pixel_geometry_enabled: config.pixel_geometry_enabled,
         pixel_geometry_exact: initial_pixel_geometry_exact,
         host_sgr_pixel_mouse: config.host_sgr_pixel_mouse,
+        host_scroll: config.host_scroll,
         #[cfg(unix)]
         direct_graphics_response: Arc::new(Mutex::new(direct_graphics::ResponseMatcher::default())),
         #[cfg(unix)]

@@ -15,7 +15,6 @@
 //! of its rows, and never when a wide character straddles its left or right edge.
 
 use std::io::Write;
-use std::sync::atomic::{AtomicU8, Ordering};
 
 use crate::protocol::{CellData, FrameData, SurfaceRect};
 
@@ -29,26 +28,6 @@ pub(crate) enum HostScrollSupport {
     FullWidth,
     /// DECSTBM and DECSLRM (the host reported DECLRMM, mode 69): any rectangle.
     Margins,
-}
-
-static HOST_SCROLL_SUPPORT: AtomicU8 = AtomicU8::new(0);
-
-/// Records what the startup probe learned; the client sets it once per process.
-pub(crate) fn set_host_scroll_support(support: HostScrollSupport) {
-    let value = match support {
-        HostScrollSupport::Off => 0,
-        HostScrollSupport::FullWidth => 1,
-        HostScrollSupport::Margins => 2,
-    };
-    HOST_SCROLL_SUPPORT.store(value, Ordering::Relaxed);
-}
-
-pub(crate) fn host_scroll_support() -> HostScrollSupport {
-    match HOST_SCROLL_SUPPORT.load(Ordering::Relaxed) {
-        1 => HostScrollSupport::FullWidth,
-        2 => HostScrollSupport::Margins,
-        _ => HostScrollSupport::Off,
-    }
 }
 
 /// The probe's verdict: DECSTBM is universal once the host answered DA1;

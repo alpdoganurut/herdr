@@ -53,6 +53,8 @@ pub(super) struct ClientState {
     pub(super) pixel_geometry_exact: bool,
     /// The host's answer to the SGR pixel mouse probe; None when unknown.
     pub(super) host_sgr_pixel_mouse: Option<bool>,
+    /// Fork (scrollback scroll): what the blit may scroll on the host.
+    pub(super) host_scroll: render_ansi::HostScrollSupport,
     #[cfg(unix)]
     pub(super) direct_graphics_response: Arc<Mutex<direct_graphics::ResponseMatcher>>,
     #[cfg(unix)]
@@ -121,6 +123,7 @@ impl ClientState {
             pixel_geometry_enabled: false,
             pixel_geometry_exact: false,
             host_sgr_pixel_mouse: None,
+            host_scroll: render_ansi::HostScrollSupport::Off,
             #[cfg(unix)]
             direct_graphics_response: Default::default(),
             #[cfg(unix)]
@@ -588,7 +591,7 @@ impl ClientState {
                 self.repaint_pending,
                 self.draw_host_cursor,
                 &scroll_regions,
-                render_ansi::host_scroll_support(),
+                self.host_scroll,
             )
         } else if self.draw_host_cursor {
             self.blit_encoder

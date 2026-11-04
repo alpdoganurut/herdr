@@ -37,10 +37,7 @@ use crate::protocol::{
 
 // Fork (scrollback scroll): host scroll regions for scrolled panes.
 mod host_scroll;
-pub(crate) use host_scroll::{
-    host_scroll_support, set_host_scroll_support, support_from_probe, write_margin_reset,
-    HostScrollSupport,
-};
+pub(crate) use host_scroll::{support_from_probe, write_margin_reset, HostScrollSupport};
 
 const REVERSED_MODIFIER: u16 = 1 << 6;
 const SYNC_OUTPUT_END: &[u8] = b"\x1b[?2026l";
