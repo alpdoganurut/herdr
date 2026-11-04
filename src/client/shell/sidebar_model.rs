@@ -16,7 +16,7 @@
 //! rebuilds: the reminder clocks are read live by the Scheduled block.
 //!
 //! Also here, shared by the row painters (`tab_sidebar.rs`) and the Active
-//! block / detail strip (`tab_sidebar_active.rs`, `tab_sidebar_detail.rs`):
+//! block (`tab_sidebar_active.rs`):
 //! the selected-row rule (`resolve_selected`), the tab status icon
 //! (`tab_row_icon`), the hover target (`SidebarHover`) and `StackStr`.
 

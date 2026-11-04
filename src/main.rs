@@ -331,7 +331,7 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # sidebar_collapse_suspended = true
 
 # Show a tab's agent context use (Claude Code, Codex) in the "tabs" sidebar layout:
-# NN% on its row from 75% (yellow, red from 90%), the tokens in the detail strip.
+# NN% on its row and in the session header from 75% (yellow, red from 90%).
 # sidebar_context_usage = true
 
 # Terminal width at or below which Herdr uses the mobile single-column layout.

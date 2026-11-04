@@ -72,8 +72,8 @@ pub struct Palette {
     /// Interrupted / warning states.
     pub peach: Color,
     /// Fork (sidebar v2): background of the tabs sidebar's chrome rows
-    /// (toolbar, Active agents block, detail strip, status footer, menu
-    /// row); `None` falls back to `surface_dim` (`sidebar_chrome`).
+    /// (toolbar, Active agents block, status footer, menu row) and the
+    /// session header; `None` falls back to `surface_dim` (`sidebar_chrome`).
     pub sidebar_chrome_bg: Option<Color>,
 }
 

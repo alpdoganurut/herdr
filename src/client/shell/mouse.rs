@@ -2187,8 +2187,8 @@ impl ClientShellState {
                 if self.info_dock_press(point, outcome) {
                     return;
                 }
-                // Fork (companion launcher): the browser band, its strip,
-                // the Browser view's area and the Browser row's `◨`.
+                // Fork (companion launcher): the browser band, its strip
+                // and the Browser view's area.
                 if self.browser_dock_press(point, outcome) {
                     return;
                 }

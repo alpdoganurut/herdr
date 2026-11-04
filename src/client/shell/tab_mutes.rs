@@ -10,8 +10,7 @@
 //!   alerts are dropped on the client too (the server already drops the
 //!   ones it raises). Agent cards are another path and still show.
 //! - the tabs sidebar model (one set lookup per tab, only while some tab is
-//!   muted): a muted tab shows `mute_mark` in the row's left gutter and a
-//!   `muted` chip in the detail strip.
+//!   muted): a muted tab shows `mute_mark` in the row's left gutter.
 //! - the tab menu (`active_tab_muted`), once when it opens.
 
 use std::collections::{HashMap, HashSet};

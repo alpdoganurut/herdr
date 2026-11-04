@@ -171,8 +171,8 @@ pub(super) struct ShellHitMap {
     pub(super) coordinator_row: Rect,
     /// Fork: the info dock (`info_dock.rs`).
     pub(super) info_dock: super::info_dock::InfoDockHits,
-    /// Fork (companion launcher): the browser band, view strip, Browser
-    /// view placeholder and the Browser row's `◨`.
+    /// Fork (companion launcher): the browser band (and its title bar),
+    /// the view strip and the Browser view placeholder.
     pub(super) browser_dock: super::browser_dock::BrowserDockHits,
     /// Fork (session header): the tabs layout's header row.
     pub(super) session_header: super::session_header::SessionHeaderHits,

@@ -1,6 +1,6 @@
-//! The companion app on the client (fork, companion launcher): what the
-//! pinned Browser row says while the server runs the companion, the row
-//! menu's companion items, the Browser overlay's companion block (its rows,
+//! The companion app on the client (fork, companion launcher): the live
+//! state Settings → Browser shows while the server runs the companion, its
+//! companion rows, the Browser overlay's companion block (its rows,
 //! chips and keys) and the `browser.companion` requests behind them.
 //!
 //! Everything comes from `browser.get`'s `companion_app` (always current on

@@ -966,7 +966,8 @@ impl ClientShellState {
     /// An `endpoint.notes-reveal.v1` push (an agent's `agents_notes_write
     /// reveal=true`): open that tab's dock unless it is open, never taking
     /// the keyboard (a tab of another endpoint, or not focused, opens in
-    /// state only). Each revision acts once per server boot.
+    /// state only). Each revision acts once per server boot. In the tabs
+    /// layout a tab whose browser is docked keeps it: the reveal is skipped.
     pub(crate) fn receive_notes_reveal(
         &mut self,
         endpoint_id: &ClientEndpointId,
@@ -991,13 +992,23 @@ impl ClientShellState {
         if dock.open_tabs.contains(&key) {
             return outcome;
         }
+        // Fork (session header): an agent's reveal never takes the dock slot
+        // from a browser the user docked on that tab; the notes stay closed.
+        if self.config.sidebar_layout == crate::config::SidebarLayoutConfig::Tabs
+            && self
+                .browser_dock
+                .docked
+                .get(endpoint_id)
+                .is_some_and(|tabs| tabs.contains(&payload.tab_id))
+        {
+            return outcome;
+        }
         if *endpoint_id == self.active_endpoint_id {
             self.toggle_info_pane(payload.tab_id, &mut outcome);
         } else {
             dock.open_tabs.insert(key);
             dock.focused = false;
             dock.dragging = false;
-            self.free_dock_slot_of_browser(endpoint_id, &payload.tab_id);
         }
         outcome
     }

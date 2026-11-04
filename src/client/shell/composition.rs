@@ -511,6 +511,11 @@ impl ClientShellState {
         }
         // Fork (session header): the tabs layout's header row.
         if !layout.session_header.is_empty() {
+            // The row keeps its chrome even without a focused tab to describe.
+            buffer.set_style(
+                layout.session_header.intersection(buffer.area),
+                Style::default().bg(self.config.palette.sidebar_chrome()),
+            );
             let hits = self.session_header_view().map(|header| {
                 super::session_header::render(
                     &mut buffer,

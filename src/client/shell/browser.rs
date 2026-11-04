@@ -1,6 +1,7 @@
-//! The herdr browser on the client (fork): the client-only state behind the
-//! `tabs` sidebar's pinned Browser row, the `◎` glyph on tab rows whose panes
-//! use the browser, and the Browser overlay.
+//! The herdr browser on the client (fork): the client-only state behind
+//! Settings → Browser's live rows (the old pinned Browser row's state and
+//! menu), the `◎` glyph on tab rows whose panes use the browser, and the
+//! Browser overlay.
 //!
 //! Everything shown comes from `browser.get {since_seq}`, pulled on the first
 //! snapshot of a connection, after every `browser.*` reply the client sent,
@@ -100,8 +101,8 @@ pub(crate) struct BrowserRow {
     /// Fork (companion launcher): the companion's state on a server that
     /// runs it (the menu's companion items).
     pub(crate) companion: Option<String>,
-    /// Fork (companion launcher): the row's `◨` (the focused tab's dock is
-    /// open or not) where the browser docks.
+    /// Fork (companion launcher): the focused tab's dock is open or not,
+    /// where the browser docks (Settings → Browser's dock row).
     pub(crate) dock: Option<bool>,
 }
 

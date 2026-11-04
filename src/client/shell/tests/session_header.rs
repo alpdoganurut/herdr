@@ -644,3 +644,32 @@ fn a_swap_keeps_the_open_dock_when_the_other_does_not_fit() {
         notice_key(&state)
     );
 }
+
+/// An agent's notes reveal never evicts a browser the user docked on that
+/// tab: the reveal is skipped and the notes stay closed; without the dock
+/// it opens the notes as before.
+#[test]
+fn a_notes_reveal_leaves_a_docked_browser_alone() {
+    use crate::server::headless::notes_reveal::NotesRevealPayload;
+    let reveal = |revision| NotesRevealPayload {
+        boot_id: "boot-1".into(),
+        revision,
+        tab_id: "tab_1".into(),
+    };
+    let mut state = browser_state();
+    state.toggle_browser_dock("tab_1".into(), &mut ClientShellInput::default());
+    state.compose(COLS, ROWS);
+    state.receive_notes_reveal(&ClientEndpointId::Local, reveal(1));
+    assert!(
+        state.browser_dock_open_for("tab_1"),
+        "the user's dock stays"
+    );
+    assert!(
+        !state.info_dock_open_for_focused_tab(),
+        "the notes stay closed"
+    );
+    // the dock closed: the next reveal opens the notes
+    state.toggle_browser_dock("tab_1".into(), &mut ClientShellInput::default());
+    state.receive_notes_reveal(&ClientEndpointId::Local, reveal(2));
+    assert!(state.info_dock_open_for_focused_tab());
+}

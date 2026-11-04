@@ -102,7 +102,11 @@ impl ClientContextMenuOverlay {
                     lead("New tab", Action::NewTab, GLYPH_NEW),
                     lead("Rename", Action::Rename, GLYPH_RENAME),
                     // Fork: the tab's info dock, as on the pane menu.
-                    lead("Info pane", Action::ToggleInfoPane, GLYPH_INFO),
+                    lead(
+                        "Info pane",
+                        Action::ToggleInfoPane,
+                        super::session_header::NOTES_DOCK_GLYPH,
+                    ),
                     item(
                         "Close",
                         Action::Close,
@@ -323,7 +327,7 @@ impl ClientContextMenuOverlay {
                         item(
                             "Team info",
                             Action::TeamInfo,
-                            GLYPH_INFO,
+                            GLYPH_TEAM_INFO,
                             team_section,
                             Kind::Action,
                         ),
@@ -434,7 +438,7 @@ impl ClientContextMenuOverlay {
                 items.push(item(
                     "Info pane",
                     Action::ToggleInfoPane,
-                    GLYPH_INFO,
+                    super::session_header::NOTES_DOCK_GLYPH,
                     pane,
                     Kind::Action,
                 ));
@@ -475,7 +479,9 @@ impl ClientContextMenuOverlay {
 // Fork (menu design): one glyph per item (the legend of the chosen mock).
 pub(super) const GLYPH_NEW: &str = "+";
 pub(super) const GLYPH_RENAME: &str = "\u{270E}"; // ✎
-pub(super) const GLYPH_INFO: &str = "\u{25E7}"; // ◧
+/// Fork (session header): the Team info item; the Info pane items take the
+/// header's `▤` (`session_header::NOTES_DOCK_GLYPH`).
+pub(super) const GLYPH_TEAM_INFO: &str = "\u{2139}"; // ℹ
 pub(super) const GLYPH_CLOSE: &str = "\u{2715}"; // ✕
 pub(super) const GLYPH_SUSPEND: &str = "\u{2016}"; // ‖
 pub(super) const GLYPH_ACTIVATE: &str = "\u{25B6}"; // ▶

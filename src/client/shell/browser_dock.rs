@@ -50,14 +50,14 @@ const UNANSWERED_AFTER: Duration = Duration::from_secs(4);
 /// The request id prefix of a placement (its answer is not waited for).
 pub(crate) const PLACEMENT_REQUEST_PREFIX: &str = "client-shell-placement:";
 
-/// A click target of the band, the strip, the placeholder or the Browser row.
+/// A click target of the band, the strip or the placeholder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BrowserDockTarget {
     /// The strip's `▣ Terminal`.
     ViewTerminal,
     /// The strip's `◎ Browser`.
     ViewBrowser,
-    /// The strip's (or the Browser row's) `◨`.
+    /// The strip's `◨`.
     ToggleDock,
     /// The placeholder's `[ Start companion ]` (and the strip's `start`).
     Start,
@@ -154,7 +154,7 @@ pub(crate) struct ViewStrip {
     pub(crate) stopped: Option<&'static str>,
 }
 
-/// A herdr tab's browser facts for the tab row and the detail strip: its
+/// A herdr tab's browser facts for its row and the Browser overlay: its
 /// pages and the view it is in (`docked`, `browser view`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TabBrowserMark {
@@ -351,9 +351,9 @@ pub(crate) struct BrowserDockView {
     pub(crate) title: Option<String>,
 }
 
-/// Draw `view` into the chrome buffer and record its targets in `hits` (the
-/// Browser row's `◨`, drawn by the sidebar, stays). Returns whether the
-/// focused tab is in Browser view (the caller hides its panes).
+/// Draw `view` into the chrome buffer and record its targets in `hits`
+/// (the session header records its own). Returns whether the focused tab
+/// is in Browser view (the caller hides its panes).
 pub(super) fn compose(
     buffer: &mut Buffer,
     layout: &ClientShellLayout,
@@ -396,7 +396,8 @@ const BANNER_MIN: u16 = 16;
 
 /// Where herdr's notice, toast or agent cards show while the focused tab is
 /// in Browser view (the companion covers the whole tab, cards drawn there
-/// would be under it): one line on the view strip, between its switch and
+/// would be under it): one line on the session header's gap before its view
+/// tabs (the tabs layout), else on the view strip, between its switch and
 /// its `◨` (as composed into `hits`), else the right half of the tab bar.
 /// `None` outside Browser view, or with neither row (the cards stay where
 /// they are, under the browser).
@@ -568,7 +569,7 @@ impl ClientShellState {
     }
 
     /// Tabs with browser pages, or the dock or Browser view (the dim `◎`
-    /// and the detail strip's chips): one map per compose, O(sessions).
+    /// and the Browser overlay's views): one map per compose, O(sessions).
     pub(crate) fn browser_page_tabs(&self) -> HashMap<String, TabBrowserMark> {
         let mut tabs = HashMap::new();
         if let Some(info) = self.browser.info.as_ref() {
@@ -950,9 +951,9 @@ impl ClientShellState {
 
     // ------------------------------------------------------------ mouse
 
-    /// A left press on the band, the strip, the Browser view's area or the
-    /// Browser row's `◨` (checked before any pane hit). Returns whether the
-    /// press was theirs.
+    /// A left press on the band (its title bar included), the strip or the
+    /// Browser view's area (checked before any pane hit). Returns whether
+    /// the press was theirs.
     pub(crate) fn browser_dock_press(
         &mut self,
         point: (u16, u16),

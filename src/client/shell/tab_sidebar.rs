@@ -52,7 +52,7 @@
 //! harness glyph last, in its brand color, breathing while the tab works. From `SPACIOUS_HEIGHT` rows a blank spacer row sits before
 //! every header with a row above it (`SidebarModel::gaps_after`, so scroll
 //! math counts it). The chrome rows (toolbar, Active / Pinned / Scheduled
-//! blocks, detail strip, status footer, menu row) sit on
+//! blocks, status footer, menu row) sit on
 //! `Palette::sidebar_chrome()`; the list and the fixed
 //! (Browser, News, coordinator) rows keep `sidebar_bg`, the divider is
 //! `surface1`.
