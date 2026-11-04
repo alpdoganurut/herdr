@@ -141,3 +141,33 @@ pub struct BrowserPlacementStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
+
+/// Fork (compact bar): what the host asks the placement's client to do with
+/// its area (`browser.placement_action`): `promote` a side area to a full
+/// one, `restore` a full one to a side one, `close` it (a side area goes, a
+/// full one gives the panes back). The values are new with the method; a
+/// new action needs a new method name. `Unknown` is the serde fallback
+/// (answered `invalid_params`).
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserPlacementAction {
+    #[default]
+    Promote,
+    Restore,
+    Close,
+    #[serde(other)]
+    Unknown,
+}
+
+/// `browser.placement_action` (browser host, App lane): the user asked the
+/// host to change placement `id` (its bar's expand, restore or close). The
+/// server relays it to the client that owns the placement, which decides
+/// (the area is client state); answered `ok` once relayed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
+pub struct BrowserPlacementActionParams {
+    pub lease_id: String,
+    pub id: String,
+    pub action: BrowserPlacementAction,
+}

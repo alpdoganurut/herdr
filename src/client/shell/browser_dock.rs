@@ -223,6 +223,9 @@ pub(crate) struct ClientBrowserDockState {
     pending_ticked_at: Option<Instant>,
     /// Bumped by a click on the unbound placeholder.
     pub(crate) nudge: u32,
+    /// Fork (compact bar): the last placement action taken (`boot_id`,
+    /// revision): a relay seen twice acts once.
+    action_seen: Option<(String, u64)>,
     guard_toasts: HashMap<String, Instant>,
     /// The live alignment smoke (`scripts/smoke_companion_dock.sh`):
     /// `HERDR_TEST_BROWSER_VIEW=side|full` docks (or opens Browser view on)
@@ -273,6 +276,7 @@ impl ClientBrowserDockState {
             pending: false,
             pending_ticked_at: None,
             nudge: 0,
+            action_seen: None,
             guard_toasts: HashMap::new(),
             test_view: match std::env::var("HERDR_TEST_BROWSER_VIEW").as_deref() {
                 Ok("side") => Some(BrowserPlacementKind::Side),
@@ -1026,15 +1030,75 @@ impl ClientShellState {
             }
             BrowserDockTarget::Promote => {
                 if let Some(tab_id) = tab_id {
-                    self.set_browser_view(tab_id.clone(), true, outcome);
-                    if self.browser_view_open_for(&tab_id) && self.browser_dock_open_for(&tab_id) {
-                        self.toggle_browser_dock(tab_id, outcome);
-                    }
+                    self.promote_browser_dock(tab_id, outcome);
                 }
             }
             BrowserDockTarget::Close => self.toggle_browser_dock_for_focused_tab(outcome),
         }
         true
+    }
+
+    /// The dock becomes `tab_id`'s Browser view (the dock slot freed).
+    fn promote_browser_dock(&mut self, tab_id: String, outcome: &mut ClientShellInput) {
+        self.set_browser_view(tab_id.clone(), true, outcome);
+        if self.browser_view_open_for(&tab_id) && self.browser_dock_open_for(&tab_id) {
+            self.toggle_browser_dock(tab_id, outcome);
+        }
+    }
+
+    /// Fork (compact bar): the browser host's ask on this client's
+    /// placement (`endpoint.placement-action.v1`: the companion's expand,
+    /// restore and close), taken like the matching click: `promote` turns
+    /// the dock into Browser view; `restore` brings the terminal back with
+    /// the browser docked; `close` leaves Browser view, else closes the
+    /// dock. Ignored for another placement id, another endpoint, a tab that
+    /// is no longer the focused one, or a relay already taken.
+    pub(crate) fn receive_browser_placement_action(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+        payload: crate::server::headless::placement_action::PlacementActionPayload,
+    ) -> ClientShellInput {
+        use crate::api::schema::BrowserPlacementAction;
+        let mut outcome = ClientShellInput::default();
+        if *endpoint_id != self.active_endpoint_id
+            || payload.id != self.browser_dock.placement_id
+            || self.browser_dock_focused_tab() != Some(payload.tab_id.as_str())
+        {
+            return outcome;
+        }
+        let seen = self
+            .browser_dock
+            .action_seen
+            .as_ref()
+            .is_some_and(|(boot_id, revision)| {
+                *boot_id == payload.boot_id && *revision >= payload.revision
+            });
+        if seen {
+            return outcome;
+        }
+        self.browser_dock.action_seen = Some((payload.boot_id, payload.revision));
+        let tab_id = payload.tab_id;
+        let viewing = self.browser_view_open_for(&tab_id);
+        let docked = self.browser_dock_open_for(&tab_id);
+        match payload.action {
+            BrowserPlacementAction::Promote if !viewing => {
+                self.promote_browser_dock(tab_id, &mut outcome);
+            }
+            BrowserPlacementAction::Restore if viewing => {
+                self.set_browser_view(tab_id.clone(), false, &mut outcome);
+                if !self.browser_dock_open_for(&tab_id) {
+                    self.toggle_browser_dock(tab_id, &mut outcome);
+                }
+            }
+            BrowserPlacementAction::Close if viewing => {
+                self.set_browser_view(tab_id, false, &mut outcome);
+            }
+            BrowserPlacementAction::Close if docked => {
+                self.toggle_browser_dock(tab_id, &mut outcome);
+            }
+            _ => {}
+        }
+        outcome
     }
 
     // ------------------------------------------------------------ keys

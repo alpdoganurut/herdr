@@ -37,6 +37,9 @@ use super::companion_app::SidecarProblem;
 #[path = "companion_host.rs"]
 mod companion_host;
 use companion_host::ShowRequest;
+/// Tests: what the lease answer advertises.
+#[cfg(test)]
+pub use companion_host::SERVER_FEATURES;
 pub use companion_host::{
     is_companion, lease_unknown, window_disabled, COMPANION_PROFILE, REPORT_MAX_EVENTS,
 };

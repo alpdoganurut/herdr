@@ -586,6 +586,8 @@ impl HeadlessServer {
         let mut agent_context_frame = super::agent_context::PassFrame::default();
         // Fork: a notes reveal, framed at most once per pass.
         let mut notes_reveal_frame = super::notes_reveal::PassFrame::default();
+        // Fork (compact bar): the newest placement action, read once per pass.
+        let placement_action_revision = crate::browser::placements::board().action_revision();
         for (client_id, (cols, rows), cell_size, _is_foreground, mode) in render_targets {
             #[cfg(unix)]
             if matches!(mode, ClientConnectionMode::TerminalObserve { .. })
@@ -848,6 +850,16 @@ impl HeadlessServer {
                     &mut notes_reveal_frame,
                 ) {
                     warn!(client_id, err = %err, "failed to send a notes reveal");
+                    broken_clients.push(client_id);
+                    continue;
+                }
+                if let Err(err) = super::placement_action::sync_client(
+                    placement_action_revision,
+                    &self.client_shell_boot_id,
+                    client_id,
+                    client,
+                ) {
+                    warn!(client_id, err = %err, "failed to relay a placement action");
                     broken_clients.push(client_id);
                     continue;
                 }

@@ -4110,6 +4110,36 @@
           },
           "type": "object"
         },
+        "BrowserPlacementAction": {
+          "description": "Fork (compact bar): what the host asks the placement's client to do with\nits area (`browser.placement_action`): `promote` a side area to a full\none, `restore` a full one to a side one, `close` it (a side area goes, a\nfull one gives the panes back). The values are new with the method; a\nnew action needs a new method name. `Unknown` is the serde fallback\n(answered `invalid_params`).",
+          "enum": [
+            "promote",
+            "restore",
+            "close",
+            "unknown"
+          ],
+          "type": "string"
+        },
+        "BrowserPlacementActionParams": {
+          "description": "`browser.placement_action` (browser host, App lane): the user asked the\nhost to change placement `id` (its bar's expand, restore or close). The\nserver relays it to the client that owns the placement, which decides\n(the area is client state); answered `ok` once relayed.",
+          "properties": {
+            "action": {
+              "$ref": "#/schemas/request/$defs/BrowserPlacementAction"
+            },
+            "id": {
+              "type": "string"
+            },
+            "lease_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "lease_id",
+            "id",
+            "action"
+          ],
+          "type": "object"
+        },
         "BrowserPlacementKind": {
           "description": "How the area relates to the client's panes. The values are inside the\n`browser.placement.set` digest (a new kind needs a new method name);\n`Unknown` is the serde fallback (a host ignores such a placement).",
           "oneOf": [
@@ -11743,6 +11773,23 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/BrowserPlacementReportParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Fork (compact bar): the browser host's ask to promote, restore or\nclose a placement, relayed to the client that owns it (App lane:\nchanges_ui, so the render pass that relays it follows at once).",
+          "properties": {
+            "method": {
+              "const": "browser.placement_action",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/BrowserPlacementActionParams"
             }
           },
           "required": [

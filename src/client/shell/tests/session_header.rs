@@ -749,3 +749,53 @@ fn fork_smoke_a_covered_band_has_no_title_bar_and_the_same_placement() {
     assert_eq!(covered.area, uncovered.area);
     assert_eq!((covered.area.y, covered.area.height), (band.y, band.height));
 }
+
+/// Fork (compact bar): the companion's expand, restore and close, relayed
+/// by the server (`endpoint.placement-action.v1`), act like the band's
+/// own buttons, once per relay, and only on this client's placement.
+#[test]
+fn fork_smoke_a_placement_action_promotes_restores_and_closes_the_dock() {
+    use crate::api::schema::BrowserPlacementAction as Action;
+    use crate::server::headless::placement_action::PlacementActionPayload;
+    let mut state = browser_state();
+    state.toggle_browser_dock("tab_1".into(), &mut ClientShellInput::default());
+    let id = state.browser_dock.placement_id.clone();
+    let endpoint = crate::client::endpoint::ClientEndpointId::Local;
+    let send = |state: &mut ClientShellState, revision, id: &str, action| {
+        state.receive_browser_placement_action(
+            &endpoint,
+            PlacementActionPayload {
+                boot_id: "boot".into(),
+                revision,
+                id: id.into(),
+                tab_id: "tab_1".into(),
+                action,
+            },
+        )
+    };
+    let docks = |state: &ClientShellState| {
+        (
+            state.browser_view_open_for("tab_1"),
+            state.browser_dock_open_for("tab_1"),
+        )
+    };
+    // expand: Browser view, the dock slot freed
+    assert!(send(&mut state, 1, &id, Action::Promote).repaint);
+    assert_eq!(docks(&state), (true, false));
+    // the same relay twice acts once
+    send(&mut state, 1, &id, Action::Restore);
+    assert_eq!(docks(&state), (true, false));
+    // restore: the terminal comes back with the browser docked
+    send(&mut state, 2, &id, Action::Restore);
+    assert_eq!(docks(&state), (false, true));
+    // another client's placement: nothing
+    send(&mut state, 3, "pl-someone-else", Action::Close);
+    assert_eq!(docks(&state), (false, true));
+    // close: the dock goes
+    send(&mut state, 4, &id, Action::Close);
+    assert_eq!(docks(&state), (false, false));
+    // close in Browser view: back to the terminal
+    state.set_browser_view("tab_1".into(), true, &mut ClientShellInput::default());
+    send(&mut state, 5, &id, Action::Close);
+    assert_eq!(docks(&state), (false, false));
+}

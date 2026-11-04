@@ -1437,6 +1437,10 @@ impl App {
                     "browser.placement.set is for attached client shells (no client id on this connection)",
                 )
             }
+            // Fork (compact bar): the host's expand / restore / close.
+            Method::BrowserPlacementAction(params) => {
+                return self.handle_browser_placement_action(request.id, params)
+            }
             Method::BrowserPlacements(_) | Method::BrowserPlacementReport(_) => {
                 return responses::encode_error(
                     request.id,
