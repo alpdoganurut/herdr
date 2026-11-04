@@ -24,6 +24,16 @@ impl HeadlessServer {
             })
     }
 
+    /// Fork (scroll perf): whether the pass that just ran keeps its frame slot
+    /// open for one retry (a synchronized-output frame deferred it and the slot
+    /// has not retried yet). Clears the pass's deferral flag.
+    pub(super) fn take_sync_retry(&mut self) -> bool {
+        let deferred = std::mem::take(&mut self.render_sync_deferred);
+        let retry = sync_retry_decision(deferred, self.sync_retry_pending);
+        self.sync_retry_pending = retry;
+        retry
+    }
+
     pub(super) fn record_interactive_render(&mut self, now: Instant) {
         let (epoch, used) = self.interactive_render_budget.get_or_insert((now, 0));
         if now.duration_since(*epoch) >= crate::app::MIN_RENDER_INTERVAL {
@@ -628,6 +638,11 @@ impl HeadlessServer {
                         if let Some(client) = self.clients.get_mut(&client_id) {
                             client.render_state.request_recompute();
                         }
+                        // Fork (scroll perf): retried when the frame closes.
+                        self.render_sync_deferred |= matches!(
+                            reason,
+                            crate::server::client_shell::SurfaceRenderDeferred::Synchronized
+                        );
                         if matches!(
                             reason,
                             crate::server::client_shell::SurfaceRenderDeferred::Changed
@@ -1115,5 +1130,25 @@ impl HeadlessServer {
         self.app.full_redraw_pending = false;
         crate::render_prof::duration_since("full_render.total", full_started);
         debug!(cols, rows, foreground_client_id = ?self.foreground_client_id, "rendered virtual frame(s)");
+    }
+}
+
+/// Fork (scroll perf): a deferred pass retries once per frame slot; any other
+/// pass (presented, or a second deferral) records the attempt.
+fn sync_retry_decision(deferred: bool, retry_pending: bool) -> bool {
+    deferred && !retry_pending
+}
+
+#[cfg(test)]
+mod sync_retry_tests {
+    #[test]
+    fn a_synchronized_deferral_retries_once_per_frame_slot() {
+        // First deferral in a slot keeps the slot open.
+        assert!(super::sync_retry_decision(true, false));
+        // A second deferral in the same slot records the attempt (no spin).
+        assert!(!super::sync_retry_decision(true, true));
+        // A presented pass always records.
+        assert!(!super::sync_retry_decision(false, false));
+        assert!(!super::sync_retry_decision(false, true));
     }
 }

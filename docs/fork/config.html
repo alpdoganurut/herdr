@@ -142,6 +142,7 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
   <a class="l" href="#reminders">Reminders &amp; sounds</a>
   <a class="l" href="#coordinator">Coordinator</a>
   <a class="l" href="#browser">Browser</a>
+  <a class="l" href="#rendering">Rendering</a>
   <a class="l" href="#updates">Updates</a>
   <a class="l" href="#news">News</a>
   <a class="l" href="#examples">Examples</a>
@@ -782,9 +783,24 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
   <p class="note"><b>Legacy keys:</b> <code>wrap_agents</code> is only read as a fallback for <code>[agents] wrap</code> (a Settings change to wrap removes it), and <code>shell_hook</code> is inert. The commented default file still says <code>stop_with_server</code> is not honoured; it is.</p>
 </section>
 
+<!-- ============ RENDERING ============ -->
+<section id="rendering">
+  <p class="eyebrow">08 · rendering</p>
+  <h2>Rendering <code>[ui]</code></h2>
+  <div class="rows" style="margin-top:1rem">
+    <div class="row head"><span>Feature</span><span>Default</span><span>Where to change</span><span>In Settings?</span></div>
+    <div class="row">
+      <div class="f"><h3>Frame rate</h3><p>Scrolling output is paced to a fixed grid at this rate, so frames stay in step with the display. Set it to your display's refresh rate; 60 is also smooth on a 120 Hz display. Applies live.</p></div>
+      <div class="d"><span class="pill val">60 fps</span></div>
+      <div class="k"><code>[ui] render_fps = 30..240</code></div>
+      <div class="s"><span class="badge cfg">config only</span></div>
+    </div>
+  </div>
+</section>
+
 <!-- ============ UPDATES ============ -->
 <section id="updates">
-  <p class="eyebrow">08 · updates · upstream</p>
+  <p class="eyebrow">09 · updates · upstream</p>
   <h2>Updates <code>[update]</code></h2>
   <div class="rows" style="margin-top:1rem">
     <div class="row head"><span>Feature</span><span>Default</span><span>Where to change</span><span>In Settings?</span></div>
@@ -810,7 +826,7 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
 
 <!-- ============ NEWS ============ -->
 <section id="news">
-  <p class="eyebrow">09 · news</p>
+  <p class="eyebrow">10 · news</p>
   <h2>News <code>[news]</code></h2>
   <div class="card" style="margin-top:1rem;max-width:72ch">
     <p><span class="g">❧</span>There is an AI news desk. It is <span class="pill off">off</span> by default (<code>[news] enabled = false</code>, with a settings section), and it is outside the scope of this guide.</p>
@@ -819,7 +835,7 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
 
 <!-- ============ EXAMPLES ============ -->
 <section id="examples">
-  <p class="eyebrow">10 · config.toml examples</p>
+  <p class="eyebrow">11 · config.toml examples</p>
   <h2>config.toml examples</h2>
   <div class="ex" style="margin-top:1rem">
     <figure>
@@ -861,7 +877,7 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
 
 <!-- ============ KEYS ============ -->
 <section id="keys">
-  <p class="eyebrow">11 · keybinds</p>
+  <p class="eyebrow">12 · keybinds</p>
   <h2>Keybinds <code>[keys]</code></h2>
   <p class="lede">Bind a key with <code>[keys] &lt;action&gt; = "prefix+x"</code> (the prefix is <kbd>ctrl+b</kbd>), or several with <code>&lt;action&gt; = ["cmd+[", "alt+,"]</code>. Setting an action replaces all of its default keys; <code>""</code> unbinds it.</p>
   <div class="keys">
@@ -914,7 +930,7 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
 
 <!-- ============ LIMITS ============ -->
 <section id="limits">
-  <p class="eyebrow">12 · not configurable</p>
+  <p class="eyebrow">13 · not configurable</p>
   <h2>Not configurable</h2>
   <p class="lede">These agent limits are built in (<code>src/agents_model/limits.rs</code>) and have no config keys:</p>
   <div class="stats">

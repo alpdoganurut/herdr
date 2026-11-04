@@ -441,6 +441,7 @@ impl PtyIoActor {
             on_read: config.on_read,
             on_reader_exit: config.on_reader_exit,
             poll_observer,
+            sync_hold: crate::pty::sync_hold::SyncFrameHold::new(),
         };
         std::thread::Builder::new()
             .name(format!("herdr-pty-{}", config.pane_id))
@@ -475,6 +476,8 @@ struct PtyIoActorRunner {
     on_read: ReadCallback,
     on_reader_exit: Option<ReaderExitCallback>,
     poll_observer: Option<std_mpsc::Sender<()>>,
+    /// Fork (scroll perf): holds an open synchronized-output frame until it closes.
+    sync_hold: crate::pty::sync_hold::SyncFrameHold,
 }
 
 struct ActiveSubmission {
@@ -550,6 +553,7 @@ impl PtyIoActorRunner {
                 let _ = poll_observer.send(());
             }
 
+            self.expire_sync_hold();
             match fd::poll_pty_and_wake(
                 self.file.as_raw_fd(),
                 self.wake_read_fd.as_raw_fd(),
@@ -558,6 +562,7 @@ impl PtyIoActorRunner {
                 self.poll_timeout_ms(),
             ) {
                 Ok(readiness) => {
+                    self.expire_sync_hold();
                     if readiness.wake_ready {
                         if let Err(err) = fd::drain_wake_fd(self.wake_read_fd.as_raw_fd()) {
                             debug!(pane = self.pane_id, err = %err, "PTY actor wake drain failed");
@@ -750,6 +755,8 @@ impl PtyIoActorRunner {
     }
 
     fn begin_handoff(&mut self) -> std::io::Result<()> {
+        // Fork (scroll perf): the exported terminal state includes a held frame.
+        self.flush_sync_hold();
         self.drain_pre_quiesce_commands();
         if self.active_submission.is_some() {
             return Err(std::io::Error::new(
@@ -795,6 +802,7 @@ impl PtyIoActorRunner {
                 let _ = self.flush_pending_writes_once()?;
             }
         }
+        self.flush_sync_hold();
         self.state = ActorState::Quiesced;
         Ok(())
     }
@@ -838,36 +846,72 @@ impl PtyIoActorRunner {
     fn read_once(&mut self) -> bool {
         let mut buf = [0u8; 8192];
         match self.file.as_ref().read(&mut buf) {
-            Ok(0) => false,
+            Ok(0) => {
+                self.flush_sync_hold();
+                false
+            }
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => true,
             Err(err) if err.kind() == std::io::ErrorKind::Interrupted => true,
             Err(err) => {
                 debug!(pane = self.pane_id, err = %err, "PTY actor read failed");
+                self.flush_sync_hold();
                 false
             }
             Ok(n) => {
-                let response_order = Arc::clone(&self.response_order);
-                let _order = response_order
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                let result = (self.on_read)(&buf[..n]);
-                self.controls
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .terminal_responses
-                    .extend(result.terminal_responses);
-                drop(_order);
-                let terminal_responses = std::mem::take(
-                    &mut self
-                        .controls
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .terminal_responses,
-                );
-                self.enqueue_terminal_responses(terminal_responses);
+                let chunk = &buf[..n];
+                let release = self.sync_hold.push(chunk, Instant::now());
+                self.apply_sync_release(chunk, release);
                 true
             }
         }
+    }
+
+    /// Parses what the synchronized-frame hold lets through.
+    fn apply_sync_release(&mut self, chunk: &[u8], release: crate::pty::sync_hold::SyncRelease) {
+        use crate::pty::sync_hold::SyncRelease;
+        match release {
+            SyncRelease::Chunk => self.deliver_read(chunk),
+            SyncRelease::Prefix(n) if n > 0 => self.deliver_read(&chunk[..n]),
+            SyncRelease::Prefix(_) | SyncRelease::None => {}
+            SyncRelease::Held(n) => {
+                let held = self.sync_hold.take_released(n);
+                self.deliver_read(&held);
+            }
+        }
+    }
+
+    /// Parses held bytes whose hold has timed out.
+    fn expire_sync_hold(&mut self) {
+        let release = self.sync_hold.expire(Instant::now());
+        self.apply_sync_release(&[], release);
+    }
+
+    /// Parses every held byte (EOF, handoff); an open block then passes through.
+    fn flush_sync_hold(&mut self) {
+        let release = self.sync_hold.flush();
+        self.apply_sync_release(&[], release);
+    }
+
+    fn deliver_read(&mut self, bytes: &[u8]) {
+        let response_order = Arc::clone(&self.response_order);
+        let _order = response_order
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let result = (self.on_read)(bytes);
+        self.controls
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .terminal_responses
+            .extend(result.terminal_responses);
+        drop(_order);
+        let terminal_responses = std::mem::take(
+            &mut self
+                .controls
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .terminal_responses,
+        );
+        self.enqueue_terminal_responses(terminal_responses);
     }
 
     fn enqueue_terminal_responses(&mut self, terminal_responses: Vec<Bytes>) {
@@ -920,6 +964,19 @@ impl PtyIoActorRunner {
     }
 
     fn poll_timeout_ms(&self) -> i32 {
+        let timeout = self.submission_poll_timeout_ms();
+        // Fork (scroll perf): wake for a held synchronized frame's deadline.
+        match self.sync_hold.deadline() {
+            Some(deadline) => {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                let remaining_ms = remaining.as_nanos().div_ceil(1_000_000).max(1);
+                timeout.min(remaining_ms.min(i32::MAX as u128) as i32)
+            }
+            None => timeout,
+        }
+    }
+
+    fn submission_poll_timeout_ms(&self) -> i32 {
         let Some(ActiveSubmission {
             phase: SubmissionPhase::WaitingUntil(deadline),
             ..
@@ -1134,6 +1191,7 @@ mod tests {
             on_read: Box::new(|_| PtyReadResult::empty()),
             on_reader_exit: None,
             poll_observer: None,
+            sync_hold: crate::pty::sync_hold::SyncFrameHold::new(),
         };
         (runner, peer)
     }
@@ -1174,6 +1232,57 @@ mod tests {
         let mut buf = [0u8; 5];
         peer.read_exact(&mut buf).expect("peer receives write");
         assert_eq!(&buf, b"hello");
+        handle.shutdown();
+    }
+
+    #[test]
+    fn actor_parses_a_synchronized_frame_split_across_reads_in_one_call() {
+        let (handle, mut peer, read_rx) = actor_with_socket_pair(false);
+        peer.write_all(b"before\x1b[?2026hrow one\r\n")
+            .expect("peer writes the frame start");
+        assert_eq!(
+            read_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("bytes before the frame parse at once"),
+            Bytes::from_static(b"before")
+        );
+        std::thread::sleep(Duration::from_millis(3));
+        peer.write_all(b"row two\x1b[?2026lafter")
+            .expect("peer writes the frame end");
+        let mut parsed = Vec::new();
+        while let Ok(bytes) = read_rx.recv_timeout(Duration::from_millis(200)) {
+            parsed.push(bytes);
+        }
+        assert_eq!(
+            parsed.first().map(|bytes| bytes.as_ref()),
+            Some(b"\x1b[?2026hrow one\r\nrow two\x1b[?2026lafter".as_slice()),
+            "the whole frame reaches the parser in one call: {parsed:?}"
+        );
+        handle.shutdown();
+    }
+
+    #[test]
+    fn actor_releases_an_unclosed_synchronized_frame_after_the_hold_timeout() {
+        let (handle, mut peer, read_rx) = actor_with_socket_pair(false);
+        peer.write_all(b"\x1b[?2026hstuck")
+            .expect("peer writes an unclosed frame");
+        let started = Instant::now();
+        let bytes = read_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("held bytes are released");
+        assert_eq!(bytes, Bytes::from_static(b"\x1b[?2026hstuck"));
+        assert!(
+            started.elapsed() >= crate::pty::sync_hold::SYNC_FRAME_HOLD_TIMEOUT / 2,
+            "the frame was held until its timeout"
+        );
+        // The rest of the open block now passes straight through.
+        peer.write_all(b" more").expect("peer writes more");
+        assert_eq!(
+            read_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("pass-through bytes"),
+            Bytes::from_static(b" more")
+        );
         handle.shutdown();
     }
 
@@ -1736,6 +1845,7 @@ mod tests {
             }),
             on_reader_exit: None,
             poll_observer: None,
+            sync_hold: crate::pty::sync_hold::SyncFrameHold::new(),
         };
         let handle = PtyIoActorHandle {
             data_tx,
@@ -1867,6 +1977,7 @@ mod tests {
             on_read: Box::new(|_| PtyReadResult::empty()),
             on_reader_exit: None,
             poll_observer: None,
+            sync_hold: crate::pty::sync_hold::SyncFrameHold::new(),
         };
 
         runner.begin_handoff().expect("handoff drains queued write");

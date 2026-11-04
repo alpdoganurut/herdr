@@ -313,6 +313,10 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # browser pages, the dock or Browser view; "off" never draws it (keys and menus still work).
 # browser_view_strip = "auto"
 
+# Frames per second herdr paces screen updates to; set it to your display's refresh rate
+# (e.g. 120 on a ProMotion display). 30 through 240.
+# render_fps = 60
+
 # Show the Active block (blocked, voice, working, running-subagent and finished
 # agents) under the tab list in the "tabs" sidebar layout; it hides while nothing is active.
 # sidebar_active_agents = true
