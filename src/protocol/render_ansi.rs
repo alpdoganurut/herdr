@@ -38,7 +38,8 @@ use crate::protocol::{
 // Fork (scrollback scroll): host scroll regions for scrolled panes.
 mod host_scroll;
 pub(crate) use host_scroll::{
-    host_scroll_support, set_host_scroll_support, support_from_probe, HostScrollSupport,
+    host_scroll_support, set_host_scroll_support, support_from_probe, write_margin_reset,
+    HostScrollSupport,
 };
 
 const REVERSED_MODIFIER: u16 = 1 << 6;
@@ -141,6 +142,7 @@ impl BlitEncoder {
             clear_before_full_redraw,
             suppress_visible_cursor,
             &scrolls,
+            support != HostScrollSupport::Off,
         );
         if let Some(stats) = prof_stats {
             crate::render_prof::counter("ansi_encode.host_scrolls", scrolls.len() as u64);
@@ -589,6 +591,7 @@ fn blit_frame_to_with_cursor_memory_and_policy(
         true,
         suppress_visible_cursor,
         &[],
+        false,
     );
 }
 
@@ -715,6 +718,7 @@ fn blit_frame_to_with_cursor_memory_and_clear_policy(
     clear_before_full_redraw: bool,
     suppress_visible_cursor: bool,
     scrolls: &[host_scroll::HostScroll],
+    reset_scroll_margins: bool,
 ) {
     // On first frame or size change, do a full redraw.
     let full_redraw =
@@ -735,6 +739,10 @@ fn blit_frame_to_with_cursor_memory_and_clear_policy(
     let _ = writer.write_all(b"\x1b]8;;\x1b\\");
 
     if full_redraw {
+        // Fork (scrollback scroll): a torn scroll frame may have left margins set.
+        if reset_scroll_margins {
+            host_scroll::write_margin_reset(&mut writer);
+        }
         if clear_before_full_redraw {
             let _ = writer.write_all(b"\x1b[2J");
         }

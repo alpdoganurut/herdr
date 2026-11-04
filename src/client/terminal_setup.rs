@@ -433,6 +433,25 @@ pub(super) fn write_terminal_restore_postlude(
     writer: &mut impl io::Write,
     reset_host_color_scheme_reports: bool,
 ) -> io::Result<()> {
+    // Fork (scrollback scroll): an interrupted scroll frame may have left margins set.
+    let reset_scroll_margins = crate::protocol::render_ansi::host_scroll_support()
+        != crate::protocol::render_ansi::HostScrollSupport::Off;
+    write_terminal_restore_postlude_with(
+        writer,
+        reset_host_color_scheme_reports,
+        reset_scroll_margins,
+    )
+}
+
+/// Fork (scrollback scroll): upstream's postlude body plus the margin reset.
+fn write_terminal_restore_postlude_with(
+    writer: &mut impl io::Write,
+    reset_host_color_scheme_reports: bool,
+    reset_scroll_margins: bool,
+) -> io::Result<()> {
+    if reset_scroll_margins {
+        crate::protocol::render_ansi::write_margin_reset(writer);
+    }
     if reset_host_color_scheme_reports {
         writer.write_all(
             crate::terminal_theme::HOST_COLOR_SCHEME_REPORT_DISABLE_SEQUENCE.as_bytes(),
@@ -1152,6 +1171,17 @@ mod tests {
             assert!(responses.primary_device_attributes, "split {split}");
             assert_eq!(buffered, b"before-middle--after", "split {split}");
         }
+    }
+
+    // Fork (scrollback scroll): leaving herdr clears any margins a torn scroll frame left.
+    #[test]
+    fn fork_smoke_the_restore_postlude_resets_scroll_margins_when_host_scroll_is_on() {
+        let mut output = Vec::new();
+        write_terminal_restore_postlude_with(&mut output, false, true).unwrap();
+        assert_eq!(output, b"\x1b[?69l\x1b[r\x1b[?25h\x1b[0 q");
+        let mut output = Vec::new();
+        write_terminal_restore_postlude_with(&mut output, false, false).unwrap();
+        assert_eq!(output, b"\x1b[?25h\x1b[0 q");
     }
 
     // Fork (scrollback scroll): the DECLRMM answer is consumed, never typed into a pane.

@@ -78,7 +78,10 @@ const MAX_REGIONS: usize = 32;
 const MIN_CHANGED_ROWS: usize = 3;
 
 fn rect_fits(rect: SurfaceRect, frame: &FrameData) -> bool {
-    rect.width > 0
+    let full_width = rect.x == 0 && rect.width == frame.width;
+    // DECSLRM ignores left >= right (libghostty-vt setLeftAndRightMargin), so a
+    // one-column partial region would scroll its neighbours too.
+    (rect.width >= 2 || (full_width && rect.width > 0))
         && rect.height >= 2
         && rect
             .x
@@ -109,6 +112,11 @@ fn straddles_wide_cell(frame: &FrameData, rect: SurfaceRect) -> bool {
     })
 }
 
+fn rect_row(frame: &FrameData, rect: SurfaceRect, y: u16) -> &[CellData] {
+    let start = usize::from(y) * usize::from(frame.width) + usize::from(rect.x);
+    &frame.cells[start..start + usize::from(rect.width)]
+}
+
 fn mix(hash: u64, value: u64) -> u64 {
     (hash.rotate_left(5) ^ value).wrapping_mul(0x517c_c1b7_2722_0a95)
 }
@@ -133,6 +141,15 @@ fn row_hash(frame: &FrameData, rect: SurfaceRect, y: u16) -> u64 {
 /// at least two of the region's rows.
 fn best_shift(prev: &FrameData, frame: &FrameData, rect: SurfaceRect) -> Option<i16> {
     let height = usize::from(rect.height);
+    // Most diff frames change a row or two (a spinner, the cursor): count changed
+    // rows by plain comparison and stop before hashing or allocating anything.
+    let changed = (rect.y..rect.y + rect.height)
+        .filter(|&y| rect_row(prev, rect, y) != rect_row(frame, rect, y))
+        .take(MIN_CHANGED_ROWS)
+        .count();
+    if changed < MIN_CHANGED_ROWS {
+        return None;
+    }
     let old = (0..rect.height)
         .map(|y| row_hash(prev, rect, rect.y + y))
         .collect::<Vec<_>>();
@@ -148,9 +165,6 @@ fn best_shift(prev: &FrameData, frame: &FrameData, rect: SurfaceRect) -> Option<
             .count()
     };
     let unshifted = matches(0);
-    if height - unshifted < MIN_CHANGED_ROWS {
-        return None;
-    }
     let (mut best_shift, mut best) = (0isize, unshifted);
     for distance in 1..height {
         // A shift by `distance` can match at most `height - distance` rows.
@@ -238,6 +252,14 @@ pub(super) fn write_scrolls(writer: &mut impl Write, scrolls: &[HostScroll], scr
         let _ = writer.write_all(b"\x1b[r");
     }
 }
+
+/// Clears any left/right and top/bottom margins a torn scroll frame left
+/// behind; a full redraw and the terminal restore start from it.
+pub(crate) fn write_margin_reset(writer: &mut impl Write) {
+    let _ = writer.write_all(MARGIN_RESET);
+}
+
+pub(crate) const MARGIN_RESET: &[u8] = b"\x1b[?69l\x1b[r";
 
 /// The old cell the host shows at (`x`, `y`) after `scrolls`, or `None` for
 /// an exposed cell whose content is unknown and must be written.
@@ -491,6 +513,90 @@ mod tests {
         }
         let (_, terminal) = replay(&prev, &frame, &[pane], HostScrollSupport::Margins);
         assert_screen_matches(&terminal, &frame);
+    }
+
+    /// Every row differs from its neighbours, so a scroll that touches the
+    /// wrong columns shows up in the replay.
+    fn striped(width: u16, height: u16, column: u16, offset: u8) -> FrameData {
+        let mut cells = Vec::new();
+        for y in 0..height {
+            for x in 0..width {
+                let symbol = if x == column {
+                    (b'A' + (y as u8 + offset) % 26) as char
+                } else {
+                    (b'a' + (y as u8 * 7 + x as u8) % 26) as char
+                };
+                cells.push(cell(&symbol.to_string(), 0));
+            }
+        }
+        FrameData {
+            cells,
+            width,
+            height,
+            cursor: None,
+            hyperlinks: Vec::new(),
+            graphics: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn fork_smoke_a_one_column_partial_region_never_scrolls_its_neighbours() {
+        let column = rect(5, 0, 1, 10);
+        let prev = striped(12, 10, 5, 0);
+        let frame = striped(12, 10, 5, 3);
+        assert!(plan(&prev, &frame, &[column], HostScrollSupport::Margins).is_empty());
+        let (bytes, terminal) = replay(&prev, &frame, &[column], HostScrollSupport::Margins);
+        assert_screen_matches(&terminal, &frame);
+        assert!(!String::from_utf8_lossy(&bytes).contains("?69h"));
+        // Two columns are enough for DECSLRM, and the neighbours stay put.
+        let pair = rect(5, 0, 2, 10);
+        let mut prev = striped(12, 10, 5, 0);
+        let mut frame = striped(12, 10, 5, 3);
+        for y in 0..10u16 {
+            let at = |y: u16| usize::from(y) * 12 + 6;
+            prev.cells[at(y)] = cell(&((b'A' + y as u8 % 26) as char).to_string(), 1);
+            frame.cells[at(y)] = cell(&((b'A' + (y as u8 + 3) % 26) as char).to_string(), 1);
+        }
+        let (bytes, terminal) = replay(&prev, &frame, &[pair], HostScrollSupport::Margins);
+        assert_screen_matches(&terminal, &frame);
+        assert!(String::from_utf8_lossy(&bytes).contains("\x1b[6;7s"));
+    }
+
+    #[test]
+    fn an_unchanged_or_lightly_edited_region_is_not_hashed_into_a_shift() {
+        let pane = rect(3, 1, 20, 10);
+        let prev = screen(24, 12, &[(pane, 100)]);
+        let mut frame = prev.clone();
+        assert_eq!(best_shift(&prev, &frame, pane), None);
+        for x in 3..23 {
+            frame.cells[usize::from(2u16) * 24 + x] = cell("z", 2);
+            frame.cells[usize::from(9u16) * 24 + x] = cell("y", 2);
+        }
+        assert_eq!(best_shift(&prev, &frame, pane), None);
+    }
+
+    #[test]
+    fn fork_smoke_a_full_redraw_after_a_torn_write_clears_stale_margins() {
+        let pane = rect(3, 1, 20, 10);
+        let prev = screen(24, 12, &[(pane, 100)]);
+        let frame = screen(24, 12, &[(pane, 200)]);
+        let mut terminal = crate::ghostty::Terminal::new(24, 12, 0).unwrap();
+        let mut encoder = BlitEncoder::new();
+        let initial = encoder.encode(&prev, false);
+        terminal.write(&initial.bytes);
+        encoder.commit(prev.clone(), initial);
+        // A scroll frame cut off after its margins were set.
+        terminal.write(b"\x1b[?2026h\x1b[?69h\x1b[2;11r\x1b[4;23s");
+        let repaint =
+            encoder.encode_scrolling(&frame, true, false, &[pane], HostScrollSupport::Margins);
+        assert!(repaint.full);
+        assert!(String::from_utf8_lossy(&repaint.bytes).contains("\x1b[?69l\x1b[r"));
+        terminal.write(&repaint.bytes);
+        assert_screen_matches(&terminal, &frame);
+        // And a later full-screen scroll moves every column again.
+        terminal.write(b"\x1b[1S");
+        let (_, graphemes) = terminal.screen_cell(0, 0).unwrap();
+        assert_eq!(graphemes, vec![u32::from('b')]);
     }
 
     #[test]
