@@ -15816,6 +15816,10 @@
             "placement": {
               "$ref": "#/schemas/success_response/$defs/BrowserPlacementSpec"
             },
+            "placement_actions": {
+              "description": "Fork (compact bar): the client takes `browser.placement_action` (its\nhandshake says so; an older client does not, and the host hides its\nexpand and close for that placement).",
+              "type": "boolean"
+            },
             "updated_unix": {
               "format": "uint64",
               "minimum": 0,

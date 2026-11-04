@@ -3263,7 +3263,8 @@ async fn a_placement_set_never_promotes_the_client_or_takes_the_command_lane() {
 /// Fork (compact bar): the companion's expand / restore / close
 /// (`browser.placement_action`, live lease only) reaches only the client
 /// that owns the placement, once, as `endpoint.placement-action.v1`; an
-/// unknown placement or action is refused; the lease advertises it.
+/// unknown placement or action, and a client whose handshake predates
+/// placement actions, are refused; the lease advertises it.
 #[tokio::test]
 async fn fork_smoke_a_placement_action_reaches_only_its_client_once() {
     use crate::server::headless::placement_action::{
@@ -3323,6 +3324,13 @@ async fn fork_smoke_a_placement_action_reaches_only_its_client_once() {
     assert_eq!(unknown["error"]["code"], "not_found", "{unknown}");
     let odd = ask(&mut server, "lease-smoke", "pl-smoke-a", Action::Unknown);
     assert_eq!(odd["error"]["code"], "invalid_params", "{odd}");
+    // a client whose handshake did not say it takes them (an older client,
+    // reattached after a live handoff) would ignore the ask: refused
+    let older = ask(&mut server, "lease-smoke", "pl-smoke-a", Action::Promote);
+    assert_eq!(older["error"]["code"], "unsupported", "{older}");
+    crate::browser::placements::board().set_takes_actions(9081, true);
+    let still = ask(&mut server, "lease-smoke", "pl-smoke-b", Action::Close);
+    assert_eq!(still["error"]["code"], "unsupported", "{still}");
     let ok = ask(&mut server, "lease-smoke", "pl-smoke-a", Action::Promote);
     assert_eq!(ok["result"]["type"], "ok", "{ok}");
     server.render_and_stream();

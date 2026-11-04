@@ -79,7 +79,9 @@ impl App {
     /// Fork (compact bar): `browser.placement_action`: the live lease asks
     /// the client owning placement `id` to promote, restore or close it.
     /// The client decides (its area is TUI state); `ok` once queued,
-    /// `not_found` for a placement the board does not hold.
+    /// `not_found` for a placement the board does not hold, `unsupported`
+    /// when its client predates placement actions (its handshake did not
+    /// say it takes them).
     pub(super) fn handle_browser_placement_action(
         &mut self,
         id: String,
@@ -95,12 +97,18 @@ impl App {
                 "unknown placement action (promote, restore or close)",
             );
         }
+        use crate::browser::placements::ActionRefused;
         match crate::browser::placements::board().queue_action(&params.id, params.action) {
-            Some(_) => encode_success(id, ResponseResult::Ok {}),
-            None => encode_error(
+            Ok(_) => encode_success(id, ResponseResult::Ok {}),
+            Err(ActionRefused::NotFound) => encode_error(
                 id,
                 "not_found",
                 format!("no client holds placement {}", params.id.trim()),
+            ),
+            Err(ActionRefused::Unsupported) => encode_error(
+                id,
+                "unsupported",
+                "this herdr client predates the bar's expand and close; use its own ⤢ / ✕ or restart the client",
             ),
         }
     }

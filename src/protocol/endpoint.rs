@@ -72,6 +72,11 @@ pub struct EndpointClientHello {
     pub input_codecs: Vec<String>,
     #[serde(default)]
     pub blob_codecs: Vec<String>,
+    /// Fork (compact bar): this client takes `endpoint.placement-action.v1`
+    /// (the browser host's expand / restore / close of its placement). An
+    /// older client omits it, and the server refuses those asks for it.
+    #[serde(default)]
+    pub placement_actions: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -219,6 +224,7 @@ mod tests {
             surface_codecs: vec![SURFACE_CODEC_V1.into()],
             input_codecs: vec![INPUT_CODEC_V1.into()],
             blob_codecs: vec![BLOB_CODEC_V1.into()],
+            placement_actions: false,
         }
     }
 
@@ -266,6 +272,9 @@ mod tests {
         )))
         .unwrap();
         assert!(hello.supports_required_codecs());
+        // Fork (compact bar): a generation-one client never says it takes
+        // placement actions
+        assert!(!hello.placement_actions);
 
         let welcome: EndpointServerWelcome = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),

@@ -119,6 +119,11 @@ pub struct BrowserPlacementInfo {
     #[serde(default, skip_serializing_if = "super::is_false")]
     pub foreground: bool,
     pub updated_unix: u64,
+    /// Fork (compact bar): the client takes `browser.placement_action` (its
+    /// handshake says so; an older client does not, and the host hides its
+    /// expand and close for that placement).
+    #[serde(default, skip_serializing_if = "super::is_false")]
+    pub placement_actions: bool,
 }
 
 /// `browser.placement_report` (browser host, connection lane): what the

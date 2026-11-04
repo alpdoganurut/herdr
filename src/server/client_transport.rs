@@ -772,6 +772,11 @@ pub(crate) fn handle_client_handshake(
                 write_endpoint_rejection(&mut stream, code, reason);
                 return Ok(());
             }
+            // Fork (compact bar): whether this client takes the browser
+            // host's placement actions (kept on the placement board, which
+            // refuses the asks for a client without them).
+            crate::browser::placements::board()
+                .set_takes_actions(client_id, hello.placement_actions);
             (
                 hello.surface_size.cols,
                 hello.surface_size.rows,
@@ -1481,6 +1486,7 @@ mod tests {
             surface_codecs: vec![crate::protocol::endpoint::SURFACE_CODEC_V1.into()],
             input_codecs: vec![crate::protocol::endpoint::INPUT_CODEC_V1.into()],
             blob_codecs: vec![crate::protocol::endpoint::BLOB_CODEC_V1.into()],
+            placement_actions: false,
         };
         ClientMessage::EndpointControl {
             kind: ENDPOINT_HELLO_KIND.into(),

@@ -343,6 +343,20 @@ pub(super) fn full_area(layout: &ClientShellLayout) -> Rect {
     area
 }
 
+/// Fork (compact bar): the first companion whose bar has expand and close.
+const COMPACT_BAR_COMPANION: (u32, u32, u32) = (0, 2, 4);
+
+/// `major.minor.patch` (a suffix after the patch number is ignored).
+fn parse_version(text: &str) -> Option<(u32, u32, u32)> {
+    let mut parts = text.trim().trim_start_matches('v').split('.');
+    let mut next = || -> Option<u32> {
+        let part = parts.next()?;
+        let digits: String = part.chars().take_while(char::is_ascii_digit).collect();
+        digits.parse().ok()
+    };
+    Some((next()?, next()?, next()?))
+}
+
 /// What one frame of the strip, the band and the Browser view's area shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BrowserDockView {
@@ -467,10 +481,12 @@ impl ClientShellState {
         // Fork (compact bar): the band's title bar is the fallback for a
         // band the companion does not cover (not installed, not running,
         // not docked: the placeholder says so); over a covered band (a calm
-        // placeholder) the companion's own bar offers expand and close.
+        // placeholder) the companion's own bar offers expand and close,
+        // unless the running companion predates that bar.
         let uncovered = placeholder
             .as_ref()
-            .is_some_and(|placeholder| !placeholder.calm);
+            .is_some_and(|placeholder| !placeholder.calm)
+            || !self.browser_companion_has_window_actions();
         BrowserDockView {
             browser_view,
             strip: (!layout.view_strip.is_empty())
@@ -483,6 +499,16 @@ impl ClientShellState {
                 .then(|| self.browser_dock_title()),
             placeholder,
         }
+    }
+
+    /// Fork (compact bar): whether the running companion's bar has expand
+    /// and close (version [`COMPACT_BAR_COMPANION`] or newer). An older or
+    /// unknown version keeps the band's own title bar over a covered band.
+    pub(crate) fn browser_companion_has_window_actions(&self) -> bool {
+        self.browser_companion()
+            .and_then(|companion| companion.version.as_deref())
+            .and_then(parse_version)
+            .is_some_and(|version| version >= COMPACT_BAR_COMPANION)
     }
 
     /// Fork (session header): the browser dock's title: the focused tab's
@@ -1406,12 +1432,18 @@ impl ClientShellState {
             // or without the title bar: the title row shows only while the
             // companion is not over the band (`browser_dock_view`), so the
             // area never follows the host's report (that would move the
-            // host, which reports again: a loop).
+            // host, which reports again: a loop). A running companion whose
+            // bar predates expand and close keeps the band's title bar, so
+            // its area starts below it (by its version, never its report).
+            let top = u16::from(
+                !layout.session_header.is_empty() && !self.browser_companion_has_window_actions(),
+            )
+            .min(band.height);
             let area = Rect::new(
                 band.x.saturating_add(1),
-                band.y,
+                band.y + top,
                 band.width.saturating_sub(1),
-                band.height,
+                band.height - top,
             );
             (BrowserPlacementKind::Side, area, !area.is_empty())
         } else {

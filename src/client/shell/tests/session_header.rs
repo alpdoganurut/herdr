@@ -296,6 +296,8 @@ fn companion_info() -> BrowserGetInfo {
         enabled: true,
         companion_app: Some(BrowserCompanionAppInfo {
             state: "running".into(),
+            // the compact bar's companion (its bar has expand and close)
+            version: Some("0.2.4".into()),
             ..Default::default()
         }),
         window_off: true,
@@ -798,4 +800,86 @@ fn fork_smoke_a_placement_action_promotes_restores_and_closes_the_dock() {
     state.set_browser_view("tab_1".into(), true, &mut ClientShellInput::default());
     send(&mut state, 5, &id, Action::Close);
     assert_eq!(docks(&state), (false, false));
+    // the relay as received from any endpoint, boot and tab
+    let relay = |state: &mut ClientShellState,
+                 endpoint: &crate::client::endpoint::ClientEndpointId,
+                 boot: &str,
+                 revision,
+                 tab: &str,
+                 action| {
+        state.receive_browser_placement_action(
+            endpoint,
+            PlacementActionPayload {
+                boot_id: boot.into(),
+                revision,
+                id: id.clone(),
+                tab_id: tab.into(),
+                action,
+            },
+        )
+    };
+    // a tab that is no longer the focused one: nothing
+    relay(&mut state, &endpoint, "boot", 6, "tab_2", Action::Promote);
+    assert_eq!(docks(&state), (false, false));
+    assert!(!state.browser_view_open_for("tab_2"));
+    // another endpoint (an SSH server's relay): nothing
+    let remote = crate::client::endpoint::ClientEndpointId::Ssh(
+        crate::client::endpoint::ProfileId::parse("0123456789abcdef0123456789abcdef")
+            .expect("profile id"),
+    );
+    relay(&mut state, &remote, "boot", 7, "tab_1", Action::Promote);
+    assert_eq!(docks(&state), (false, false));
+    // a new server boot (a live handoff) counts from revision 1 again: it acts
+    state.set_browser_view("tab_1".into(), true, &mut ClientShellInput::default());
+    relay(&mut state, &endpoint, "boot-2", 1, "tab_1", Action::Restore);
+    assert_eq!(docks(&state), (false, true));
+}
+
+/// Fork (compact bar): a running companion that predates the compact bar
+/// (no expand or close in its bar) keeps the band's title bar over a band it
+/// covers, and its area starts below that row; 0.2.4 and newer do not.
+#[test]
+fn fork_smoke_an_older_companion_keeps_the_band_title_bar_over_a_covered_band() {
+    use super::super::browser_dock::BrowserDockTarget;
+    let mut state = browser_state();
+    state.toggle_browser_dock("tab_1".into(), &mut ClientShellInput::default());
+    report_placement(&mut state, "covering");
+    let set_version = |state: &mut ClientShellState, version: Option<&str>| {
+        if let Some(companion) = state
+            .browser
+            .info
+            .as_mut()
+            .and_then(|info| info.companion_app.as_mut())
+        {
+            companion.version = version.map(str::to_owned);
+        }
+    };
+    let drawn = |state: &mut ClientShellState| {
+        state.compose(COLS, ROWS);
+        let promote = state
+            .hits
+            .browser_dock
+            .targets
+            .iter()
+            .any(|(_, target)| *target == BrowserDockTarget::Promote);
+        let spec = state.browser_placement_spec().expect("a placement");
+        (promote, spec.area.y, spec.area.height)
+    };
+    let band = state.layout(COLS, ROWS).browser_band;
+    for (version, title) in [
+        (Some("0.2.3"), true),
+        (None, true),
+        (Some("0.2.4"), false),
+        (Some("0.3.0-dev"), false),
+    ] {
+        set_version(&mut state, version);
+        let (promote, y, height) = drawn(&mut state);
+        assert_eq!(promote, title, "{version:?}");
+        let top = u16::from(title);
+        assert_eq!(
+            (y, height),
+            (band.y + top, band.height - top),
+            "{version:?}"
+        );
+    }
 }
