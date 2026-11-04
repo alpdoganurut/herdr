@@ -11,6 +11,8 @@ pub(super) struct ClientLoopConfig {
     pub(super) mouse_capture_active: bool,
     pub(super) host_escape_disambiguation_active: bool,
     pub(super) host_sgr_pixel_mouse: Option<bool>,
+    /// Fork (scrollback scroll): the startup probe's host scroll support.
+    pub(super) host_scroll: crate::protocol::render_ansi::HostScrollSupport,
     pub(super) initial_host_input: Vec<u8>,
     pub(super) endpoint_keybindings: bool,
     pub(super) remote_image_paste_key:

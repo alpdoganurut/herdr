@@ -11,12 +11,19 @@ use base64::Engine as _;
 pub(crate) struct ComposedFrame {
     pub(crate) frame: FrameData,
     pub(crate) graphics: GraphicsOutput,
+    /// Fork (scrollback scroll): pane content rectangles the blit may scroll
+    /// on the host; empty when the frame must be painted cell by cell.
+    pub(crate) scroll_regions: Vec<crate::protocol::SurfaceRect>,
 }
 
 impl From<FrameData> for ComposedFrame {
     fn from(mut frame: FrameData) -> Self {
         let graphics = GraphicsOutput::from_bytes(std::mem::take(&mut frame.graphics));
-        Self { frame, graphics }
+        Self {
+            frame,
+            graphics,
+            scroll_regions: Vec::new(),
+        }
     }
 }
 

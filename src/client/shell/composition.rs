@@ -1188,7 +1188,27 @@ impl ClientShellState {
             self.hits.popup = None;
         }
         let graphics = self.compose_graphics(layout, &occlusion);
-        Some(crate::client::frame_output::ComposedFrame { frame, graphics })
+        // Fork (scrollback scroll): the panes' content the blit may scroll on
+        // the host, unless a host image is placed (images do not follow).
+        let scroll_regions = if self.graphics.has_host_placements() {
+            Vec::new()
+        } else {
+            self.hits
+                .panes
+                .iter()
+                .map(|pane| crate::protocol::SurfaceRect {
+                    x: pane.inner_rect.x,
+                    y: pane.inner_rect.y,
+                    width: pane.inner_rect.width,
+                    height: pane.inner_rect.height,
+                })
+                .collect()
+        };
+        Some(crate::client::frame_output::ComposedFrame {
+            frame,
+            graphics,
+            scroll_regions,
+        })
     }
 }
 

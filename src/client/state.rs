@@ -53,6 +53,8 @@ pub(super) struct ClientState {
     pub(super) pixel_geometry_exact: bool,
     /// The host's answer to the SGR pixel mouse probe; None when unknown.
     pub(super) host_sgr_pixel_mouse: Option<bool>,
+    /// Fork (scrollback scroll): what the blit may scroll on the host.
+    pub(super) host_scroll: render_ansi::HostScrollSupport,
     #[cfg(unix)]
     pub(super) direct_graphics_response: Arc<Mutex<direct_graphics::ResponseMatcher>>,
     #[cfg(unix)]
@@ -121,6 +123,7 @@ impl ClientState {
             pixel_geometry_enabled: false,
             pixel_geometry_exact: false,
             host_sgr_pixel_mouse: None,
+            host_scroll: render_ansi::HostScrollSupport::Off,
             #[cfg(unix)]
             direct_graphics_response: Default::default(),
             #[cfg(unix)]
@@ -564,7 +567,14 @@ impl ClientState {
         let frame_output::ComposedFrame {
             frame: mut frame_data,
             graphics,
+            scroll_regions,
         } = frame_data.into();
+        // Fork (scrollback scroll): host images do not follow a scrolled region.
+        let scroll_regions = if graphics.is_empty() {
+            scroll_regions
+        } else {
+            Vec::new()
+        };
         // With capture enabled, host OSC 8 can intercept Ctrl-click before plugins.
         // Keep semantic links internally and restore native links when capture is off.
         if self.shell_mouse_capture_preference {
@@ -575,7 +585,15 @@ impl ClientState {
         } else {
             frame_data
         };
-        let encoded = if self.draw_host_cursor {
+        let encoded = if !scroll_regions.is_empty() {
+            self.blit_encoder.encode_scrolling(
+                &frame_data,
+                self.repaint_pending,
+                self.draw_host_cursor,
+                &scroll_regions,
+                self.host_scroll,
+            )
+        } else if self.draw_host_cursor {
             self.blit_encoder
                 .encode_with_suppressed_visible_cursor(&frame_data, self.repaint_pending)
         } else {
