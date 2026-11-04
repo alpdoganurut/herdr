@@ -3,6 +3,8 @@
 //! here so the CLI and the MCP server print byte-identical text and there is
 //! one place to tune token cost.
 
+use std::time::Duration;
+
 use serde_json::{json, Value};
 
 use super::host::PageInfo;
@@ -284,6 +286,7 @@ pub fn read_result(
     paged: &Paged,
     ref_: Option<&str>,
     selector: Option<&str>,
+    cached: Option<Duration>,
 ) -> BrowserRunResult {
     let mut result = base(record, Some(page));
     let mut hint = format!("browser read {}", record.short);
@@ -296,7 +299,11 @@ pub fn read_result(
     if let Some(s) = selector {
         hint.push_str(&format!(" --selector {s:?}"));
     }
-    result.text = format!("{}\n{}", sanitize(&paged.text), paged.footer(&hint));
+    result.text = format!(
+        "{}\n{}",
+        sanitize(&paged.text),
+        mark_cached(paged.footer(&hint), cached)
+    );
     result.data = json!({
         "tab": record.id(),
         "format": format,
@@ -307,7 +314,29 @@ pub fn read_result(
         "truncated": paged.truncated,
         "next_offset": if paged.truncated { Some(paged.end) } else { None },
     });
+    add_cached(&mut result.data, cached);
     result
+}
+
+/// A footer `[…]` served from the cached copy says so first:
+/// `[cached copy 1.2 s old · chars 100–200 of 500 · …]`.
+fn mark_cached(footer: String, cached: Option<Duration>) -> String {
+    match cached {
+        Some(age) => footer.replacen(
+            '[',
+            &format!("[cached copy {:.1} s old · ", age.as_secs_f64()),
+            1,
+        ),
+        None => footer,
+    }
+}
+
+/// `cached: true` and `age_ms` in the data of a result served from the cached copy.
+fn add_cached(data: &mut Value, cached: Option<Duration>) {
+    if let Some(age) = cached {
+        data["cached"] = json!(true);
+        data["age_ms"] = json!(age.as_millis() as u64);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -409,6 +438,7 @@ pub fn find_result(
     query: &str,
     matches: &[FindMatch],
     total_chars: usize,
+    cached: Option<Duration>,
 ) -> BrowserRunResult {
     let mut result = base(record, Some(page));
     let mut lines: Vec<String> = matches
@@ -419,15 +449,25 @@ pub fn find_result(
         lines.push(format!(
             "no match for {query:?} in {total_chars} chars of markdown"
         ));
+        if let Some(age) = cached {
+            lines.push(format!(
+                "[cached copy {:.1} s old · read from offset 0 for the page as it is now]",
+                age.as_secs_f64()
+            ));
+        }
     } else {
-        lines.push(format!(
-            "[{} matches · read around one: browser read {} --offset N]",
-            matches.len(),
-            record.short
+        lines.push(mark_cached(
+            format!(
+                "[{} matches · read around one: browser read {} --offset N]",
+                matches.len(),
+                record.short
+            ),
+            cached,
         ));
     }
     result.text = lines.join("\n");
     result.data = json!({ "tab": record.id(), "query": query, "matches": matches, "total_chars": total_chars });
+    add_cached(&mut result.data, cached);
     result
 }
 
@@ -645,12 +685,78 @@ pub fn act_result(
     if page.dialog_open {
         lines.push("a dialog opened: browser dialog accept|dismiss, or the user answers it".into());
     }
+    // An in-page modal (no JavaScript dialog: a Vue/React one): its title
+    // and buttons, so the next step can answer it.
+    let modal = host["modal"].is_object().then(|| {
+        let title = clip(&one_line(host["modal"]["title"].as_str().unwrap_or("")), 80);
+        let buttons: Vec<String> = host["modal"]["buttons"]
+            .as_array()
+            .map(|b| {
+                b.iter()
+                    .filter_map(Value::as_str)
+                    .take(8)
+                    .map(|s| clip(&one_line(s), 40))
+                    .collect()
+            })
+            .unwrap_or_default();
+        (title, buttons)
+    });
+    if let Some((title, buttons)) = &modal {
+        let mut line = if title.is_empty() {
+            "a modal opened in the page".to_string()
+        } else {
+            format!("a modal opened in the page: \"{title}\"")
+        };
+        if !buttons.is_empty() {
+            line.push_str(&format!(" · buttons: {}", buttons.join(", ")));
+        }
+        line.push_str(" (browser_snapshot for its refs)");
+        lines.push(line);
+    }
+    let title_before = host["title_before"]
+        .as_str()
+        .filter(|before| *before != page.title);
+    if let Some(before) = title_before {
+        lines.push(format!(
+            "title: \"{}\" → \"{}\"",
+            clip(&one_line(before), 60),
+            clip(&one_line(&page.title), 60)
+        ));
+    }
+    let focused = host["focused"].is_object().then(|| {
+        (
+            host["focused"]["role"]
+                .as_str()
+                .unwrap_or("element")
+                .to_string(),
+            clip(
+                &one_line(host["focused"]["name"].as_str().unwrap_or("")),
+                60,
+            ),
+        )
+    });
+    if let Some((role, name)) = &focused {
+        if name.is_empty() {
+            lines.push(format!("focus moved to a {role}"));
+        } else {
+            lines.push(format!("focus moved to {role} \"{name}\""));
+        }
+    }
     result.text = lines.join("\n");
     result.data = json!({
         "tab": record.id(), "kind": kind, "target": target, "role": role, "name": name,
         "navigated": host["navigated"], "url": page.url, "title": page.title, "dialog_open": page.dialog_open,
         "typed_len": typed_len,
     });
+    if let Some((title, buttons)) = modal {
+        result.data["modal"] = json!({ "title": title, "buttons": buttons });
+    }
+    if let Some(before) = title_before {
+        result.data["title_before"] = json!(before);
+    }
+    if let Some((role, name)) = focused {
+        result.data["focused"] = json!({ "role": role, "name": name });
+    }
     result
 }
 
@@ -939,7 +1045,7 @@ mod tests {
         assert!(header.contains("PR ]52;c;ZXZpbA==#412x"), "{header}");
         let page = PageInfo::default();
         let paged = page_text("line\u{1b}[31mred\u{7}\n\tkeep", 0, None);
-        let read = read_result(&r, &page, "markdown", &paged, None, None);
+        let read = read_result(&r, &page, "markdown", &paged, None, None, None);
         assert!(
             read.text.starts_with("line[31mred\n\tkeep"),
             "{:?}",
@@ -969,6 +1075,83 @@ mod tests {
         assert_eq!(read_format(None).unwrap(), "markdown");
         assert_eq!(read_format(Some("aria")).unwrap(), "snapshot");
         assert!(read_format(Some("pdf")).is_err());
+    }
+
+    #[test]
+    fn fork_smoke_a_click_reports_an_in_page_modal_the_title_and_the_focus() {
+        let r = record();
+        let page = PageInfo {
+            url: r.url.clone(),
+            title: "Merge request · GitLab".into(),
+            dialog_open: false,
+            status: None,
+        };
+        let host = json!({
+            "kind": "click", "role": "button", "name": "Merge", "navigated": false,
+            "modal": { "title": "Merge this request?", "buttons": ["Cancel", "Merge"] },
+            "title_before": "fix: the thing · PR #412",
+            "focused": { "role": "button", "name": "Cancel" },
+        });
+        let out = act_result(&r, &page, "click", "e41", &host, None);
+        assert!(
+            out.text.contains(
+                "a modal opened in the page: \"Merge this request?\" · buttons: Cancel, Merge"
+            ),
+            "{}",
+            out.text
+        );
+        assert!(out
+            .text
+            .contains("title: \"fix: the thing · PR #412\" → \"Merge request · GitLab\""));
+        assert!(out.text.contains("focus moved to button \"Cancel\""));
+        assert_eq!(out.data["modal"]["buttons"], json!(["Cancel", "Merge"]));
+        assert_eq!(
+            out.data["dialog_open"], false,
+            "the native dialog flag is separate"
+        );
+        // nothing changed: none of the optional fields
+        let plain = act_result(
+            &r,
+            &page,
+            "click",
+            "e41",
+            &json!({ "role": "button", "name": "Merge" }),
+            None,
+        );
+        assert_eq!(plain.text, "clicked button \"Merge\" (e41)");
+        assert!(plain.data.get("modal").is_none() && plain.data.get("focused").is_none());
+        assert!(plain.data.get("title_before").is_none());
+    }
+
+    #[test]
+    fn fork_smoke_a_cached_read_says_so_in_its_footer_and_data() {
+        let r = record();
+        let page = PageInfo::default();
+        let content: String = (0..300).map(|_| 'x').collect();
+        let paged = page_text(&content, 100, Some(100));
+        let fresh = read_result(&r, &page, "markdown", &paged, None, None, None);
+        assert!(fresh
+            .text
+            .ends_with("[chars 100–200 of 300 · next: browser read t3 --offset 200]"));
+        assert!(fresh.data.get("cached").is_none());
+        let cached = read_result(
+            &r,
+            &page,
+            "markdown",
+            &paged,
+            None,
+            None,
+            Some(Duration::from_millis(1234)),
+        );
+        assert!(
+            cached.text.ends_with("[cached copy 1.2 s old · chars 100–200 of 300 · next: browser read t3 --offset 200]"),
+            "{}",
+            cached.text
+        );
+        assert_eq!(
+            (cached.data["cached"].clone(), cached.data["age_ms"].clone()),
+            (json!(true), json!(1234))
+        );
     }
 
     #[test]
@@ -1094,7 +1277,7 @@ mod tests {
             .ends_with("[100 of 300 chars · --max N for more]"));
         assert_eq!(result.data["truncated"], true);
         let paged = page_text("abc", 0, Some(2));
-        let read = read_result(&record(), &page, "snapshot", &paged, Some("e4"), None);
+        let read = read_result(&record(), &page, "snapshot", &paged, Some("e4"), None, None);
         assert!(
             read.text
                 .ends_with("next: browser read t3 --format snapshot --ref e4 --offset 2]"),
