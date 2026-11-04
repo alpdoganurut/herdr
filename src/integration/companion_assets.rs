@@ -97,6 +97,10 @@ pub const COMPANION_ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../apps/companion/src/preload/strip.js"),
     ),
     (
+        "src/ui/bar-model.js",
+        include_bytes!("../../apps/companion/src/ui/bar-model.js"),
+    ),
+    (
         "src/ui/control.html",
         include_bytes!("../../apps/companion/src/ui/control.html"),
     ),

@@ -76,10 +76,14 @@ answers `unknown_method` and the strip says "this herdr is too old for the compa
   herdr tab's pages; other sessions' pages are created lazily when shown or targeted.
 * `browser.host_sync` (seq per lease, ≤ 4/s, changed groups only) keeps herdr's per-tab browser
   state current; herdr restores it across restarts.
-* Strip: this session's pages (title + close), back/forward/reload/stop, URL box, send to agent
-  (with note and the page selection → `browser.send_page`). ⌘T new tab, ⌘W close, ⌘L address,
-  ⌘R reload, ⌘[ / ⌘] history, ⌘⇧S send. ⌘-click / `target=_blank` opens a tab in the same session.
-  Double-click the session label to focus that herdr tab.
+* Bar (one row; two below 560 px; `src/ui/bar-model.js` holds its rules): the count pill, this
+  session's pages (title + close), back/forward/reload/stop, the URL box, send to agent (with note
+  and the page selection → `browser.send_page`), then the window actions. The URL box shows a
+  compact URL (`project › file.html #fragment` for a `file://` page, `host › last-segment` for
+  http(s)) and the whole URL while focused. Docked, expand (to herdr's Browser view; restore in
+  it) and close ask herdr's client through `browser.placement_action`, only when herdr
+  advertises `placement_actions`. ⌘T new tab, ⌘W close, ⌘L address, ⌘R reload, ⌘[ / ⌘] history,
+  ⌘⇧S send. ⌘-click / `target=_blank` opens a tab in the same session.
 * Strip actions and page load failures/crashes go to herdr as `browser.host_report` events
   (in-page clicks and typing are never reported).
 * Hidden control page `herdr-companion://control/` exposes `window.__herdrCompanion`
@@ -169,8 +173,9 @@ covering, hidden, moving, unbound, unsupported, elsewhere), which herdr's placeh
 * A right-click into a page opens its context menu (`src/context-menu.js`): back, forward and
   reload; cut, copy, paste and select all; open or copy a link; open, copy or save an image;
   inspect element.
-* The bar's count pill (`3 · 12`: pages in this session · in every session; `src/info.js`) lists
-  every session with pages and focuses the herdr tab you pick; the window title carries the count.
+* The bar's count pill (`3 · 12 ▾`: pages in this session · in every session; `src/info.js`) opens
+  a menu: this herdr tab and Go to herdr tab, then every herdr tab with pages (picking one focuses
+  it); the window title carries the count.
 
 `test/e2e-placements.sh` runs the whole path headless against a real isolated herdr (a TUI client in
 a pty presses prefix+⇧B and prefix+⇧Z; a fake window plays Ghostty);

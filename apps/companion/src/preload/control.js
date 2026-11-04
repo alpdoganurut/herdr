@@ -22,4 +22,6 @@ contextBridge.exposeInMainWorld('__herdrCompanion', {
   __hang: () => call('__hang'),
   dock_debug: () => call('dock_debug'), // the dock's inputs, decision and window bounds
   page_menu: (args) => call('page_menu', args), // the last page context menu ({close}: closes it)
+  sessions_menu: () => call('sessions_menu'), // the pill menu's items as last built
+  strip_preview: (args) => call('strip_preview', args), // {dock, kind, features}: the floating bar as that surface; null: its own
 });

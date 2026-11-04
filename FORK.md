@@ -398,6 +398,8 @@ src/client/shell/tests/golden/session_header.txt
 src/app/frame_pacing.rs
 src/pty/sync_hold.rs
 src/server/headless/placement_action.rs
+apps/companion/src/ui/bar-model.js
+apps/companion/test/bar-model.test.js
 
 
 ## 2. Owned fields on upstream structs (E0063 in upstream-authored literals: insert the default)
@@ -3394,6 +3396,7 @@ A user-facing feature or fix that changes what herdr+ offers also updates the sh
 - The tab bar's dock toggles and the view strip use glyphs the JetBrains Mono face draws itself, so they match in size: the browser dock toggle is `◨` (was `◧`), the notes dock toggle `≡` (was `▤`), the view strip's terminal mark `◫` (was `▣`), and the menus' Open item `⊟`.
 - The browser dock's title bar (`◨ <page title>  ⤢  ✕`) shows only while the companion does not cover the band (not installed, not running, not docked yet); once the companion covers it, the page starts on the band's first row and the companion's own bar offers expand and close.
 - `browser.placement_action` (new, advertised as the lease's `placement_actions` feature): the companion's bar can expand the dock to Browser view, restore Browser view to the dock and close either; the server relays the ask to the herdr client that owns the placement (`endpoint.placement-action.v1`), which acts like its own buttons.
+- The companion's bar is one row (`[1 · 12 ▾] | tabs + | ‹ › ⟳ [URL] ➤ | ⤢ ✕`), wrapping into two below 560 px. The URL box shows a compact URL (a `file://` page as `project › file.html #fragment`, http(s) as `host › page`) and the whole URL while you edit it. The session label is gone: the count pill's menu leads with the herdr tab and Go to herdr tab. Docked, expand (restore in Browser view) and close act on herdr's dock through `browser.placement_action`, shown only when herdr advertises it.
 
 ## 12. Install rule
 Compare PROTOCOL_VERSION (src/protocol/wire.rs) and ENDPOINT_PROTOCOL_GENERATION (src/protocol/endpoint.rs)

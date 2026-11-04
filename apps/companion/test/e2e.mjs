@@ -63,7 +63,7 @@ function startCompanion() {
   const out = fs.openSync(logFile, 'a');
   // fake media devices: getUserMedia reaches the permission prompt in a headless run
   child = spawn(electronBin, [appDir, '--socket', sock, '--profile-dir', profile, '--headless', '--use-fake-device-for-media-stream'], {
-    env: { ...process.env, HERDR_COMPANION_HEADLESS: '1', HERDR_SOCKET_PATH: '' },
+    env: { ...process.env, HERDR_COMPANION_HEADLESS: '1', HERDR_COMPANION_TEST_HOOKS: '1', HERDR_SOCKET_PATH: '' },
     stdio: ['ignore', out, out],
   });
   child.exited = new Promise((r) => child.on('exit', (code) => r(code)));
@@ -449,6 +449,82 @@ try {
   await strip.evaluate(() => window.stripBridge.action('send_page', { note: 'look' }));
   const sent = await waitFor(() => mock.state.sent[0], 3000);
   check('send to agent calls browser.send_page with tab, url and note', sent && sent.tab_id === 'w1:t2' && sent.note === 'look' && sent.url.includes(String(webPort)), sent);
+  // the compact bar: one row when wide, two when narrow; the URL compact until focused
+  const barLayout = () =>
+    strip.evaluate(() => {
+      const top = (id) => Math.round(document.getElementById(id).getBoundingClientRect().top);
+      return {
+        narrow: document.getElementById('bar').classList.contains('narrow'),
+        height: Math.round(document.getElementById('bar').getBoundingClientRect().height),
+        tabs: top('tabs'),
+        newtab: top('newtab'),
+        url: top('urlform'),
+        back: top('back'),
+        width: document.documentElement.clientWidth,
+      };
+    });
+  const wide = await barLayout();
+  check('wide, the bar is one row (tabs, navigation and the URL side by side)', !wide.narrow && wide.height <= 32 && Math.abs(wide.url - wide.tabs) <= 6 && Math.abs(wide.back - wide.tabs) <= 6, wide);
+  const viewport = await strip.evaluate(() => ({ width: innerWidth, height: innerHeight }));
+  await strip.setViewportSize({ width: 420, height: viewport.height });
+  const narrow = await waitFor(async () => {
+    const l = await barLayout();
+    return l.narrow ? l : null;
+  }, 3000);
+  check('narrow (420 px), it wraps into two rows: tabs and new tab, then navigation and the URL', narrow && narrow.height >= 48 && narrow.height <= 64 && Math.abs(narrow.newtab - narrow.tabs) <= 6 && narrow.url > narrow.tabs + 16 && Math.abs(narrow.back - narrow.url) <= 6, narrow);
+  await strip.setViewportSize(viewport);
+  const back = await waitFor(async () => {
+    const l = await barLayout();
+    return !l.narrow ? l : null;
+  }, 3000);
+  check('wide again, one row again', back && back.height <= 32, back);
+  await strip.evaluate((u) => window.stripBridge.action('navigate', u), `127.0.0.1:${webPort}/docs/a%20page?q=1#part`);
+  const compact = await waitFor(async () => {
+    const v = await strip.evaluate(() => document.getElementById('url').value);
+    return v.includes('a page') ? v : null;
+  }, 5000);
+  check('the URL shows host › last segment #fragment', compact === `127.0.0.1:${webPort} \u203a a page #part`, compact);
+  const editing = await strip.evaluate(() => {
+    const url = document.getElementById('url');
+    url.focus();
+    const out = { value: url.value, editing: document.getElementById('bar').classList.contains('editing') };
+    url.blur();
+    out.after = url.value;
+    return out;
+  });
+  check('focused, the field shows the whole URL; blurred, the compact one again', editing.value === `http://127.0.0.1:${webPort}/docs/a%20page?q=1#part` && editing.editing && editing.after === compact, editing);
+  // the count pill's menu: the shown herdr tab and Go to herdr tab, then the tabs with pages
+  await strip.evaluate(() => window.stripBridge.action('sessions_menu'));
+  const menu = await ctl('__herdrCompanion.sessions_menu()');
+  check('the pill menu leads with this tab and Go to herdr tab', menu && /^This tab · /.test(menu[0]) && menu[1] === 'Go to herdr tab' && menu.includes('herdr tabs with pages'), menu);
+  const chev = await strip.evaluate(() => !!document.querySelector('#count .chev'));
+  check('the pill has a chevron and no session label next to it', chev && !(await strip.evaluate(() => document.getElementById('session'))), chev);
+  // expand / restore / close: docked, and only from a herdr that advertises placement_actions
+  const winButtons = () =>
+    strip.evaluate(() => ({
+      expand: !document.getElementById('expand').hidden,
+      action: document.getElementById('expand').dataset.action || null,
+      close: !document.getElementById('dockclose').hidden,
+    }));
+  check('the floating window shows neither expand nor close', !(await winButtons()).expand && !(await winButtons()).close, await winButtons());
+  await ctl(`__herdrCompanion.strip_preview({dock: true, kind: 'side', features: ['placements']})`);
+  await sleep(300);
+  const older = await winButtons();
+  check('docked under a herdr without placement_actions: no expand, no close', older && !older.expand && !older.close, older);
+  await ctl(`__herdrCompanion.strip_preview({dock: true, kind: 'side', features: ['placements', 'placement_actions']})`);
+  const side = await waitFor(async () => {
+    const b = await winButtons();
+    return b.expand ? b : null;
+  }, 2000);
+  check('docked under a herdr with placement_actions: expand (promote) and close', side && side.action === 'promote' && side.close, side);
+  await ctl(`__herdrCompanion.strip_preview({dock: true, kind: 'full', features: ['placements', 'placement_actions']})`);
+  const full = await waitFor(async () => {
+    const b = await winButtons();
+    return b.action === 'restore' ? b : null;
+  }, 2000);
+  check('in herdr\'s Browser view: restore and close', full && full.expand && full.close, full);
+  await ctl('__herdrCompanion.strip_preview(null)');
+  check('back to the floating bar: neither', await waitFor(async () => !(await winButtons()).expand || null, 2000));
   // the update chip (herdr installed newer app files than this process runs): disabled only
   // while its restart request runs; a failed request brings it back
   const chip = () =>

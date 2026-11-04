@@ -21,24 +21,38 @@
     <symbol id="i-deny" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M5.636 5.636L18.364 18.364"/></symbol>
     <symbol id="i-note" viewBox="0 0 16 16"><path d="M3 4.5h10M3 8h10M3 11.5h6"/></symbol>
     <symbol id="i-shield" viewBox="0 0 16 16"><path d="M8 2.5 3.5 4.2v3.6c0 2.8 1.9 4.8 4.5 5.7 2.6-.9 4.5-2.9 4.5-5.7V4.2z"/></symbol>
+    <symbol id="i-expand" viewBox="0 0 24 24"><path d="M14.25 4.5h5.25v5.25"/><path d="M19.5 4.5l-6 6"/><path d="M9.75 19.5H4.5v-5.25"/><path d="M4.5 19.5l6-6"/></symbol>
+    <symbol id="i-restore" viewBox="0 0 24 24"><path d="M19.5 9.75h-5.25V4.5"/><path d="M14.25 9.75l5.25-5.25"/><path d="M4.5 14.25h5.25v5.25"/><path d="M9.75 14.25 4.5 19.5"/></symbol>
+    <symbol id="i-pin" viewBox="0 0 24 24"><path d="M9 3.75h6"/><path d="M10.25 3.75v5.5L7.5 12.75h9l-2.75-3.5v-5.5"/><path d="M12 12.75v7.5"/></symbol>
+    <symbol id="i-pinned" viewBox="0 0 24 24"><path d="M9 3.75h6"/><path d="M10.25 3.75v5.5L7.5 12.75h9l-2.75-3.5v-5.5z" fill="currentColor" fill-opacity=".35"/><path d="M12 12.75v7.5"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="M6 9.5l6 6 6-6"/></symbol>
   </svg>
   <header id="chrome">
-    <div id="tabsrow">
-      <div id="session" title="herdr tab this window follows"></div>
-      <button id="count" class="pill" hidden></button>
-      <div class="sep"></div>
+    <!-- One row: [count ▾] | tabs + | ‹ › ⟳ [url] ➤ | pin ⤢ ✕. Narrow (below 560 px) it wraps
+         into two: the count, tabs and window actions, then navigation, the URL and send. -->
+    <div id="bar">
+      <button id="count" class="pill" hidden><span id="counttext"></span><svg class="ico chev"><use href="#i-chevron"/></svg></button>
+      <div id="countsep" class="sep"></div>
       <div id="tabs" role="tablist"></div>
       <button id="newtab" class="ib" title="New tab (⌘T)"><svg class="ico"><use href="#i-newtab"/></svg></button>
       <div class="grow"></div>
       <button id="update" class="chip" hidden><span>Update ready</span><span class="dot">·</span><span class="go">Restart</span></button>
-    </div>
-    <div id="toolbar">
-      <button id="back" class="ib" title="Back (⌘[)"><svg class="ico"><use href="#i-back"/></svg></button>
-      <button id="forward" class="ib" title="Forward (⌘])"><svg class="ico"><use href="#i-forward"/></svg></button>
-      <button id="reload" class="ib" title="Reload (⌘R)"><svg class="ico"><use href="#i-reload"/></svg></button>
-      <button id="stop" class="ib" title="Stop"><svg class="ico"><use href="#i-stop"/></svg></button>
+      <div id="navsep" class="sep"></div>
+      <div id="nav">
+        <button id="back" class="ib" title="Back (⌘[)"><svg class="ico"><use href="#i-back"/></svg></button>
+        <button id="forward" class="ib" title="Forward (⌘])"><svg class="ico"><use href="#i-forward"/></svg></button>
+        <button id="reload" class="ib" title="Reload (⌘R)"><svg class="ico"><use href="#i-reload"/></svg></button>
+        <button id="stop" class="ib" title="Stop"><svg class="ico"><use href="#i-stop"/></svg></button>
+      </div>
       <form id="urlform"><input id="url" spellcheck="false" autocomplete="off" placeholder="Search or enter address"></form>
       <button id="send" class="ib" title="Send this page to the session's agent"><svg class="ico"><use href="#i-send"/></svg></button>
+      <div id="win">
+        <div class="sep"></div>
+        <button id="pin" class="ib" title="Pin the bar (⌘⇧.)" aria-pressed="false" hidden><svg class="ico"><use href="#i-pin"/></svg></button>
+        <button id="expand" class="ib" hidden><svg class="ico"><use href="#i-expand"/></svg></button>
+        <button id="dockclose" class="ib" hidden><svg class="ico"><use href="#i-close"/></svg></button>
+      </div>
+      <div class="break"></div>
     </div>
     <form id="sendbar" class="sub" hidden>
       <svg class="ico lead"><use href="#i-note"/></svg>
@@ -59,6 +73,7 @@
     <p id="emptytext">No pages in this session.</p>
     <p class="hint">⌘T opens a page here. Agents in this herdr tab open their pages here too.</p>
   </main>
+  <script src="bar-model.js"></script>
   <script src="strip.js"></script>
 </body>
 </html>

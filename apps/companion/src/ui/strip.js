@@ -2,6 +2,7 @@
 'use strict';
 const $ = (id) => document.getElementById(id);
 const bridge = window.stripBridge;
+const model = window.BarModel;
 let state = null;
 let urlEditing = false;
 // The dock's bar (`strip.html?mode=docked`): Dusk, no traffic-light inset, no drag region.
@@ -32,22 +33,11 @@ function render() {
   const info = state.info;
   if (info && info.total > 0) {
     pill.hidden = false;
-    pill.textContent = `${info.here} · ${info.total}`;
+    $('counttext').textContent = `${info.here} · ${info.total}`;
     const pages = (n) => `${n} page${n === 1 ? '' : 's'}`;
-    pill.title = `${pages(info.here)} in this session · ${pages(info.total)} in ${info.sessions} session${info.sessions === 1 ? '' : 's'}\nClick for every session with pages`;
+    const where = state.session ? `herdr tab ${state.session.label}` : 'this herdr tab';
+    pill.title = `${pages(info.here)} in ${where} · ${pages(info.total)} in ${info.sessions} herdr tab${info.sessions === 1 ? '' : 's'}\nClick for the herdr tabs with pages`;
   } else pill.hidden = true;
-  const sess = $('session');
-  sess.textContent = '';
-  if (state.session) {
-    if (state.session.workspace) {
-      const ws = document.createElement('span');
-      ws.className = 'ws';
-      ws.textContent = state.session.workspace;
-      sess.append(ws);
-    }
-    sess.append(state.session.label);
-  }
-  $('session').title = state.session ? `herdr tab ${state.session.tab_id}` : 'no herdr tab';
   const tabs = $('tabs');
   tabs.textContent = '';
   for (const t of state.tabs) {
@@ -104,8 +94,13 @@ function render() {
   $('stop').hidden = !nav.loading;
   $('send').disabled = !state.attached || !state.active;
   $('newtab').disabled = !state.session;
-  if (!urlEditing) $('url').value = state.active ? state.active.url : '';
+  if (!urlEditing) {
+    const url = state.active ? state.active.url : '';
+    $('url').value = model.compactUrl(url);
+    $('url').title = url;
+  }
   $('url').disabled = !state.session;
+  renderWindowActions();
   const pb = $('permbar');
   if (state.prompt) {
     pb.hidden = false;
@@ -131,6 +126,30 @@ function render() {
   reportHeight();
 }
 
+// The bar's window actions (docked only, and only when herdr advertises them): expand to
+// herdr's Browser view (restore to the dock there) and close.
+function renderWindowActions() {
+  const actions = (state.bar && state.bar.actions) || { expand: null, close: false };
+  const expand = $('expand');
+  expand.hidden = !actions.expand;
+  if (actions.expand) {
+    const restore = actions.expand === 'restore';
+    expand.dataset.action = actions.expand;
+    expand.title = restore ? 'Back to the dock beside the terminal' : 'Expand to herdr\'s Browser view';
+    expand.querySelector('use').setAttribute('href', restore ? '#i-restore' : '#i-expand');
+  }
+  const close = $('dockclose');
+  close.hidden = !actions.close;
+  close.title = actions.expand === 'restore' ? 'Close the Browser view (back to the terminal)' : 'Close the browser dock';
+  $('win').hidden = [...$('win').querySelectorAll('button')].every((b) => b.hidden);
+}
+
+// One row, or two below the breakpoint.
+function layoutRows() {
+  const narrow = model.isNarrow(document.documentElement.clientWidth);
+  if ($('bar').classList.contains('narrow') !== narrow) $('bar').classList.toggle('narrow', narrow);
+}
+
 bridge.onState((s) => {
   state = s;
   render();
@@ -142,10 +161,14 @@ bridge.onFocusUrl(() => {
 
 $('url').addEventListener('focus', () => {
   urlEditing = true;
+  $('bar').classList.add('editing');
+  // the whole URL while editing
+  if (state && state.active) $('url').value = state.active.url;
   $('url').select();
 });
 $('url').addEventListener('blur', () => {
   urlEditing = false;
+  $('bar').classList.remove('editing');
   render();
 });
 $('urlform').addEventListener('submit', (e) => {
@@ -167,7 +190,8 @@ $('forward').addEventListener('click', () => act('forward'));
 $('reload').addEventListener('click', () => act('reload'));
 $('stop').addEventListener('click', () => act('stop'));
 $('newtab').addEventListener('click', () => act('new_tab'));
-$('session').addEventListener('dblclick', () => act('go_to_tab'));
+$('expand').addEventListener('click', () => act('placement', $('expand').dataset.action));
+$('dockclose').addEventListener('click', () => act('placement', 'close'));
 $('send').addEventListener('click', () => {
   $('sendbar').hidden = false;
   $('note').value = '';
@@ -197,4 +221,6 @@ $('permallow').addEventListener('click', () => act('permission', { id: $('permba
 $('permdeny').addEventListener('click', () => act('permission', { id: $('permbar').dataset.id, allow: false }));
 // Shortcuts (⌘T/W/L/R/[/]) are application-menu accelerators in main.js.
 new ResizeObserver(reportHeight).observe($('chrome'));
+new ResizeObserver(layoutRows).observe(document.documentElement);
+layoutRows();
 act('ready');
