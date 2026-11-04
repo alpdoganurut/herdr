@@ -841,6 +841,9 @@ const ops = {
       if (err instanceof OpError) throw err;
       if (err.code === 'tab_not_rendered') fail('tab_not_rendered', err.message);
       if (args.ref && /aria-ref|resolve/i.test(err.message)) fail('stale_ref', `ref ${args.ref} no longer resolves; take a new snapshot`);
+      // The element's box was measured, so a timeout now is the capture's:
+      // the tab did not draw, not an invisible element.
+      if (scope && element && /Timeout/i.test(err.message)) fail('tab_not_rendered', 'the tab could not be drawn; try again');
       if (scope && /Timeout/i.test(err.message)) fail('element_not_visible', `${args.ref ? `ref ${args.ref}` : `selector ${args.selector}`} did not become visible in time; scroll it into view or take a new snapshot`);
       throw err;
     }
