@@ -764,7 +764,7 @@ impl ClientShellState {
         // Fork (companion launcher): in Browser view the companion covers
         // the tab; the notice, a toast or the agent cards show as one line
         // on the view strip instead (else the tab bar).
-        let browser_banner = super::browser_dock::banner_area(
+        let mut browser_banner = super::browser_dock::banner_area(
             &layout,
             browser_view,
             &self.hits.browser_dock,
@@ -772,6 +772,13 @@ impl ClientShellState {
         );
         // Fork (session header): top-anchored toasts start below the header.
         let toast_area = super::session_header::toast_area(&layout, cols, rows);
+        // The config diagnostic and the endpoint status banner keep clear of
+        // the browser (beside the dock, or in Browser view on the header's
+        // banner slot, side by side, the notice or toast left of them).
+        let status_area =
+            super::session_header::status_banner_area(&layout, toast_area, browser_banner);
+        let status_in_slot = !layout.session_header.is_empty() && browser_banner.is_some();
+        let mut status_left = status_area.right();
         let has_config_diagnostic = self.config_diagnostic.is_some();
         let active_lifecycle = self
             .endpoints
@@ -788,7 +795,7 @@ impl ClientShellState {
             let mut composed = frame.to_ratatui_buffer()?;
             if let Some(diagnostic) = self.config_diagnostic.as_deref() {
                 let diagnostic_area = if layout.mobile_header.is_empty() {
-                    toast_area
+                    status_area
                 } else {
                     layout.pane_surface
                 };
@@ -797,20 +804,55 @@ impl ClientShellState {
                     diagnostic_area,
                     diagnostic,
                     &self.config.palette,
-                    |rect| occlusion.cover(rect),
+                    |rect| {
+                        occlusion.cover(rect);
+                        status_left = status_left.min(rect.x);
+                    },
                 );
             }
+            let (lifecycle_area, lifecycle_top) = if status_in_slot {
+                // left of the diagnostic, one blank column between
+                let end = if status_left < status_area.right() {
+                    status_left.saturating_sub(1)
+                } else {
+                    status_left
+                };
+                (
+                    Rect::new(
+                        status_area.x,
+                        status_area.y,
+                        end.saturating_sub(status_area.x),
+                        status_area.height,
+                    ),
+                    0,
+                )
+            } else {
+                (
+                    status_area,
+                    u16::from(has_config_diagnostic) + layout.mobile_header.height,
+                )
+            };
             let lifecycle_offset = active_lifecycle.as_ref().map_or(0, |(label, status)| {
-                occlusion.cover(endpoint_notices::render_lifecycle_banner(
+                let rect = endpoint_notices::render_lifecycle_banner(
                     &mut composed,
-                    toast_area,
+                    lifecycle_area,
                     label,
                     *status,
-                    u16::from(has_config_diagnostic) + layout.mobile_header.height,
+                    lifecycle_top,
                     &self.config.palette,
-                ));
+                );
+                occlusion.cover(rect);
+                if !rect.is_empty() {
+                    status_left = status_left.min(rect.x);
+                }
                 1
             });
+            if status_in_slot && status_left < status_area.right() {
+                browser_banner = Some(super::session_header::slot_left_of(
+                    status_area,
+                    status_left,
+                ));
+            }
             if let Some(notice) = self.visible_endpoint_notice.as_ref() {
                 self.hits.notification_toast = if let Some(banner) = browser_banner {
                     endpoint_notices::render_mobile_banner(
