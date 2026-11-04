@@ -1232,3 +1232,126 @@ async fn fork_smoke_agents_a_freshly_launched_detected_agent_is_an_agent_caller(
     let other = actor(&mut server, None, &fixer);
     assert_eq!(other["result"]["actor"]["live"], false, "{other}");
 }
+
+fn move_pane_to_new_tab(server: &mut HeadlessServer, pane_id: String, workspace_id: String) {
+    let moved = public_api(
+        server,
+        Method::PaneMove(crate::api::schema::PaneMoveParams {
+            pane_id,
+            destination: crate::api::schema::PaneMoveDestination::NewTab {
+                workspace_id: Some(workspace_id),
+                label: None,
+            },
+            focus: false,
+        }),
+    );
+    assert_eq!(moved["result"]["type"], "pane_move", "{moved}");
+}
+
+fn pane_index(server: &HeadlessServer, pane: crate::layout::PaneId) -> usize {
+    server
+        .app
+        .state
+        .workspaces
+        .iter()
+        .position(|ws| ws.pane_state(pane).is_some())
+        .expect("live pane")
+}
+
+fn meta_aliases(server: &HeadlessServer, pane: crate::layout::PaneId) -> Vec<String> {
+    let ws = &server.app.state.workspaces[pane_index(server, pane)];
+    let terminal_id = &ws.pane_state(pane).unwrap().attached_terminal_id;
+    server.app.state.terminals[terminal_id]
+        .agent_meta()
+        .public_aliases
+        .clone()
+}
+
+#[tokio::test]
+async fn fork_smoke_a_client_pane_focus_on_a_reused_workspace_id_focuses_the_live_pane() {
+    let mut server = test_headless_server();
+    let mut old = crate::workspace::Workspace::test_new("old");
+    old.test_add_tab(Some("second"));
+    let (first, second) = (old.tabs[0].root_pane, old.tabs[1].root_pane);
+    let other = crate::workspace::Workspace::test_new("other");
+    let stranger = other.tabs[0].root_pane;
+    let old_id = old.id.clone();
+    let other_id = other.id.clone();
+    server.app.state.workspaces = vec![old, other];
+    server.app.state.ensure_test_terminals();
+    server.app.state.active = Some(1);
+    server.app.state.selected = 1;
+    server.app.state.mode = crate::app::Mode::Terminal;
+    let first_id = server.app.public_pane_id(0, first).unwrap();
+    let second_id = server.app.public_pane_id(0, second).unwrap();
+    assert_eq!(first_id, format!("{old_id}:p1"));
+
+    // Both panes leave `old`, which closes; their old ids stay aliases.
+    move_pane_to_new_tab(&mut server, first_id.clone(), other_id.clone());
+    move_pane_to_new_tab(&mut server, second_id.clone(), other_id.clone());
+    assert!(server.app.parse_workspace_id(&old_id).is_none());
+    assert_eq!(meta_aliases(&server, second), vec![second_id.clone()]);
+    // An alias still names its pane while no live pane has the id.
+    assert_eq!(
+        server.app.parse_pane_id(&first_id).map(|(_, p)| p),
+        Some(first)
+    );
+
+    // A restart reuses the closed workspace's id for a new group.
+    let mut reused = crate::workspace::Workspace::test_new("herd+");
+    reused.id = old_id.clone();
+    let reused_root = reused.tabs[0].root_pane;
+    server.app.state.workspaces.push(reused);
+    server.app.state.ensure_test_terminals();
+    // The live id wins over the stale alias even before it is dropped.
+    assert_eq!(
+        server.app.parse_pane_id(&first_id).map(|(_, p)| p),
+        Some(reused_root)
+    );
+    server
+        .app
+        .state
+        .remove_alias_shadowed_by_new_pane(reused_root);
+    assert!(meta_aliases(&server, first).is_empty());
+
+    // A pane that arrives in the reused group takes `<old>:p2`: the moved
+    // pane's alias goes, live and from its meta.
+    let stranger_id = server.app.public_pane_id(0, stranger).unwrap();
+    move_pane_to_new_tab(&mut server, stranger_id.clone(), old_id.clone());
+    let reused_idx = server.app.parse_workspace_id(&old_id).unwrap();
+    assert_eq!(
+        server.app.public_pane_id(reused_idx, stranger).as_deref(),
+        Some(second_id.as_str())
+    );
+    assert!(meta_aliases(&server, second).is_empty());
+    // Only the stranger's own old id is an alias now.
+    assert_eq!(
+        server
+            .app
+            .state
+            .public_pane_id_aliases
+            .iter()
+            .map(|(id, pane)| (id.clone(), *pane))
+            .collect::<Vec<_>>(),
+        vec![(stranger_id.clone(), stranger)]
+    );
+    server.app.state.assert_invariants_for_test();
+
+    // A client's PaneFocus on the reused ids focuses the live panes.
+    let (control, _) = connect_matching_test_shell(&mut server, 71);
+    let _ = control.recv().expect("snapshot");
+    for (public_id, pane) in [(&second_id, stranger), (&first_id, reused_root)] {
+        let focused = client_api(
+            &mut server,
+            71,
+            Method::PaneFocus(crate::api::schema::PaneTarget {
+                pane_id: public_id.clone(),
+            }),
+        );
+        assert!(focused.get("error").is_none(), "{focused}");
+        let target = server.shell_focus_target(71).expect("focus target");
+        assert_eq!(target.pane_id, pane, "{public_id}");
+        assert_eq!(target.workspace_index, reused_idx, "{public_id}");
+    }
+    shutdown_test_runtimes(&mut server);
+}

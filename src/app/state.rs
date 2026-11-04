@@ -1008,9 +1008,50 @@ impl AppState {
             }
         }
         for (alias, pane_id) in found {
-            if !live.contains(&alias) {
+            if live.contains(&alias) {
+                // The meta copy goes too, so the alias does not come back
+                // once the live pane is gone.
+                self.forget_public_alias(&alias);
+            } else {
                 self.public_pane_id_aliases.insert(alias, pane_id);
             }
+        }
+    }
+
+    /// Fork (agents v2): a public id a pane now holds is no alias of another
+    /// pane (a closed workspace's id is reused after a restart, and with it
+    /// the pane ids a moved pane kept as aliases).
+    pub(crate) fn drop_public_alias_shadowed_by_pane(&mut self, pane_id: PaneId) {
+        let Some(public_id) = self.workspaces.iter().find_map(|ws| {
+            ws.find_tab_index_for_pane(pane_id)?;
+            let number = ws.public_pane_number(pane_id)?;
+            Some(crate::workspace::public_pane_id_for_number(&ws.id, number))
+        }) else {
+            return;
+        };
+        self.forget_public_alias(&public_id);
+    }
+
+    /// Fork (agents v2): drop `public_id` as an alias, live and from every
+    /// pane meta that remembers it.
+    fn forget_public_alias(&mut self, public_id: &str) {
+        let mut removed = self.public_pane_id_aliases.remove(public_id).is_some();
+        for terminal in self.terminals.values_mut() {
+            if terminal
+                .agent_meta()
+                .public_aliases
+                .iter()
+                .any(|alias| alias == public_id)
+            {
+                terminal
+                    .agent_meta_mut()
+                    .public_aliases
+                    .retain(|alias| alias != public_id);
+                removed = true;
+            }
+        }
+        if removed {
+            self.mark_session_dirty();
         }
     }
 
@@ -1050,6 +1091,7 @@ impl AppState {
 
     pub(crate) fn remove_alias_shadowed_by_new_pane(&mut self, pane_id: PaneId) {
         self.pane_id_aliases.remove(&pane_id.raw());
+        self.drop_public_alias_shadowed_by_pane(pane_id);
     }
 
     pub(crate) fn pane_exposes_host_cursor(
@@ -1433,6 +1475,16 @@ impl AppState {
         for (public_id, &pane_id) in &self.public_pane_id_aliases {
             assert_live_pane(pane_id, &format!("public pane alias {public_id}"));
         }
+        // Fork (agents v2): no public pane alias equals a live pane's id.
+        for ws in &self.workspaces {
+            for (&pane_id, &number) in &ws.public_pane_numbers {
+                let live = crate::workspace::public_pane_id_for_number(&ws.id, number);
+                assert!(
+                    !self.public_pane_id_aliases.contains_key(&live),
+                    "public pane alias {live} shadows live pane {pane_id:?}"
+                );
+            }
+        }
         // Fork (agents v2): a team member's role mirror equals its pane meta
         // role whenever the meta holds one.
         for ws in &self.workspaces {
@@ -1574,6 +1626,51 @@ mod tests {
         assert_eq!(palette.sidebar_hover_bg(), palette.surface1);
         palette.selection_bg = palette.sidebar_bg;
         assert_eq!(palette.sidebar_hover_bg(), palette.surface1);
+    }
+
+    #[test]
+    fn a_restored_alias_equal_to_a_live_id_leaves_the_map_and_the_meta() {
+        let mut state = AppState::test_new();
+        let moved = crate::workspace::Workspace::test_new("moved");
+        let mut reused = crate::workspace::Workspace::test_new("reused");
+        reused.id = "w7".into();
+        let moved_pane = moved.tabs[0].root_pane;
+        let terminal_id = moved.tabs[0].panes[&moved_pane]
+            .attached_terminal_id
+            .clone();
+        state.workspaces = vec![moved, reused];
+        state.ensure_test_terminals();
+        state.active = Some(0);
+        state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .agent_meta_mut()
+            .public_aliases = vec!["w7:p1".into(), "w7:p2".into()];
+        state.session_dirty = false;
+
+        state.restore_public_aliases_from_meta();
+
+        assert_eq!(state.public_pane_id_aliases.len(), 1);
+        assert_eq!(state.public_pane_id_aliases.get("w7:p2"), Some(&moved_pane));
+        assert_eq!(
+            state.terminals[&terminal_id].agent_meta().public_aliases,
+            vec!["w7:p2".to_string()]
+        );
+        assert!(state.session_dirty);
+        state.assert_invariants_for_test();
+
+        // A pane that takes the remaining id later drops it the same way.
+        let reused_root = state.workspaces[1].tabs[0].root_pane;
+        state.workspaces[1]
+            .public_pane_numbers
+            .insert(reused_root, 2);
+        state.remove_alias_shadowed_by_new_pane(reused_root);
+        assert!(state.public_pane_id_aliases.is_empty());
+        assert!(state.terminals[&terminal_id]
+            .agent_meta()
+            .public_aliases
+            .is_empty());
     }
 
     #[test]
