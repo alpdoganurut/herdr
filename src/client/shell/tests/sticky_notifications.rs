@@ -130,9 +130,10 @@ fn per_event_position_stacks_in_its_own_corner() {
     deliver(&mut state, custom("bottom"));
     deliver(&mut state, top);
     state.compose(100, 40).expect("frame");
+    // Top cards start below the tabs layout's session header (row 0).
     assert_eq!(
         state.hits.notification_toasts[0],
-        (Rect::new(0, 0, 9, 3), Some(1))
+        (Rect::new(0, 1, 9, 3), Some(1))
     );
     // The top-left card does not push the bottom-right stack.
     assert_eq!(
@@ -576,7 +577,7 @@ fn right_anchored_sticky_cards_and_the_fold_line_sit_left_of_the_open_dock() {
     for (rect, _) in hits {
         assert_eq!(rect.right(), dock.x - 1, "{rect:?} beside {dock:?}");
     }
-    assert_eq!(hits[0].0.y, 0);
+    assert_eq!(hits[0].0.y, 1);
     assert_eq!(hits[1].0.bottom(), 40);
     let rows = frame_rows(&frame);
     assert!(rows[usize::from(hits[2].0.y)].contains("+2 more"));
@@ -593,7 +594,7 @@ fn a_timed_top_right_toast_sits_left_of_the_open_dock() {
     let rect = state.hits.notification_toast;
     assert!(!rect.is_empty());
     assert_eq!(rect.right(), dock.x - 1);
-    assert_eq!(rect.y, 0);
+    assert_eq!(rect.y, 1);
 }
 
 #[test]
@@ -606,7 +607,7 @@ fn left_anchored_cards_ignore_the_open_dock() {
     state.compose(120, 40).expect("frame");
     assert_eq!(
         state.hits.notification_toasts,
-        vec![(Rect::new(0, 0, 9, 3), Some(0))]
+        vec![(Rect::new(0, 1, 9, 3), Some(0))]
     );
 }
 
@@ -677,5 +678,63 @@ mod fork_smoke {
             .tick_notifications(std::time::Instant::now() + std::time::Duration::from_secs(60));
         assert!(!repaint);
         assert_eq!(state.visible_notifications.len(), 3);
+    }
+
+    /// A sticky top-left, top-right and bottom-right card composed from
+    /// `config`, and the frame's rows.
+    fn corner_cards(config: &Config, cols: u16, rows: u16) -> (ClientShellState, Vec<String>) {
+        let mut shell = ClientShellConfig::from_config(config);
+        shell.toast_delivery = crate::config::ToastDelivery::Herdr;
+        shell.toast_delay_seconds = 0;
+        shell.toast_sticky = true;
+        let mut state = ClientShellState::new(shell);
+        state.sidebar_collapsed = true;
+        state.set_snapshot(Box::new(snapshot()));
+        state.set_pane_surface(surface());
+        let mut left = custom("lefty");
+        left.position = Some(crate::config::ToastHerdrPosition::TopLeft);
+        let mut right = custom("righty");
+        right.position = Some(crate::config::ToastHerdrPosition::TopRight);
+        deliver(&mut state, custom("bottom"));
+        deliver(&mut state, left);
+        deliver(&mut state, right);
+        let frame = state.compose(cols, rows).expect("frame");
+        (state, frame_rows(&frame))
+    }
+
+    // Fork (session header): top-anchored toasts start below the header row,
+    // so the header stays readable; bottom-anchored ones keep the bottom.
+    #[test]
+    fn fork_smoke_top_toasts_start_below_the_session_header() {
+        let (state, rows) = corner_cards(&Config::default(), 100, 40);
+        let header = state.layout(100, 40).session_header;
+        assert!(!header.is_empty(), "the tabs layout draws the header");
+        let left = card_hit(&state, "lefty");
+        let right = card_hit(&state, "righty");
+        for rect in [left, right] {
+            assert!(!rect.intersects(header), "{rect:?} clear of {header:?}");
+            assert_eq!(rect.y, header.bottom());
+        }
+        assert_eq!(left.x, 0);
+        assert_eq!(right.right(), 100);
+        assert_eq!(card_hit(&state, "bottom").bottom(), 40);
+        let header_row = &rows[usize::from(header.y)];
+        assert!(
+            !header_row.contains("lefty") && !header_row.contains("righty"),
+            "{header_row}"
+        );
+        assert!(rows[usize::from(left.y) + 1].contains("lefty"));
+        assert!(rows[usize::from(right.y) + 1].contains("righty"));
+    }
+
+    #[test]
+    fn fork_smoke_without_the_session_header_top_toasts_keep_row_zero() {
+        let (state, _) = corner_cards(&spaces_config(), 100, 40);
+        assert!(state.layout(100, 40).session_header.is_empty());
+        assert_eq!(card_hit(&state, "lefty").y, 0);
+        assert_eq!(card_hit(&state, "lefty").x, 0);
+        assert_eq!(card_hit(&state, "righty").y, 0);
+        assert_eq!(card_hit(&state, "righty").right(), 100);
+        assert_eq!(card_hit(&state, "bottom"), Rect::new(88, 37, 12, 3));
     }
 }

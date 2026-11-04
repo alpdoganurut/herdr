@@ -770,6 +770,8 @@ impl ClientShellState {
             &self.hits.browser_dock,
             &self.hits.session_header,
         );
+        // Fork (session header): top-anchored toasts start below the header.
+        let toast_area = super::session_header::toast_area(&layout, cols, rows);
         let has_config_diagnostic = self.config_diagnostic.is_some();
         let active_lifecycle = self
             .endpoints
@@ -786,7 +788,7 @@ impl ClientShellState {
             let mut composed = frame.to_ratatui_buffer()?;
             if let Some(diagnostic) = self.config_diagnostic.as_deref() {
                 let diagnostic_area = if layout.mobile_header.is_empty() {
-                    Rect::new(0, 0, cols, rows)
+                    toast_area
                 } else {
                     layout.pane_surface
                 };
@@ -801,7 +803,7 @@ impl ClientShellState {
             let lifecycle_offset = active_lifecycle.as_ref().map_or(0, |(label, status)| {
                 occlusion.cover(endpoint_notices::render_lifecycle_banner(
                     &mut composed,
-                    Rect::new(0, 0, cols, rows),
+                    toast_area,
                     label,
                     *status,
                     u16::from(has_config_diagnostic) + layout.mobile_header.height,
@@ -821,7 +823,7 @@ impl ClientShellState {
                 } else if layout.mobile_header.is_empty() {
                     endpoint_notices::render_notice(
                         &mut composed,
-                        Rect::new(0, 0, cols, rows),
+                        toast_area,
                         super::browser_dock::toast_dock(&layout),
                         notice,
                         u16::from(has_config_diagnostic) + lifecycle_offset,
@@ -843,7 +845,7 @@ impl ClientShellState {
             {
                 self.hits.notification_toasts = notifications::render_notification_stack(
                     &mut composed,
-                    Rect::new(0, 0, cols, rows),
+                    toast_area,
                     super::browser_dock::toast_dock(&layout),
                     &self.visible_notifications,
                     self.config.toast_position,
@@ -868,7 +870,7 @@ impl ClientShellState {
                 } else if layout.mobile_header.is_empty() {
                     notifications::render_visible_notification(
                         &mut composed,
-                        Rect::new(0, 0, cols, rows),
+                        toast_area,
                         super::browser_dock::toast_dock(&layout),
                         notification,
                         self.config.toast_position,

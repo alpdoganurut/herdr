@@ -48,6 +48,19 @@ pub(crate) const MIN_NAME: u16 = 8;
 /// The narrowest notice line on the header (Browser view).
 const BANNER_MIN: u16 = 16;
 
+/// Where the desktop toasts, endpoint notices, the lifecycle banner and the
+/// config diagnostic stack: the frame below the header row while the header
+/// is drawn (so they never cover it), else the whole frame (upstream). Only
+/// the top moves; bottom-anchored toasts keep the frame's bottom.
+pub(crate) fn toast_area(layout: &ClientShellLayout, cols: u16, rows: u16) -> Rect {
+    let top = if layout.session_header.is_empty() {
+        0
+    } else {
+        layout.session_header.bottom().min(rows)
+    };
+    Rect::new(0, top, cols, rows - top)
+}
+
 /// A click target of the header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HeaderTarget {
