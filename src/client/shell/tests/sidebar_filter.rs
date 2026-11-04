@@ -829,7 +829,7 @@ mod fork_smoke {
 // ------------------------------------------------------------ toolbar
 
 /// Fork (session header): the toolbar is `⏶ ‹ ›  ⌕ search  ◷ 1h  +`: the
-/// notes button moved to the header's `▤`, the chip sits one blank cell
+/// notes button moved to the header's `≡`, the chip sits one blank cell
 /// before `+`.
 #[test]
 fn the_toolbar_has_no_notes_button_and_the_chip_sits_before_plus() {

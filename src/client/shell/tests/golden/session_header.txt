@@ -1,5 +1,5 @@
 == terminal view, working, facts @ 110
-00| ● header-design-and-navigation  82% ⚭3 ✉1                                             Terminal  Browser ◧  ▤ |
+00| ● header-design-and-navigation  82% ⚭3 ✉1                                             Terminal  Browser ◨  ≡ |
    00-00 -/sidebar_chrome_bg
    01-01 yellow/sidebar_chrome_bg
    02-02 -/sidebar_chrome_bg
@@ -20,7 +20,7 @@
    108-108 overlay0/sidebar_chrome_bg
    109-109 -/sidebar_chrome_bg
 == terminal view, working, facts @ 60
-00| ● header-design-and-na…  82% ⚭3 ✉1  Terminal  Browser ◧  ▤ |
+00| ● header-design-and-na…  82% ⚭3 ✉1  Terminal  Browser ◨  ≡ |
    00-00 -/sidebar_chrome_bg
    01-01 yellow/sidebar_chrome_bg
    02-02 -/sidebar_chrome_bg
@@ -41,7 +41,7 @@
    58-58 overlay0/sidebar_chrome_bg
    59-59 -/sidebar_chrome_bg
 == terminal view, working, facts @ 44
-00| ● header-design-and…  82% ⚭3 ✉1  T  B ◧  ▤ |
+00| ● header-design-and…  82% ⚭3 ✉1  T  B ◨  ≡ |
    00-00 -/sidebar_chrome_bg
    01-01 yellow/sidebar_chrome_bg
    02-02 -/sidebar_chrome_bg
@@ -62,7 +62,7 @@
    42-42 overlay0/sidebar_chrome_bg
    43-43 -/sidebar_chrome_bg
 == terminal view, working, facts @ 36
-00| ● header-de…  82% ⚭3 ✉1  T  B ◧  ▤ |
+00| ● header-de…  82% ⚭3 ✉1  T  B ◨  ≡ |
    00-00 -/sidebar_chrome_bg
    01-01 yellow/sidebar_chrome_bg
    02-02 -/sidebar_chrome_bg
@@ -83,7 +83,7 @@
    34-34 overlay0/sidebar_chrome_bg
    35-35 -/sidebar_chrome_bg
 == terminal view, working, facts @ 26
-00| ● head…  82% ⚭3 ✉1  ◧  ▤ |
+00| ● head…  82% ⚭3 ✉1  ◨  ≡ |
    00-00 -/sidebar_chrome_bg
    01-01 yellow/sidebar_chrome_bg
    02-02 -/sidebar_chrome_bg
@@ -100,7 +100,7 @@
    24-24 overlay0/sidebar_chrome_bg
    25-25 -/sidebar_chrome_bg
 == terminal view, working, facts @ 12
-00| ● h…  ◧  ▤ |
+00| ● h…  ◨  ≡ |
    00-00 -/sidebar_chrome_bg
    01-01 yellow/sidebar_chrome_bg
    02-02 -/sidebar_chrome_bg
@@ -111,7 +111,7 @@
    10-10 overlay0/sidebar_chrome_bg
    11-11 -/sidebar_chrome_bg
 == browser view, notes docked @ 80
-00| ○ header-design                                         Terminal  Browser ◧  ▤ |
+00| ○ header-design                                         Terminal  Browser ◨  ≡ |
    00-00 -/sidebar_chrome_bg
    01-01 green/sidebar_chrome_bg
    02-02 -/sidebar_chrome_bg
@@ -126,7 +126,7 @@
    78-78 accent/sidebar_chrome_bg
    79-79 -/sidebar_chrome_bg
 == blocked, browser docked, notes hovered @ 60
-00| ◉ endpoint-compatibility-…  82% ✉1  Terminal  Browser ◧  ▤ |
+00| ◉ endpoint-compatibility-…  82% ✉1  Terminal  Browser ◨  ≡ |
    00-00 -/sidebar_chrome_bg
    01-01 red/sidebar_chrome_bg
    02-02 -/sidebar_chrome_bg
@@ -145,7 +145,7 @@
    58-58 text/sidebar_chrome_bg
    59-59 -/sidebar_chrome_bg
 == shell, no companion @ 60
-00| · zsh                                                    ▤ |
+00| · zsh                                                    ≡ |
    00-00 -/sidebar_chrome_bg
    01-01 overlay0/sidebar_chrome_bg
    02-02 -/sidebar_chrome_bg

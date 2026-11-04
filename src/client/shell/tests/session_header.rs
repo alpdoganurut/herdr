@@ -118,21 +118,21 @@ fn the_name_truncates_first_then_the_view_tabs_shrink_and_the_toggles_stay() {
         wide.contains("● header-design-and-navigation  82% ⚭3 ✉1"),
         "{wide}"
     );
-    assert!(wide.contains("Terminal  Browser ◧  ▤"), "{wide}");
+    assert!(wide.contains("Terminal  Browser ◨  ≡"), "{wide}");
     // the name gives way while it keeps MIN_NAME cells
     let mid = text(&header, 52);
-    assert!(mid.contains("Terminal  Browser ◧  ▤"), "{mid}");
+    assert!(mid.contains("Terminal  Browser ◨  ≡"), "{mid}");
     assert!(mid.contains('…') && !mid.contains("navigation"), "{mid}");
     // then the short tabs
     let narrow = text(&header, 36);
-    assert!(narrow.contains("T  B ◧  ▤"), "{narrow}");
+    assert!(narrow.contains("T  B ◨  ≡"), "{narrow}");
     assert!(!narrow.contains("Terminal"), "{narrow}");
-    // then the dock toggle alone; ▤ is always the last cell before the margin
+    // then the dock toggle alone; ≡ is always the last cell before the margin
     for width in [26u16, 20, 12, 6] {
         let row = text(&header, width);
-        assert!(row.trim_end().ends_with('▤'), "{width}: {row:?}");
+        assert!(row.trim_end().ends_with('≡'), "{width}: {row:?}");
         if width >= 12 {
-            assert!(row.contains('◧'), "{width}: {row:?}");
+            assert!(row.contains('◨'), "{width}: {row:?}");
         }
     }
 }
@@ -354,29 +354,29 @@ fn fork_smoke_the_header_sits_on_top_and_its_controls_switch_views_and_docks() {
     let hits = state.hits.session_header;
     assert!(!hits.terminal.is_empty() && !hits.browser.is_empty());
     assert!(!hits.browser_dock.is_empty() && !hits.notes_dock.is_empty());
-    assert_eq!(hits.notes_dock.right(), COLS, "▤ at the far right");
+    assert_eq!(hits.notes_dock.right(), COLS, "≡ at the far right");
     assert!(hits.browser_dock.x < hits.notes_dock.x);
     // Browser, then Terminal
     click(&mut state, hits.browser);
     assert!(state.browser_view_open_for("tab_1"));
     press(&mut state, |hits| hits.terminal);
     assert!(!state.browser_view_open_for("tab_1"));
-    // ◧ docks the browser: the band takes the dock slot
+    // ◨ docks the browser: the band takes the dock slot
     let outcome = press(&mut state, |hits| hits.browser_dock);
     assert!(outcome.resize);
     assert!(state.browser_dock_open_for("tab_1"));
     assert!(!state.layout(COLS, ROWS).browser_band.is_empty());
-    // ▤ swaps it for the notes dock
+    // ≡ swaps it for the notes dock
     press(&mut state, |hits| hits.notes_dock);
     assert!(state.info_dock_open_for_focused_tab());
     assert!(!state.browser_dock_open_for("tab_1"), "one dock slot");
     let layout = state.layout(COLS, ROWS);
     assert!(layout.browser_band.is_empty() && !layout.info_dock.is_empty());
-    // ◧ again swaps back
+    // ◨ again swaps back
     press(&mut state, |hits| hits.browser_dock);
     assert!(state.browser_dock_open_for("tab_1"));
     assert!(!state.info_dock_open_for_focused_tab(), "one dock slot");
-    // from Browser view, ◧ brings the terminal back with the browser docked
+    // from Browser view, ◨ brings the terminal back with the browser docked
     press(&mut state, |hits| hits.browser_dock);
     assert!(!state.browser_dock_open_for("tab_1"));
     press(&mut state, |hits| hits.browser);
@@ -478,7 +478,7 @@ fn the_browser_dock_title_bar_promotes_and_closes() {
                 .clone()
         })
         .collect();
-    assert!(title.contains("◧ herdr+ preview"), "{title}");
+    assert!(title.contains("◨ herdr+ preview"), "{title}");
     assert!(title.trim_end().ends_with("⤢  ✕"), "{title}");
     // the companion covers the band below its title bar
     let spec = state
@@ -672,4 +672,26 @@ fn a_notes_reveal_leaves_a_docked_browser_alone() {
     state.toggle_browser_dock("tab_1".into(), &mut ClientShellInput::default());
     state.receive_notes_reveal(&ClientEndpointId::Local, reveal(2));
     assert!(state.info_dock_open_for_focused_tab());
+}
+
+/// Fork (compact bar): the tab bar's dock toggles, the view strip's terminal
+/// mark and the menus' Open mark are single-cell glyphs the JetBrains Mono
+/// face draws itself (the old `▤` / `▣` came from a wider fallback face).
+/// `≡` is East Asian Width "ambiguous": herdr counts it as one cell.
+#[test]
+fn the_dock_and_view_glyphs_are_one_cell_native_glyphs() {
+    let glyphs = [
+        (session_header::BROWSER_DOCK_GLYPH, '\u{25E8}'),
+        (session_header::NOTES_DOCK_GLYPH, '\u{2261}'),
+        (
+            super::super::browser_dock_render::TERMINAL_GLYPH,
+            '\u{25EB}',
+        ),
+        (super::super::browser_dock_render::DOCK_GLYPH, '\u{25E8}'),
+        (super::super::context_menu::GLYPH_OPEN, '\u{229F}'),
+    ];
+    for (glyph, expected) in glyphs {
+        assert_eq!(glyph.chars().collect::<Vec<_>>(), vec![expected], "{glyph}");
+        assert_eq!(super::super::render::display_width(glyph), 1, "{glyph}");
+    }
 }

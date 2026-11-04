@@ -922,7 +922,7 @@ fn fork_smoke_browser_view_shows_notices_and_toasts_on_its_strip_not_under_the_p
     let line = row_text(&frame, strip.y);
     assert!(line.contains("Click the page to type there"), "{line}");
     assert!(
-        line.contains("Terminal") && line.contains("Browser") && line.contains("◧"),
+        line.contains("Terminal") && line.contains("Browser") && line.contains("◨"),
         "the switch and the dock toggle stay: {line}"
     );
     // a toast (an agent finished): the strip's line too, clickable

@@ -302,7 +302,7 @@ pub(crate) fn tab_strip(width: usize) -> Row {
     Row::new(segs, None)
 }
 
-/// Fork (session header): the tabs layout's title bar, `▤ Notes` left and
+/// Fork (session header): the tabs layout's title bar, `≡ Notes` left and
 /// `✎  ✕` flush right (`✎` lit while editing).
 pub(crate) fn title_bar(width: usize, editing: bool) -> Row {
     let mut segs = vec![

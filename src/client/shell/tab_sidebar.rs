@@ -192,7 +192,7 @@ pub(super) fn render_tab_sidebar_with(
 
     let status_lines = status_footer_lines(snapshot);
     // Fork (session header): the Browser row is gone (its menu is Settings
-    // → Browser, its dock toggle the header's `◧`).
+    // → Browser, its dock toggle the header's `◨`).
     let pinned: Vec<FixedRow<'_>> = state
         .news_row
         .as_ref()

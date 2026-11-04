@@ -53,7 +53,7 @@ pub(crate) const PLACEMENT_REQUEST_PREFIX: &str = "client-shell-placement:";
 /// A click target of the band, the strip or the placeholder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BrowserDockTarget {
-    /// The strip's `▣ Terminal`.
+    /// The strip's `◫ Terminal`.
     ViewTerminal,
     /// The strip's `◎ Browser`.
     ViewBrowser,

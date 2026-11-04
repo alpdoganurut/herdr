@@ -480,7 +480,7 @@ impl ClientContextMenuOverlay {
 pub(super) const GLYPH_NEW: &str = "+";
 pub(super) const GLYPH_RENAME: &str = "\u{270E}"; // ✎
 /// Fork (session header): the Team info item; the Info pane items take the
-/// header's `▤` (`session_header::NOTES_DOCK_GLYPH`).
+/// header's `≡` (`session_header::NOTES_DOCK_GLYPH`).
 pub(super) const GLYPH_TEAM_INFO: &str = "\u{2139}"; // ℹ
 pub(super) const GLYPH_CLOSE: &str = "\u{2715}"; // ✕
 pub(super) const GLYPH_SUSPEND: &str = "\u{2016}"; // ‖
@@ -509,7 +509,7 @@ pub(super) const GLYPH_STAR_ON: &str = "\u{2605}"; // ★
 pub(super) const GLYPH_WORKTREE: &str = "\u{2387}"; // ⎇
 pub(super) const GLYPH_COLLAPSE: &str = "\u{25BE}"; // ▾
 pub(super) const GLYPH_EXPAND: &str = "\u{25B8}"; // ▸
-pub(super) const GLYPH_OPEN: &str = "\u{25A4}"; // ▤
+pub(super) const GLYPH_OPEN: &str = "\u{229F}"; // ⊟
 pub(super) const GLYPH_FOCUS: &str = "\u{25CE}"; // ◎
 pub(super) const GLYPH_STOP: &str = "\u{25A0}"; // ■
 pub(super) const GLYPH_WAKE: &str = "\u{21AF}"; // ↯

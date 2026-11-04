@@ -831,13 +831,13 @@ mod fork_smoke {
         let frame = recompose(&mut state).expect("frame");
         let rows = frame_rows(&frame);
         // Fork (session header): the tabs layout's title bar.
-        assert!(rows.iter().any(|row| row.contains("▤ Notes")), "{rows:?}");
+        assert!(rows.iter().any(|row| row.contains("≡ Notes")), "{rows:?}");
         toggle(&mut state);
         assert_eq!(state.surface_size(COLS, ROWS), before);
     }
 }
 
-/// Fork (session header): the tabs layout's title bar, `▤ Notes  ✎  ✕`:
+/// Fork (session header): the tabs layout's title bar, `≡ Notes  ✎  ✕`:
 /// `✎` starts (and leaves) the editor, `✕` closes the dock; the spaces
 /// layout keeps the Notes strip.
 #[test]
@@ -847,7 +847,7 @@ fn the_title_bar_edits_and_closes() {
     let frame = recompose(&mut state).expect("frame");
     let area = state.info_dock_area();
     let title = &frame_rows(&frame)[usize::from(area.y)];
-    assert!(title.contains("▤ Notes"), "{title}");
+    assert!(title.contains("≡ Notes"), "{title}");
     assert!(title.trim_end().ends_with("✎  ✕"), "{title}");
     let (x, y) = find_target(&state, &InfoDockTarget::Edit);
     state.handle_raw_events(click(x, y));
@@ -866,7 +866,7 @@ fn the_title_bar_edits_and_closes() {
     open_loaded(&mut spaces);
     let rows = frame_rows(&recompose(&mut spaces).expect("frame"));
     assert!(rows.iter().any(|row| row.contains("✦ Notes ✦")), "{rows:?}");
-    assert!(!rows.iter().any(|row| row.contains("▤ Notes")), "{rows:?}");
+    assert!(!rows.iter().any(|row| row.contains("≡ Notes")), "{rows:?}");
 }
 
 #[test]
