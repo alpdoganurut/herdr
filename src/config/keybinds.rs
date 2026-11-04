@@ -395,6 +395,7 @@ pub struct Keybinds {
     pub toggle_browser_dock: ActionKeybinds,
     pub toggle_browser_view: ActionKeybinds,
     pub focus_browser: ActionKeybinds,
+    pub cycle_browser: ActionKeybinds,
     pub tab_history_back: ActionKeybinds,
     pub tab_history_forward: ActionKeybinds,
     pub sidebar_search: ActionKeybinds,
@@ -595,6 +596,7 @@ impl Config {
             toggle_browser_dock: empty_action!(),
             toggle_browser_view: empty_action!(),
             focus_browser: empty_action!(),
+            cycle_browser: empty_action!(),
             tab_history_back: empty_action!(),
             tab_history_forward: empty_action!(),
             sidebar_search: empty_action!(),
@@ -760,6 +762,7 @@ impl Config {
             apply_action!(keybinds.toggle_browser_dock, toggle_browser_dock, source);
             apply_action!(keybinds.toggle_browser_view, toggle_browser_view, source);
             apply_action!(keybinds.focus_browser, focus_browser, source);
+            apply_action!(keybinds.cycle_browser, cycle_browser, source);
             apply_action!(keybinds.tab_history_back, tab_history_back, source);
             apply_action!(keybinds.tab_history_forward, tab_history_forward, source);
             apply_action!(keybinds.sidebar_search, sidebar_search, source);
@@ -2624,6 +2627,39 @@ width = "80%"
             .collect_diagnostics()
             .iter()
             .any(|diag| diag.contains("popup size on non-popup custom command")));
+    }
+
+    /// Fork (cycle_browser): ctrl+shift+b is its own direct key, apart from
+    /// the ctrl+b prefix, in both directions and without a conflict.
+    #[test]
+    fn default_cycle_browser_is_direct_ctrl_shift_b_apart_from_the_ctrl_b_prefix() {
+        let config = Config::default();
+        assert!(config.collect_diagnostics().is_empty());
+        let kb = config.keybinds();
+        assert_eq!(
+            binding_triggers(&kb.cycle_browser),
+            vec![BindingTrigger::Direct((
+                KeyCode::Char('b'),
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT
+            ))]
+        );
+        let ctrl_shift_b = TerminalKey::new(
+            KeyCode::Char('b'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        );
+        let ctrl_b = TerminalKey::new(KeyCode::Char('b'), KeyModifiers::CONTROL);
+        assert!(kb.cycle_browser.matches_direct_key(&ctrl_shift_b));
+        assert!(kb
+            .cycle_browser
+            .matches_direct_key(&ctrl_shift_b.clone().with_shifted_codepoint('B' as u32)));
+        assert!(!kb.cycle_browser.matches_direct_key(&ctrl_b));
+        let prefix = LiveKeybindConfig {
+            prefix: vec![DEFAULT_PREFIX],
+            keybinds: kb.clone(),
+        };
+        assert!(prefix.matches_prefix(&ctrl_b));
+        assert!(!prefix.matches_prefix(&ctrl_shift_b));
+        assert!(!prefix.matches_prefix(&ctrl_shift_b.with_shifted_codepoint('B' as u32)));
     }
 
     #[test]

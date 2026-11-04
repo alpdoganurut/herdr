@@ -1093,3 +1093,105 @@ fn fork_smoke_status_banners_keep_clear_of_the_docked_band_and_the_browser_view(
         "the view tabs and the dock toggle stay: {line}"
     );
 }
+
+fn cycle(state: &mut ClientShellState) -> ClientShellInput {
+    let mut outcome = ClientShellInput::default();
+    state.cycle_browser_for_focused_tab(&mut outcome);
+    recompose(state);
+    outcome
+}
+
+/// (docked, Browser view) of the focused tab.
+fn browser_state(state: &ClientShellState) -> (bool, bool) {
+    (
+        state.browser_dock_open_for("tab_1"),
+        state.browser_view_open_for("tab_1"),
+    )
+}
+
+/// Fork (cycle_browser): none → docked → full → none, from each state.
+#[test]
+fn cycle_browser_goes_none_docked_full_none() {
+    let mut state = dock_state();
+    assert_eq!(browser_state(&state), (false, false));
+    let outcome = cycle(&mut state);
+    assert_eq!(browser_state(&state), (true, false), "none → docked");
+    assert!(outcome.resize, "the band narrows the panes");
+    cycle(&mut state);
+    assert_eq!(browser_state(&state), (true, true), "docked → full");
+    let outcome = cycle(&mut state);
+    assert_eq!(
+        browser_state(&state),
+        (false, false),
+        "full → none, no dock left"
+    );
+    assert!(outcome.resize, "the panes get the band's columns back");
+    cycle(&mut state);
+    assert_eq!(browser_state(&state), (true, false), "and round again");
+}
+
+/// Fork (cycle_browser): a Browser view opened without the dock (the
+/// `toggle_browser_view` key) is full, and the cycle closes it to none.
+#[test]
+fn cycle_browser_closes_an_undocked_browser_view_to_none() {
+    let mut state = dock_state();
+    toggle_view(&mut state);
+    assert_eq!(browser_state(&state), (false, true));
+    cycle(&mut state);
+    assert_eq!(browser_state(&state), (false, false));
+}
+
+/// Fork (cycle_browser): a refused step keeps the state (no companion).
+#[test]
+fn cycle_browser_with_the_companion_off_stays_none() {
+    let mut state = dock_state();
+    // host = "window": browser.get has no companion_app
+    state.browser.info = Some(BrowserGetInfo {
+        seq: 2,
+        enabled: true,
+        window_off: false,
+        ..Default::default()
+    });
+    recompose(&mut state);
+    cycle(&mut state);
+    assert_eq!(browser_state(&state), (false, false));
+    let notice = state.visible_endpoint_notice.take().expect("says why");
+    assert_eq!(notice.title, "Browser dock");
+}
+
+/// Fork (cycle_browser): the default `ctrl+shift+b` is a direct binding that
+/// fires on a real ctrl+shift+b report (kitty CSI u, with or without the
+/// shifted alternate, or modifyOtherKeys), while plain ctrl+b (legacy 0x02
+/// or CSI u) stays the prefix and never cycles.
+#[test]
+fn fork_smoke_ctrl_shift_b_cycles_the_browser_and_ctrl_b_stays_the_prefix() {
+    for bytes in [
+        &b"\x1b[98;6u"[..],
+        &b"\x1b[98:66;6u"[..],
+        &b"\x1b[27;6;98~"[..],
+    ] {
+        let mut state = dock_state();
+        state.handle_input_bytes(bytes);
+        assert_eq!(state.mode, ClientShellMode::Terminal, "{bytes:?}");
+        assert_eq!(browser_state(&state), (true, false), "{bytes:?} docks");
+        recompose(&mut state);
+        state.handle_input_bytes(bytes);
+        assert_eq!(browser_state(&state), (true, true), "{bytes:?} views");
+        state.handle_input_bytes(bytes);
+        assert_eq!(browser_state(&state), (false, false), "{bytes:?} closes");
+    }
+    for bytes in [&b"\x02"[..], &b"\x1b[98;5u"[..]] {
+        let mut state = dock_state();
+        state.handle_input_bytes(bytes);
+        assert_eq!(
+            state.mode,
+            ClientShellMode::Prefix,
+            "{bytes:?} is the prefix"
+        );
+        assert_eq!(
+            browser_state(&state),
+            (false, false),
+            "{bytes:?} never cycles"
+        );
+    }
+}

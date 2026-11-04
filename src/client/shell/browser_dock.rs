@@ -919,6 +919,27 @@ impl ClientShellState {
         }
     }
 
+    /// The `cycle_browser` keybind: the focused tab's browser goes none →
+    /// docked → Browser view → none. A tab in Browser view (docked or not)
+    /// closes both, so the step after full is none; a docked tab opens its
+    /// view (the dock stays listed under it, as `toggle_browser_view` leaves
+    /// it); otherwise the dock opens. A refused step keeps the state it had.
+    pub(crate) fn cycle_browser_for_focused_tab(&mut self, outcome: &mut ClientShellInput) {
+        let Some(tab_id) = self.browser_dock_focused_tab().map(str::to_owned) else {
+            return;
+        };
+        if self.browser_view_open_for(&tab_id) {
+            if self.browser_dock_open_for(&tab_id) {
+                self.toggle_browser_dock(tab_id.clone(), outcome);
+            }
+            self.set_browser_view(tab_id, false, outcome);
+        } else if self.browser_dock_open_for(&tab_id) {
+            self.set_browser_view(tab_id, true, outcome);
+        } else {
+            self.toggle_browser_dock(tab_id, outcome);
+        }
+    }
+
     /// The `focus_browser` keybind: the companion takes the keyboard.
     pub(crate) fn focus_browser(&mut self, outcome: &mut ClientShellInput) {
         if self.browser_companion().is_some() {
