@@ -204,9 +204,10 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # toggle_browser_view = "prefix+shift+z"  # the focused tab's Browser view: the companion browser over the whole tab
 # focus_browser = ""                # unbound; gives the companion browser the keyboard (cmd+esc in it gives it back)
 # cycle_browser = "ctrl+shift+b"    # no prefix: the focused tab's browser none -> docked -> Browser view -> none
-#                                   # needs a terminal that reports ctrl+shift+b apart from ctrl+b (kitty keyboard
-#                                   # protocol or modifyOtherKeys: Ghostty, kitty, WezTerm, foot, iTerm2 with CSI u);
-#                                   # elsewhere it arrives as ctrl+b, the prefix, and the cycle never fires
+#                                   # works in Ghostty and in iTerm2 with CSI u; kitty needs `map kitty_mod+b no_op`
+#                                   # (its default ctrl+shift+b moves the window backward) and WezTerm needs
+#                                   # `enable_kitty_keyboard = true`; elsewhere ctrl+shift+b arrives as ctrl+b,
+#                                   # the prefix, and the cycle never fires
 # tab_history_back = ["cmd+[", "alt+,"]     # previously focused tab, browser-style (Ghostty: keybind = super+[=csi:91;9u)
 # tab_history_forward = ["cmd+]", "alt+."]  # forward again (Ghostty: keybind = super+]=csi:93;9u)
 # sidebar_search = "prefix+f"       # "tabs" layout: type to filter the tab list (Esc clears, Enter focuses the first match)

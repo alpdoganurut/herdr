@@ -1195,3 +1195,44 @@ fn fork_smoke_ctrl_shift_b_cycles_the_browser_and_ctrl_b_stays_the_prefix() {
         );
     }
 }
+
+/// Fork (cycle_browser, audit): a held ctrl+shift+b steps once; the kitty
+/// autorepeat (event type 2) never spins the cycle on.
+#[test]
+fn a_held_ctrl_shift_b_cycles_once_not_on_its_autorepeat() {
+    let mut state = dock_state();
+    state.set_host_reports_key_releases(true);
+    state.handle_input_bytes(b"\x1b[98;6u");
+    assert_eq!(browser_state(&state), (true, false));
+    recompose(&mut state);
+    // checked after each one: three steps would come round to docked again
+    for repeat in 1..=3 {
+        state.handle_input_bytes(b"\x1b[98;6:2u");
+        assert_eq!(
+            browser_state(&state),
+            (true, false),
+            "repeat {repeat} does nothing"
+        );
+    }
+    state.handle_input_bytes(b"\x1b[98;6:3u");
+    assert_eq!(browser_state(&state), (true, false), "nor does the release");
+}
+
+/// Fork (cycle_browser, audit): docked while the companion goes off, the
+/// cycle closes the dock instead of asking for a view that is refused.
+#[test]
+fn cycle_browser_closes_the_dock_when_the_companion_is_off() {
+    let mut state = dock_state();
+    cycle(&mut state);
+    assert_eq!(browser_state(&state), (true, false));
+    // host = "window": browser.get has no companion_app
+    state.browser.info = Some(BrowserGetInfo {
+        seq: 2,
+        enabled: true,
+        window_off: false,
+        ..Default::default()
+    });
+    recompose(&mut state);
+    cycle(&mut state);
+    assert_eq!(browser_state(&state), (false, false));
+}

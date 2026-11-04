@@ -575,8 +575,8 @@ pub struct KeysConfig {
     /// Fork (companion launcher): give the companion browser the keyboard. Unset by default.
     pub focus_browser: BindingConfig,
     /// Fork (companion launcher): cycle the focused tab's browser: none, docked, Browser
-    /// view, none. Default: "ctrl+shift+b" (direct; needs a terminal that reports
-    /// ctrl+shift apart from ctrl, through the kitty keyboard protocol or modifyOtherKeys).
+    /// view, none. Default: "ctrl+shift+b" (direct; Ghostty, iTerm2 with CSI u, kitty with
+    /// `map kitty_mod+b no_op`, WezTerm with `enable_kitty_keyboard = true`; elsewhere it is ctrl+b).
     pub cycle_browser: BindingConfig,
     /// Focus the previously focused tab (browser-style back). Default: ["cmd+[", "alt+,"].
     pub tab_history_back: BindingConfig,

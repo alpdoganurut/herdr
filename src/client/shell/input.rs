@@ -702,6 +702,18 @@ impl ClientShellState {
                 if let Some(binding) =
                     crate::input::resolve_direct_binding(&self.config.keybinds.keybinds, key)
                 {
+                    // Fork (cycle_browser): a held key steps once; its
+                    // autorepeat would spin the cycle.
+                    if key.kind == KeyEventKind::Repeat
+                        && matches!(
+                            binding,
+                            crate::input::KeybindMatch::Action(
+                                crate::input::KeybindAction::CycleBrowser
+                            )
+                        )
+                    {
+                        return None;
+                    }
                     self.record_binding(binding, outcome);
                     return None;
                 }
