@@ -61,6 +61,10 @@ pub struct TabBrowserEntry {
     /// html_view: the page may reach the network.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub allow_network: bool,
+    /// Fork (page API): html_view shown with `page_api`: its page may
+    /// message the agent that opened it (`browser.page_message`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub page_api: bool,
     /// The CDP target id while a host has the view (runtime only).
     #[serde(skip)]
     pub target: Option<String>,
@@ -78,7 +82,7 @@ pub struct TabBrowserEntry {
 pub struct SyncChange {
     /// Anything at all (title, target): `rev` bumped.
     pub any: bool,
-    /// What persistence cares about: order, url, kind, file, network, active.
+    /// What persistence cares about: order, url, kind, file, network, page API, active.
     pub persisted: bool,
 }
 
@@ -257,6 +261,7 @@ impl TabBrowser {
                 title: entry.title.clone(),
                 file: entry.file.clone(),
                 allow_network: entry.allow_network,
+                page_api: entry.page_api,
                 opened_by: (!entry.opened_by.is_empty()).then(|| entry.opened_by.clone()),
             })
             .collect()
@@ -355,6 +360,7 @@ fn persisted_differs(new: &TabBrowserEntry, old: &TabBrowserEntry) -> bool {
         || new.url != old.url
         || new.file != old.file
         || new.allow_network != old.allow_network
+        || new.page_api != old.page_api
 }
 
 fn entry_from_wire(
@@ -378,6 +384,8 @@ fn entry_from_wire(
         title: clip(&wire.title, MAX_TITLE_CHARS),
         file,
         allow_network: kind == TabBrowserKind::HtmlView && wire.allow_network,
+        // a page with network never gets the page API
+        page_api: kind == TabBrowserKind::HtmlView && !wire.allow_network && wire.page_api,
         target: wire.target.clone().filter(|target| !target.is_empty()),
         view_id: wire.view_id.clone().filter(|view| !view.is_empty()),
         opened_by: wire

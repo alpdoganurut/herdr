@@ -135,6 +135,12 @@ pub struct BrowserConfig {
     /// server (in the background) instead of on the first `open` routed to
     /// it. Default: false.
     pub companion_autostart: bool,
+    /// Fork (page API): a page an agent shows with `page_api` may message
+    /// that agent (`window.herdr.send`, `browser.page_message`). `false`
+    /// is the kill switch: show drops the flag, the lease does not
+    /// advertise `page_messages` and the server refuses every page
+    /// message (`page_messages_off`). Default: true.
+    pub page_api: bool,
     /// Not a key: the effective `[agents] wrap` (`Config::agents_wrap`),
     /// filled in by the config loaders so the browser hub, which only
     /// receives this section, reports and applies the resolved value.
@@ -227,6 +233,7 @@ impl Default for BrowserConfig {
             host: BrowserHostMode::Companion.as_str().into(),
             page_errors: PAGE_ERRORS_AGENT.into(),
             companion_autostart: false,
+            page_api: true,
             effective_wrap: false,
         }
     }

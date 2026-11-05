@@ -1402,6 +1402,9 @@ impl App {
             Method::BrowserSendPage(params) => {
                 return self.handle_browser_send_page(request.id, params)
             }
+            Method::BrowserPageMessage(params) => {
+                return self.handle_browser_page_message(request.id, params)
+            }
             Method::BrowserGet(params) => return self.handle_browser_get(request.id, params),
             Method::BrowserStatus(_) => return self.handle_browser_status(request.id),
             Method::BrowserFocus(params) => return self.handle_browser_focus(request.id, params),

@@ -1901,6 +1901,12 @@
           "type": "boolean",
           "default": "false",
           "description": "Fork (companion launcher): start the installed companion browser with the server, in the background (no window, no focus), instead of on the first page an agent opens. `herdr browser setup --companion` installs it; herdr restarts it after a crash (after 1, 2, 4 and 8 s; it gives up after 5 crashes in 5 minutes until you restart it), stops it with the server (not on a live handoff: the new server takes it over) and offers start, stop, restart and focus in `herdr browser companion`, the Browser row's menu and the Browser overlay. Applies at the next server start."
+        },
+        {
+          "key": "browser.page_api",
+          "type": "boolean",
+          "default": "true",
+          "description": "Fork (page API): a local HTML page an agent shows with `page_api` (`herdr browser show --page-api`, MCP `browser_show` with `page_api: true`) in the companion browser may call `window.herdr.send({text, data})`, and the message reaches only the agent that showed the page, as page content (never as your words; its own envelope, a pointer line, never urgent, never a wake-up, stored quietly under do not disturb). Pages without the flag, pages with network, web tabs and iframes never get `window.herdr`. `false` is the kill switch: `show` drops the flag, the companion gives no page the bridge (from its next registration) and herdr refuses every page message at once (`page_messages_off`). Applies live after `herdr server reload-config`."
         }
       ]
     },

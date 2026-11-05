@@ -147,6 +147,8 @@ struct Inner {
     launcher: super::companion_app::Launcher,
     /// Fork (companion launcher): tests shorten the routing wait (0 = the default).
     companion_wait_ms: AtomicU64,
+    /// Fork (page API): the companion pages agent ops are driving.
+    agent_ops: Mutex<super::agent_ops::AgentOps>,
 }
 
 /// The new tab page's snapshot goes out at most this often.
@@ -163,6 +165,24 @@ thread_local! {
     /// `run`, `animate` cleared by a batch that asks), attached to every
     /// sidecar request the call makes.
     static ACTIVITY: RefCell<Option<Value>> = const { RefCell::new(None) };
+    /// Fork (page API): the call running on this thread is an agent's
+    /// (set by `run`): its companion requests mark their page driven.
+    static AGENT_OP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Fork (page API): an agent's request on a companion page, in flight
+/// until dropped.
+struct AgentOpGuard<'a> {
+    ops: &'a Mutex<super::agent_ops::AgentOps>,
+    target: String,
+}
+
+impl Drop for AgentOpGuard<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut ops) = self.ops.lock() {
+            ops.end(&self.target, Instant::now());
+        }
+    }
 }
 
 /// One cached extraction: what was asked and the page it came from.
@@ -271,6 +291,7 @@ impl BrowserHub {
                 html_views: Mutex::new(HashSet::new()),
                 launcher: super::companion_app::Launcher::new(),
                 companion_wait_ms: AtomicU64::new(0),
+                agent_ops: Mutex::new(Default::default()),
             }),
         }
     }
@@ -1351,6 +1372,8 @@ impl BrowserHub {
             self.inner.release_backoff.lock().unwrap().remove(pane);
         }
         ACTIVITY.with(|slot| *slot.borrow_mut() = super::activity::directive(actor, &config));
+        let agent = !actor.is_user();
+        AGENT_OP.with(|slot| slot.set(agent));
         let result = self.execute(
             actor,
             &profile,
@@ -1360,7 +1383,17 @@ impl BrowserHub {
             deadline,
             now,
         );
+        AGENT_OP.with(|slot| slot.set(false));
         ACTIVITY.with(|slot| *slot.borrow_mut() = None);
+        // Fork (page API): a page an agent op just created or used counts as
+        // driven for the grace too (its target was not known up front).
+        if let (true, Ok((_, Some(key), _))) = (agent && is_companion(&profile), &result) {
+            self.inner
+                .agent_ops
+                .lock()
+                .unwrap()
+                .touched(&key.target_id, Instant::now());
+        }
         let ms = started.elapsed().as_millis() as u64;
         self.record_outcome(
             actor,
@@ -3340,6 +3373,48 @@ impl BrowserHub {
     }
 
     /// Send one request and wait for its reply.
+    /// Fork (page API): an agent's request on a companion page marks the
+    /// page driven while it runs (and for the grace after).
+    fn agent_op_guard(
+        &self,
+        profile: Option<&str>,
+        target: Option<&str>,
+    ) -> Option<AgentOpGuard<'_>> {
+        let target = target.filter(|t| !t.is_empty())?;
+        if !profile.is_some_and(is_companion) || !AGENT_OP.with(std::cell::Cell::get) {
+            return None;
+        }
+        self.inner
+            .agent_ops
+            .lock()
+            .unwrap()
+            .start(target, Instant::now());
+        Some(AgentOpGuard {
+            ops: &self.inner.agent_ops,
+            target: target.to_string(),
+        })
+    }
+
+    /// Fork (page API): whether an agent op is driving companion page
+    /// `target` now (in flight, or ended within the grace).
+    pub fn agent_driving(&self, target: &str) -> bool {
+        self.inner
+            .agent_ops
+            .lock()
+            .unwrap()
+            .driving(target, Instant::now())
+    }
+
+    /// Tests: mark companion page `target` as just driven by an agent.
+    #[cfg(test)]
+    pub(crate) fn test_mark_agent_driven(&self, target: &str) {
+        self.inner
+            .agent_ops
+            .lock()
+            .unwrap()
+            .touched(target, Instant::now());
+    }
+
     pub fn request(
         &self,
         op: &str,
@@ -3348,6 +3423,7 @@ impl BrowserHub {
         args: Value,
         deadline: Duration,
     ) -> Result<HostReply, BrowserError> {
+        let _driving = self.agent_op_guard(profile, target);
         let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = mpsc::channel();
         self.inner.pending.lock().unwrap().insert(id, tx);

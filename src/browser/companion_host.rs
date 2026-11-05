@@ -47,6 +47,10 @@ pub const SERVER_FEATURES: [&str; 7] = [
     // restore and close; without it the companion hides them).
     "placement_actions",
 ];
+/// Fork (page API): advertised besides [`SERVER_FEATURES`] while `[browser]
+/// page_api` is on: the host gives `page_api` views `window.herdr` and
+/// sends their messages with `browser.page_message`.
+pub const PAGE_MESSAGES_FEATURE: &str = "page_messages";
 /// The DevTools probe of a registering host.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 /// A pending registration (the attach under way, at most twice
@@ -248,6 +252,7 @@ impl BrowserHub {
             &lease_id,
             expires_unix,
             managed.then(|| self.companion_update_ready()).flatten(),
+            self.config().page_api,
         ))
     }
 
@@ -271,6 +276,7 @@ impl BrowserHub {
             lease_id,
             expires_unix,
             managed.then(|| self.companion_update_ready()).flatten(),
+            self.config().page_api,
         ))
     }
 
@@ -737,7 +743,16 @@ impl BrowserHub {
     }
 }
 
-fn lease_info(lease_id: &str, expires_unix: u64, update: Option<String>) -> BrowserHostLeaseInfo {
+fn lease_info(
+    lease_id: &str,
+    expires_unix: u64,
+    update: Option<String>,
+    page_api: bool,
+) -> BrowserHostLeaseInfo {
+    let mut server_features: Vec<String> = SERVER_FEATURES.iter().map(|f| f.to_string()).collect();
+    if page_api {
+        server_features.push(PAGE_MESSAGES_FEATURE.into());
+    }
     BrowserHostLeaseInfo {
         lease_id: lease_id.to_string(),
         profile: COMPANION_PROFILE.into(),
@@ -746,7 +761,7 @@ fn lease_info(lease_id: &str, expires_unix: u64, update: Option<String>) -> Brow
         ttl_ms: LEASE_TTL_MS,
         expires_unix,
         host_protocol: COMPANION_HOST_PROTOCOL,
-        server_features: SERVER_FEATURES.iter().map(|f| f.to_string()).collect(),
+        server_features,
         update,
     }
 }

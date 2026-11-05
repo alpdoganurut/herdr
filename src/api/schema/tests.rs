@@ -2054,6 +2054,7 @@ fn new_browser_host_methods_are_not_client_shell_and_old_digests_hold() {
         "browser.host_sync",
         "browser.host_report",
         "browser.send_page",
+        "browser.page_message",
     ];
     for name in names {
         let operation = Method::OPERATIONS

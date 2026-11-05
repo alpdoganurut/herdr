@@ -374,6 +374,17 @@ pub enum ResponseResult {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
     },
+    /// Fork (page API): `browser.page_message`: `sent` or `queued` (the
+    /// opener is busy or in do-not-disturb).
+    BrowserPageMessage {
+        outcome: String,
+        to_pane: String,
+        #[serde(default)]
+        to_name: String,
+        message_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
     /// Fork (companion launcher): `browser.companion`'s answer, the state
     /// after the action started; `note` explains a refusal-free no-op (a
     /// companion started by hand is never stopped by herdr).

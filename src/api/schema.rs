@@ -278,6 +278,10 @@ operations::define_operations! {
     /// close a placement, relayed to the client that owns it (App lane:
     /// changes_ui, so the render pass that relays it follows at once).
     BrowserPlacementAction(BrowserPlacementActionParams) => "browser.placement_action", true, false;
+    /// Fork (page API): a page an agent showed with `page_api` messages
+    /// that agent (the companion's `window.herdr.send`; App lane, src/app/
+    /// browser_page_message.rs). Not client-shell.
+    BrowserPageMessage(BrowserPageMessageParams) => "browser.page_message", false, false;
     AgentPrompt(AgentPromptParams) => "agent.prompt", true, false;
     AgentWait(AgentWaitParams) => "agent.wait", false, false;
     PaneSplit(PaneSplitParams) => "pane.split", true, true;
