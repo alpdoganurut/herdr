@@ -38,15 +38,45 @@ pub(super) fn encode_api_text(runtime: &crate::terminal::TerminalRuntime, text: 
 }
 
 /// Fork: the bytes `text` goes into a pane as, in a bracketed paste or not.
-/// Control characters are stripped first (`envelope::strip_controls`), so
-/// no text can end the paste early, type keys after it or raise a signal.
+/// Inside a paste, a paste start or end in the text (`ESC[200~`,
+/// `ESC[201~`, or with the 8-bit CSI) has its introducer shown as `␛`, so
+/// the text cannot close the paste early and type keys after it. Anything
+/// else passes as given (the caller's own text: CRs and other escape
+/// sequences stay); text from other agents or pages is cleaned before it
+/// gets here (`envelope::strip_controls`).
 pub(super) fn api_text_bytes(text: &str, bracketed: bool) -> Vec<u8> {
-    let text = crate::agents_model::envelope::strip_controls(text);
     if bracketed {
+        let text = paste_safe(text);
         format!("\x1b[200~{text}\x1b[201~").into_bytes()
     } else {
         text.as_bytes().to_vec()
     }
+}
+
+/// `text` with the introducer (ESC or the 8-bit CSI) of every bracketed
+/// paste start or end replaced by `␛` (not dropped: an ESC before it would
+/// form the sequence again).
+fn paste_safe(text: &str) -> std::borrow::Cow<'_, str> {
+    let is_bracket = |rest: &str| rest.starts_with("200~") || rest.starts_with("201~");
+    let needs = text.char_indices().any(|(at, ch)| match ch {
+        '\x1b' => text[at + 1..].strip_prefix('[').is_some_and(is_bracket),
+        '\u{9b}' => is_bracket(&text[at + ch.len_utf8()..]),
+        _ => false,
+    });
+    if !needs {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    let mut out = String::with_capacity(text.len());
+    for (at, ch) in text.char_indices() {
+        match ch {
+            '\x1b' if text[at + 1..].strip_prefix('[').is_some_and(is_bracket) => {
+                out.push('\u{241b}')
+            }
+            '\u{9b}' if is_bracket(&text[at + ch.len_utf8()..]) => out.push_str("\u{241b}["),
+            _ => out.push(ch),
+        }
+    }
+    std::borrow::Cow::Owned(out)
 }
 
 pub(super) fn encode_api_keys(

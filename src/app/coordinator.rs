@@ -2299,7 +2299,8 @@ impl App {
             format!("coordinator:wake-{seq}"),
             AgentPromptParams {
                 target: pane.to_string(),
-                text,
+                // Fork: wake text carries agents' words; no control characters.
+                text: crate::agents_model::envelope::strip_controls(&text),
                 wait: None,
                 guard_user_typing: true,
             },
