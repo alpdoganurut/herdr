@@ -1669,6 +1669,7 @@ impl BrowserHub {
             BrowserOp::Show {
                 file,
                 allow_network,
+                page_api,
                 watch,
                 focus,
                 title,
@@ -1679,6 +1680,7 @@ impl BrowserHub {
                 ShowRequest {
                     file,
                     allow_network: *allow_network,
+                    page_api: *page_api,
                     watch: *watch,
                     focus: *focus,
                     title: title.as_deref(),

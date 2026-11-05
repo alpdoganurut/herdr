@@ -3585,6 +3585,10 @@
                   "const": "show",
                   "type": "string"
                 },
+                "page_api": {
+                  "description": "Fork (page API): the page gets `window.herdr.send`, whose messages\nreach the caller as page content (default false; not with\n`allow_network`).",
+                  "type": "boolean"
+                },
                 "title": {
                   "description": "The view's title in the strip (default: the document's).",
                   "type": [
@@ -5162,6 +5166,10 @@
                 "op": {
                   "const": "show",
                   "type": "string"
+                },
+                "page_api": {
+                  "description": "Fork (page API): the page gets `window.herdr.send`, whose messages\nreach the caller as page content (default false; not with\n`allow_network`).",
+                  "type": "boolean"
                 },
                 "title": {
                   "description": "The view's title in the strip (default: the document's).",

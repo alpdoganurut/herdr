@@ -329,6 +329,11 @@ pub enum BrowserOp {
         /// Let the page reach the network (default false: http(s) and ws(s) blocked).
         #[serde(default, skip_serializing_if = "super::is_false")]
         allow_network: bool,
+        /// Fork (page API): the page gets `window.herdr.send`, whose messages
+        /// reach the caller as page content (default false; not with
+        /// `allow_network`).
+        #[serde(default, skip_serializing_if = "super::is_false")]
+        page_api: bool,
         /// Reload the view when the file or its directory changes (default true).
         #[serde(default = "default_true", skip_serializing_if = "is_true")]
         watch: bool,

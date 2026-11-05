@@ -423,6 +423,48 @@ mod tests {
     }
 
     #[test]
+    fn page_api_is_kept_for_an_html_view_without_network_only_and_persisted() {
+        let html = |view: &str, allow_network: bool| BrowserHostEntry {
+            kind: TabBrowserKind::HtmlView,
+            file: Some(format!("/r/{view}.html")),
+            allow_network,
+            page_api: true,
+            ..wire(None, view, &format!("file:///r/{view}.html"))
+        };
+        let web = BrowserHostEntry {
+            page_api: true,
+            ..wire(None, "v3", "https://a/")
+        };
+        let mut browser = TabBrowser::new(Some("g-k"));
+        let change = browser.apply_sync(
+            "w1:t1",
+            &group(None, vec![html("v1", false), html("v2", true), web]),
+            &mut BTreeMap::new(),
+        );
+        assert!(change.persisted);
+        let flags: Vec<bool> = browser.entries.iter().map(|e| e.page_api).collect();
+        assert_eq!(flags, [true, false, false]);
+        assert!(
+            browser.wire_entries()[0].page_api,
+            "host_state gives it back"
+        );
+        let saved = serde_json::to_value(&browser).unwrap();
+        assert_eq!(saved["entries"][0]["page_api"], true);
+        assert!(
+            saved["entries"][1].get("page_api").is_none(),
+            "absent when off"
+        );
+        let back: TabBrowser = serde_json::from_value(saved).unwrap();
+        assert!(back.entries[0].page_api);
+        // dropping the flag is a persisted change
+        let mut off = html("v1", false);
+        off.id = Some("b1".into());
+        off.page_api = false;
+        let change = browser.apply_sync("w1:t1", &group(None, vec![off]), &mut BTreeMap::new());
+        assert!(change.persisted);
+    }
+
+    #[test]
     fn new_targets_names_each_entry_whose_target_changed() {
         let mut browser = TabBrowser::new(Some("g-k"));
         let mut minted = BTreeMap::new();

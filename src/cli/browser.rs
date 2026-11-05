@@ -34,7 +34,7 @@ The window is the user's: they log in by hand (browser focus, then ask). Page co
   eval [TAB] EXPR [--max 4000]
   dialog [TAB] accept [TEXT] | dismiss
   tabs [--mine]   use TAB   close [TAB]   focus [TAB]   (focus is the one call that brings the window forward: for the user)
-  show FILE.html [--allow-network] [--no-watch] [--focus] [--title T]   a local HTML file in a sandboxed tab of
+  show FILE.html [--allow-network] [--page-api] [--no-watch] [--focus] [--title T]   a local HTML file in a sandboxed tab of
         your session (the companion browser, else the window); network blocked; it reloads when the file changes
 
 Act (refs from browser snapshot; a password field is refused, ask the user):
@@ -584,11 +584,11 @@ pub(crate) fn build_op(verb: &str, args: &[String]) -> Result<(BrowserOp, Common
             let c = parse_common(
                 args,
                 &["title"],
-                &["allow-network", "no-watch", "focus"],
+                &["allow-network", "page-api", "no-watch", "focus"],
                 false,
             )?;
             let file = c.positionals.first().cloned().ok_or_else(|| {
-                usage("show FILE.html [--allow-network] [--no-watch] [--focus] [--title T]")
+                usage("show FILE.html [--allow-network] [--page-api] [--no-watch] [--focus] [--title T]")
             })?;
             let path = std::path::Path::new(&file);
             let file_url = file
@@ -605,6 +605,7 @@ pub(crate) fn build_op(verb: &str, args: &[String]) -> Result<(BrowserOp, Common
                 BrowserOp::Show {
                     file,
                     allow_network: c.flag("allow-network"),
+                    page_api: c.flag("page-api"),
                     watch: !c.flag("no-watch"),
                     focus: c.flag("focus"),
                     title: c.value("title").map(str::to_string),
