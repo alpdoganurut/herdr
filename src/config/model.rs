@@ -574,6 +574,10 @@ pub struct KeysConfig {
     pub toggle_browser_view: BindingConfig,
     /// Fork (companion launcher): give the companion browser the keyboard. Unset by default.
     pub focus_browser: BindingConfig,
+    /// Fork (companion launcher): cycle the focused tab's browser: none, docked, Browser
+    /// view, none. Default: "ctrl+shift+b" (direct; Ghostty, iTerm2 with CSI u, kitty with
+    /// `map kitty_mod+b no_op`, WezTerm with `enable_kitty_keyboard = true`; elsewhere it is ctrl+b).
+    pub cycle_browser: BindingConfig,
     /// Focus the previously focused tab (browser-style back). Default: ["cmd+[", "alt+,"].
     pub tab_history_back: BindingConfig,
     /// Focus the next tab again after going back. Default: ["cmd+]", "alt+."].
@@ -746,6 +750,7 @@ pub(crate) struct KeysConfigOverlay {
     toggle_browser_view: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     focus_browser: Option<BindingConfig>,
+    cycle_browser: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tab_history_back: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -900,6 +905,7 @@ impl<'de> Deserialize<'de> for KeysConfig {
         apply_field!(toggle_browser_dock);
         apply_field!(toggle_browser_view);
         apply_field!(focus_browser);
+        apply_field!(cycle_browser);
         apply_field!(tab_history_back);
         apply_field!(tab_history_forward);
         apply_field!(sidebar_search);
@@ -1022,6 +1028,7 @@ impl KeysConfig {
         copy_effective_action_field!(toggle_browser_dock, keybinds.toggle_browser_dock);
         copy_effective_action_field!(toggle_browser_view, keybinds.toggle_browser_view);
         copy_effective_action_field!(focus_browser, keybinds.focus_browser);
+        copy_effective_action_field!(cycle_browser, keybinds.cycle_browser);
         copy_effective_action_field!(tab_history_back, keybinds.tab_history_back);
         copy_effective_action_field!(tab_history_forward, keybinds.tab_history_forward);
         copy_effective_action_field!(sidebar_search, keybinds.sidebar_search);
@@ -1461,6 +1468,7 @@ impl Default for KeysConfig {
             toggle_browser_dock: BindingConfig::one("prefix+shift+b"),
             toggle_browser_view: BindingConfig::one("prefix+shift+z"),
             focus_browser: BindingConfig::default(),
+            cycle_browser: BindingConfig::one("ctrl+shift+b"),
             tab_history_back: BindingConfig::Many(vec!["cmd+[".into(), "alt+,".into()]),
             tab_history_forward: BindingConfig::Many(vec!["cmd+]".into(), "alt+.".into()]),
             sidebar_search: BindingConfig::one("prefix+f"),

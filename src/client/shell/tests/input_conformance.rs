@@ -391,11 +391,32 @@ impl HerdrPath {
             }
             chunks.extend(self.framer.flush_timeout());
         }
+        // Fork (cycle_browser): a direct binding is Herdr's key even when its
+        // action is client-only and sends nothing (the browser cycle without a
+        // companion only shows a notice), as the client resolves it first.
+        // Only when nothing reached the pane: bytes that did are still scored.
+        let direct_binding = self.state.mode == ClientShellMode::Terminal
+            && chunks.iter().any(|chunk| {
+                std::str::from_utf8(chunk)
+                    .ok()
+                    .and_then(crate::input::parse_terminal_key_sequence)
+                    .is_some_and(|key| {
+                        crate::input::resolve_direct_binding(
+                            &self.state.config.keybinds.keybinds,
+                            &key,
+                        )
+                        .is_some()
+                    })
+            });
         let outcomes = chunks
             .iter()
             .map(|chunk| self.state.handle_input_bytes(chunk))
             .collect();
-        self.deliver(outcomes)
+        let delivered = self.deliver(outcomes);
+        if direct_binding && delivered.as_deref() == Some(&[][..]) {
+            return None;
+        }
+        delivered
     }
 
     /// Route client outcomes through server pane input and collect the bytes the

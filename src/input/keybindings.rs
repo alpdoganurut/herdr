@@ -74,6 +74,9 @@ pub(crate) enum KeybindAction {
     ToggleBrowserView,
     /// Fork (companion launcher): give the companion browser the keyboard.
     FocusBrowser,
+    /// Fork (companion launcher): the focused tab's browser none, docked,
+    /// Browser view, none (client-only).
+    CycleBrowser,
     /// Fork (sidebar v3): focus the previously focused tab (client-side history).
     TabHistoryBack,
     /// Fork (sidebar v3): focus the next tab again after going back.
@@ -179,6 +182,7 @@ pub(crate) fn resolve_non_indexed_action(
             KeybindAction::ToggleBrowserView,
         ),
         (&keybinds.focus_browser, KeybindAction::FocusBrowser),
+        (&keybinds.cycle_browser, KeybindAction::CycleBrowser),
         (&keybinds.tab_history_back, KeybindAction::TabHistoryBack),
         (
             &keybinds.tab_history_forward,

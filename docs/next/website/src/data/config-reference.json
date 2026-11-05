@@ -812,6 +812,12 @@
           "description": "Give the companion browser the keyboard (browser.companion focus). In the docked browser, cmd+esc gives it back to the terminal. Unset by default; for example, focus_browser = \"alt+o\"."
         },
         {
+          "key": "keys.cycle_browser",
+          "type": "keybinding",
+          "default": "\"ctrl+shift+b\"",
+          "description": "Cycle the focused tab's companion browser: none, docked, Browser view, none. From Browser view it closes the view and the dock. A direct binding (no prefix) that needs a terminal reporting ctrl+shift+b apart from ctrl+b: it works in Ghostty and in iTerm2 with CSI u; kitty needs map kitty_mod+b no_op (its default ctrl+shift+b moves the window backward) and WezTerm needs enable_kitty_keyboard = true; elsewhere ctrl+shift+b arrives as ctrl+b, the prefix, and the cycle never fires. A held key steps once (autorepeat is ignored), and while the companion is off a docked tab's dock closes instead. herdr takes the key before the pane, so programs in panes no longer receive ctrl+shift+b; set cycle_browser = \"\" to give it back."
+        },
+        {
           "key": "keys.tab_history_back",
           "type": "keybinding",
           "default": "[\"cmd+[\", \"alt+,\"]",

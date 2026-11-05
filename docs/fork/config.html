@@ -767,7 +767,7 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
     <div class="row">
       <div class="f"><h3>Browser view</h3><p>The browser over the whole tab; the panes keep running and keep their size, and keys, pastes and IME text never reach them. herdr's notices and toasts show as one line on the session header (the view strip in the <code>spaces</code> layout).</p></div>
       <div class="d"><span class="pill val">off, per tab</span></div>
-      <div class="k"><code>toggle_browser_view</code> <kbd>prefix</kbd>+<kbd>shift</kbd>+<kbd>z</kbd><small>also the session header's <code>Terminal</code> / <code>Browser</code> (the <code>spaces</code> view strip's <code>▣ Terminal</code> / <code>◎ Browser</code>), the dock's <code>⤢</code></small></div>
+      <div class="k"><code>toggle_browser_view</code> <kbd>prefix</kbd>+<kbd>shift</kbd>+<kbd>z</kbd><small><code>cycle_browser</code> <kbd>ctrl</kbd>+<kbd>shift</kbd>+<kbd>b</kbd> (no prefix) steps none, docked, Browser view, none; also the session header's <code>Terminal</code> / <code>Browser</code> (the <code>spaces</code> view strip's <code>▣ Terminal</code> / <code>◎ Browser</code>), the dock's <code>⤢</code></small></div>
       <div class="s"><span class="badge cfg">config only</span></div>
     </div>
     <div class="row">
@@ -892,6 +892,7 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
     <div class="kb"><code>toggle_browser_dock</code><span class="ks"><kbd>prefix</kbd>+<kbd>shift</kbd>+<kbd>b</kbd></span><p>Docks the companion browser on the right of the focused tab, or undocks it</p></div>
     <div class="kb"><code>toggle_browser_view</code><span class="ks"><kbd>prefix</kbd>+<kbd>shift</kbd>+<kbd>z</kbd></span><p>The focused tab's Browser view: the companion browser over the whole tab</p></div>
     <div class="kb"><code>focus_browser</code><span class="ks"><span class="ub">unbound</span></span><p>Gives the companion browser the keyboard</p></div>
+    <div class="kb"><code>cycle_browser</code><span class="ks"><kbd>ctrl</kbd>+<kbd>shift</kbd>+<kbd>b</kbd></span><p>No prefix. The focused tab's browser: none, docked, Browser view, none (Ghostty, iTerm2 with CSI u, kitty with <code>map kitty_mod+b no_op</code>, WezTerm with <code>enable_kitty_keyboard = true</code>)</p></div>
     <div class="kb"><code>toggle_agent_suspend</code><span class="ks"><span class="ub">unbound</span></span><p>Suspends the focused agent, or activates it again</p></div>
     <div class="kb"><code>handoff_compact</code><span class="ks"><span class="ub">unbound</span></span><p>The focused Claude agent writes a handoff, then <code>/compact</code></p></div>
     <div class="kb"><code>restart_agent</code><span class="ks"><span class="ub">unbound</span></span><p>Exits the focused idle agent and relaunches it with its resume command</p></div>

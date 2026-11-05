@@ -24,6 +24,9 @@ impl ClientShellState {
             crate::input::KeybindMatch::Action(crate::input::KeybindAction::FocusBrowser) => {
                 self.focus_browser(outcome);
             }
+            crate::input::KeybindMatch::Action(crate::input::KeybindAction::CycleBrowser) => {
+                self.cycle_browser_for_focused_tab(outcome);
+            }
             // Fork (sidebar filters): the tabs sidebar's search field.
             crate::input::KeybindMatch::Action(crate::input::KeybindAction::SidebarSearch) => {
                 self.toggle_sidebar_search(outcome);
