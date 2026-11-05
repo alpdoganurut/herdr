@@ -773,6 +773,65 @@ try {
   const synced = await waitFor(() => mock.state.tabs.get('w1:t2').browser.entries.find((e) => e.kind === 'html_view' && e.file), 3000);
   check('html views sync kind, file and allow_network', synced, synced);
 
+  // page API: window.herdr.send in the top frame of an agent's page_api view, nowhere else
+  // the real path: an html view's in-directory navigation compares against the resolved root
+  const papi = path.join(fs.realpathSync(tmp), 'papi');
+  fs.mkdirSync(papi);
+  const sendBtn = (text) => `<button id=go onclick="window.__last = null; (window.herdr ? window.herdr.send({text: ${text}, data: {step: 3}}) : Promise.resolve({ok: false, outcome: 'absent'})).then((r) => { window.__last = r; })">go</button>`;
+  fs.writeFileSync(path.join(papi, 'board.html'), `<title>board</title>${sendBtn("document.getElementById('t').value")}<input id=t value="QA: step 3 fails"><a id=away href="other.html">away</a><iframe id=f src="frame.html"></iframe><script>addEventListener('load', () => window.herdr && window.herdr.send({ text: 'on load' }).then((r) => { window.__onload = r; }))</script>`);
+  fs.writeFileSync(path.join(papi, 'frame.html'), '<p>frame</p>');
+  fs.writeFileSync(path.join(papi, 'other.html'), `<title>other</title>${sendBtn("'from other'")}`);
+  const boardFile = path.join(papi, 'board.html');
+  const psh = await ctl(`__herdrCompanion.show({tab_id:'w1:t2', file:${JSON.stringify(boardFile)}, page_api:true, focus:true, opened_by:'agent:w1:p9'})`);
+  const pp = await waitFor(() => pageForTarget(psh.target_id), 5000);
+  await pp.waitForLoadState('load').catch(() => {});
+  // herdr only knows the entry after a sync: wait for it before any click
+  const pentry = await waitFor(() => mock.state.tabs.get('w1:t2').browser.entries.find((e) => e.view_id === psh.view_id && e.id && e.page_api), 5000);
+  check('a page_api view syncs page_api', pentry, pentry);
+  check('its top frame has a frozen window.herdr.send', await pp.evaluate(() => typeof (window.herdr && window.herdr.send) === 'function' && Object.isFrozen(window.herdr)));
+  const pframe = await waitFor(() => pp.frames().find((f) => f.url().endsWith('frame.html')), 3000);
+  check('an iframe of the page has no window.herdr', pframe && (await pframe.evaluate(() => typeof window.herdr)) === 'undefined');
+  check('an html view shown without page_api has no window.herdr', (await hp.evaluate(() => typeof window.herdr)) === 'undefined');
+  const pweb = await ctl(`__herdrCompanion.open({tab_id:'w1:t2', url:'http://127.0.0.1:${webPort}/papi-web'})`);
+  const pwebPage = await waitFor(() => pageForTarget(pweb.target_id), 5000);
+  check('a web tab has no window.herdr', pwebPage && (await pwebPage.evaluate(() => typeof window.herdr)) === 'undefined');
+  await api('mock.focus_tab', { tab_id: 'w1:t2' });
+  await ctl(`__herdrCompanion.focus(${JSON.stringify(psh.view_id)})`);
+  await sleep(300);
+  // (Playwright's evaluate runs with a user gesture, like any CDP client could: the gesture
+  // is anti-spam only; a script's send at load has none)
+  const noGesture = await waitFor(() => pp.evaluate(() => window.__onload), 4000);
+  check('a send without a user gesture is refused', noGesture && noGesture.ok === false && mock.state.pageMessages.length === 0, noGesture);
+  const lastResult = () => waitFor(() => pp.evaluate(() => window.__last), 4000);
+  await pp.click('#go');
+  const psent = await lastResult();
+  check('a click on the opted-in page sends', psent && psent.ok === true && psent.outcome === 'sent', psent);
+  check('the page hears only ok and outcome', psent && Object.keys(psent).sort().join(',') === 'ok,outcome', psent);
+  const pm = mock.state.pageMessages[mock.state.pageMessages.length - 1];
+  check('herdr gets entry, view, file, text and data', pm && pm.entry === pentry.id && pm.view_id === psh.view_id && pm.file === boardFile && pm.text === 'QA: step 3 fails' && pm.data_json === '{"step":3}', pm);
+  const oversizeBefore = mock.state.pageMessages.length;
+  await pp.evaluate(() => { document.getElementById('t').value = 'x'.repeat(5000); });
+  await pp.click('#go');
+  const poversize = await lastResult();
+  check('an oversize text is refused', poversize && poversize.ok === false && mock.state.pageMessages.length === oversizeBefore, poversize);
+  await pp.evaluate(() => { document.getElementById('t').value = 'flood'; });
+  const floodBefore = mock.state.pageMessages.length;
+  const flood = [];
+  for (let i = 0; i < 10; i++) {
+    await pp.click('#go');
+    flood.push(await lastResult());
+  }
+  const floodSent = mock.state.pageMessages.length - floodBefore;
+  check('a flood is rate limited (at most a burst of 3 goes)', floodSent >= 1 && floodSent <= 3 && flood.filter((r) => r && r.ok === false).length >= 7, { floodSent, flood });
+  await sleep(2500); // one token back
+  await pp.evaluate(() => document.getElementById('away').click());
+  const awayTitle = await waitFor(async () => ((await pp.title().catch(() => '')) === 'other' ? 'other' : null), 6000);
+  check('the page navigated to another file of its directory', awayTitle === 'other', awayTitle);
+  const awayBefore = mock.state.pageMessages.length;
+  await pp.click('#go');
+  const paway = await lastResult();
+  check('a page navigated away from the shown file is refused', paway && paway.ok === false && mock.state.pageMessages.length === awayBefore, paway);
+
   // an agent focus() into a non-focused herdr tab survives unrelated tab events
   const fo = await ctl(`__herdrCompanion.show({tab_id:'w1:t1', file:${JSON.stringify(path.join(site, 'inside.html'))}, focus:true})`);
   await api('mock.create_tab', { label: 'later' });

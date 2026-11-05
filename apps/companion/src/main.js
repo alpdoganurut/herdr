@@ -5,7 +5,7 @@ const { app, BrowserWindow, WebContentsView, ipcMain, protocol, session, Menu, n
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { pathToFileURL } = require('node:url');
+const { pathToFileURL, fileURLToPath } = require('node:url');
 const { GroupStore } = require('./groups.js');
 const { ViewManager, within, frameKey } = require('./views.js');
 const { DialogBook } = require('./dialogs.js');
@@ -18,6 +18,7 @@ const { DockController } = require('./dock/dock.js');
 const { sessionCounts, sessionMenuItems } = require('./info.js');
 const { pageMenuItems, pageMenuActions } = require('./context-menu.js');
 const bar = require('./ui/bar-model.js');
+const pageApi = require('./page-api.js');
 
 const VERSION = require('../package.json').version;
 const APP_NAME = 'herdr+ companion'; // the macOS menu bar, Dock and window titles
@@ -162,7 +163,10 @@ class Companion {
       onContextMenu: (id, params) => this.openPageMenu(id, params),
       onDialogsEnd: (id, frame) => this.dialogs.dismissView(id, { frame }),
       onRaise: (host) => this.raiseDockBar(host),
+      // page API: views get window.herdr only while herdr advertises page messages
+      pageApiOn: () => !!(this.features && this.features.has(pageApi.FEATURE)),
     });
+    this.pageRates = new Map(); // view_id -> RateLimit (page API)
     // pages' alert / confirm / prompt (src/dialogs.js), shown in the dialog card over the page
     this.dialogs = new DialogBook({ onChange: () => this.onDialogsChanged() });
     this.dialogView = null;
@@ -198,6 +202,7 @@ class Companion {
       return this.controlCall(op, a);
     });
     ipcMain.on('herdr-companion:dialog', (e, req) => this.onPageDialog(e, req));
+    ipcMain.handle('herdr-companion:page-message', (e, req) => this.onPageMessage(e, req));
     ipcMain.on('herdr-companion:dialog-ui', (e, kind, a) => {
       if (this.dialogView && e.sender === this.dialogView.webContents) this.onDialogUi(kind, a || {});
     });
@@ -759,6 +764,7 @@ class Companion {
     const hit = this.store.removeEntry(viewId);
     if (!hit) return null;
     this.views.destroy(viewId, this.win);
+    this.pageRates.delete(viewId);
     if (hit.group.tab_id === this.shownTab) {
       const next = this.activeEntry(hit.group);
       if (next) this.ensureLive(next, hit.group.tab_id).catch(() => {});
@@ -1244,6 +1250,8 @@ class Companion {
         file,
         root,
         allow_network: !!a.allow_network,
+        // page API: only while herdr advertises it, never with network
+        page_api: !!a.page_api && !a.allow_network && !!(this.features && this.features.has(pageApi.FEATURE)),
         url: pathToFileURL(file).toString(),
         title: a.title || path.basename(file),
         title_fixed: !!a.title, // an explicit --title: the page's <title> never replaces it
@@ -1692,6 +1700,93 @@ class Companion {
     this.flash = { level, text, until: Date.now() + ms };
     this.pushStrip();
     setTimeout(() => this.pushStrip(), ms + 50).unref();
+  }
+
+  // ---------- page API (window.herdr.send) ----------
+
+  // A page's preload asked (invoke): {op: 'hello'} -> {token} | {}, {op: 'send', token, text,
+  // data_json} -> {ok, outcome}. Identity from the event only (src/page-api.js); the page hears
+  // ok/outcome, never pane or agent names; the strip says who got it.
+  async onPageMessage(e, req) {
+    const refused = { ok: false, outcome: 'refused' };
+    const viewId = this.views.viewIdOf(e.sender);
+    const rec = viewId ? this.views.get(viewId) : null;
+    const hit = viewId ? this.store.findView(viewId) : null;
+    let frame = null;
+    let mainFrame = null;
+    try {
+      frame = e.senderFrame;
+      mainFrame = e.sender.mainFrame;
+    } catch {}
+    const shown = !!(hit && hit.group.tab_id === this.shownTab && hit.group.active === viewId);
+    const ctx = {
+      features: rec && rec.pageApi ? this.features : null, // a view created without the bridge never sends
+      viewId,
+      hit,
+      frame,
+      mainFrame,
+      shown,
+      token: req && req.token,
+      expected: rec && rec.pageToken,
+      realpath: (p) => fs.realpathSync(p),
+      fileURLToPath,
+    };
+    const op = req && req.op;
+    if (op === 'hello') {
+      const ok = pageApi.checkSender(ctx, { hello: true });
+      if (!ok.ok) {
+        log('page message: hello refused', ok.reason, viewId || '-');
+        return {};
+      }
+      rec.pageToken = crypto.randomBytes(16).toString('hex');
+      return { token: rec.pageToken };
+    }
+    if (op !== 'send') return refused;
+    const who = pageApi.checkSender(ctx);
+    if (!who.ok) {
+      log('page message: refused', who.reason, viewId || '-');
+      return who.reason === 'stale_document' ? { ...refused, reason: 'stale_document' } : refused;
+    }
+    const payload = pageApi.checkPayload(req);
+    if (!payload.ok) {
+      log('page message: refused', payload.reason, viewId);
+      return refused;
+    }
+    let rate = this.pageRates.get(viewId);
+    if (!rate) this.pageRates.set(viewId, (rate = new pageApi.RateLimit()));
+    if (!rate.take(Date.now())) {
+      log('page message: refused rate', viewId);
+      return refused;
+    }
+    const { group: g, entry: en } = hit;
+    const params = { tab_id: g.tab_id, view_id: en.view_id, file: en.file, text: payload.text };
+    if (en.id) params.entry = en.id;
+    if (payload.data_json !== null) params.data_json = payload.data_json;
+    try {
+      const res = await this.link.call('browser.page_message', params);
+      const name = res.to_name || res.to_pane || 'the agent';
+      log('page message', res.outcome, viewId, res.message_id || '');
+      if (res.outcome === 'sent') this.say('ok', `Page message sent to ${name}`);
+      else this.say('ok', `Page message queued for ${name}${res.reason ? ` (${res.reason})` : ''}`);
+      return { ok: true, outcome: res.outcome === 'sent' ? 'sent' : 'queued' };
+    } catch (err) {
+      log('page message: herdr refused', err.code || '', err.message);
+      // the agent clicking its own page hears nothing; the user hears why theirs did not go
+      if (err.code !== 'agent_driving') {
+        const why =
+          err.code === 'agent_suspended'
+            ? 'the agent that showed this page is suspended'
+            : err.code === 'owner_gone'
+              ? 'the agent that showed this page is gone'
+              : err.code === 'no_message_reader'
+                ? 'the agent that showed this page cannot take page messages'
+                : err.code === 'page_messages_off'
+                  ? 'page messages are off in herdr'
+                  : err.message || err.code || 'refused';
+        this.say('warn', `Page message not sent: ${why}`);
+      }
+      return refused;
+    }
   }
 
   // ---------- send page (contract §5.1) ----------

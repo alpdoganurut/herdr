@@ -6,6 +6,9 @@
 //   blocked until then, as in a browser.
 // * html views without network (`--herdr-nonet`): WebRTC goes around webRequest and the
 //   sidecar's routes, so its constructors are removed from the page's world first.
+// * page API (`--herdr-page-api`, an agent's html view shown with page_api): the top frame
+//   gets a frozen, send-only window.herdr; iframes and every other page never do. The main
+//   process re-checks every call (src/page-api.js), herdr again (browser.page_message).
 'use strict';
 const { contextBridge, ipcRenderer } = require('electron');
 
@@ -83,3 +86,46 @@ contextBridge.executeInMainWorld({
   },
   args: [ask, process.argv.includes('--herdr-nonet')],
 });
+
+if (process.argv.includes('--herdr-page-api') && process.isMainFrame) {
+  // cut here too, so a huge payload never crosses the IPC (main checks again)
+  const TEXT_MAX = 4000;
+  const DATA_MAX = 32 * 1024;
+  const refused = (reason) => ({ ok: false, outcome: 'refused', reason });
+  let token = null; // this document's, from main (hello)
+  const call = (req) => ipcRenderer.invoke('herdr-companion:page-message', req);
+  const hello = async () => {
+    const r = await call({ op: 'hello' });
+    token = r && typeof r.token === 'string' ? r.token : null;
+    return token;
+  };
+  const send = async (message) => {
+    try {
+      if (!message || typeof message !== 'object') return refused('invalid');
+      const text = message.text === undefined || message.text === null ? '' : message.text;
+      if (typeof text !== 'string') return refused('invalid');
+      if ([...text].length > TEXT_MAX) return refused('too_large');
+      let dataJson = null;
+      if (message.data !== undefined) {
+        try {
+          dataJson = JSON.stringify(message.data);
+        } catch {
+          return refused('invalid');
+        }
+        if (dataJson !== undefined && new TextEncoder().encode(dataJson).length > DATA_MAX) return refused('too_large');
+        if (dataJson === undefined) dataJson = null;
+      }
+      if (!text.trim() && dataJson === null) return refused('empty');
+      // anti-spam, not proof of a human (a CDP click is trusted input too)
+      if (!(navigator.userActivation && navigator.userActivation.isActive)) return refused('no_gesture');
+      if (!token && !(await hello())) return refused('not_allowed');
+      let r = await call({ op: 'send', token, text, data_json: dataJson });
+      // a document restored from history holds an old token: one new hello (main checks it again)
+      if (r && r.reason === 'stale_document' && (await hello())) r = await call({ op: 'send', token, text, data_json: dataJson });
+      return r && typeof r === 'object' ? { ok: !!r.ok, outcome: String(r.outcome || (r.ok ? 'sent' : 'refused')) } : refused('failed');
+    } catch {
+      return refused('failed');
+    }
+  };
+  contextBridge.exposeInMainWorld('herdr', Object.freeze({ send }));
+}

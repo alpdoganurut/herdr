@@ -252,6 +252,10 @@ class ViewManager {
     let rootReal = null;
     let sesReady = null;
     const noNetwork = isHtml && !entry.allow_network;
+    // page API (src/page-api.js): window.herdr in the top frame of an opted-in view, while
+    // herdr advertises page messages
+    const pageApi = noNetwork && !!entry.page_api && /^agent:./.test(entry.opened_by || '') && !!(this.hooks.pageApiOn && this.hooks.pageApiOn());
+    const extraArgs = [...(noNetwork ? ['--herdr-nonet'] : []), ...(pageApi ? ['--herdr-page-api'] : [])];
     if (isHtml) {
       ({ ses, rootReal, ready: sesReady } = htmlSession(viewRoot(entry.root, entry.file), entry.allow_network));
     } else {
@@ -268,7 +272,7 @@ class ViewManager {
         // sandboxed (no Node in the page); in subframes too, so a frame's dialogs are the companion's
         preload: PAGE_PRELOAD,
         nodeIntegrationInSubFrames: true,
-        ...(noNetwork ? { additionalArguments: ['--herdr-nonet'] } : {}),
+        ...(extraArgs.length ? { additionalArguments: extraArgs } : {}),
       },
     });
     if (noNetwork) {
@@ -276,7 +280,9 @@ class ViewManager {
         view.webContents.setWebRTCIPHandlingPolicy('disable_non_proxied_udp');
       } catch {}
     }
-    const rec = { view, entry, rootReal, target: null, ready: null, grants: new Set() };
+    // pageApi: the bridge was given; pageToken: the current document's (a new document asks
+    // for a new one: did-navigate clears it)
+    const rec = { view, entry, rootReal, target: null, ready: null, grants: new Set(), pageApi, pageToken: null };
     this.live.set(entry.view_id, rec);
     view.setVisible(false);
     (this.host || win).contentView.addChildView(view);
@@ -308,7 +314,10 @@ class ViewManager {
       if (this.hooks.onLeave) this.hooks.onLeave(id, origin);
       this.hooks.onNav(id, { url });
     };
-    wc.on('did-navigate', nav);
+    wc.on('did-navigate', () => {
+      rec.pageToken = null; // a committed main-frame navigation: a new document
+      nav();
+    });
     wc.on('did-navigate-in-page', (_e, _url, isMainFrame) => isMainFrame && nav());
     wc.on('page-title-updated', (_e, title) => this.hooks.onNav(id, { title }));
     wc.on('did-start-loading', () => this.hooks.onState(id));

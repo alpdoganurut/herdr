@@ -8,7 +8,7 @@
 use sha2::{Digest, Sha256};
 
 /// The app's version (`apps/companion/package.json`), checked by a test.
-pub const COMPANION_APP_VERSION: &str = "0.2.4";
+pub const COMPANION_APP_VERSION: &str = "0.2.5";
 
 /// File name (relative to the app directory) and content, in write order.
 pub const COMPANION_ASSETS: &[(&str, &[u8])] = &[
@@ -75,6 +75,10 @@ pub const COMPANION_ASSETS: &[(&str, &[u8])] = &[
     (
         "src/managed.js",
         include_bytes!("../../apps/companion/src/managed.js"),
+    ),
+    (
+        "src/page-api.js",
+        include_bytes!("../../apps/companion/src/page-api.js"),
     ),
     (
         "src/views.js",
