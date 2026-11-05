@@ -34,7 +34,14 @@ fn normalize_api_key_alias(key: &str) -> &str {
 }
 
 pub(super) fn encode_api_text(runtime: &crate::terminal::TerminalRuntime, text: &str) -> Vec<u8> {
-    let bracketed = runtime.bracketed_paste_enabled();
+    api_text_bytes(text, runtime.bracketed_paste_enabled())
+}
+
+/// Fork: the bytes `text` goes into a pane as, in a bracketed paste or not.
+/// Control characters are stripped first (`envelope::strip_controls`), so
+/// no text can end the paste early, type keys after it or raise a signal.
+pub(super) fn api_text_bytes(text: &str, bracketed: bool) -> Vec<u8> {
+    let text = crate::agents_model::envelope::strip_controls(text);
     if bracketed {
         format!("\x1b[200~{text}\x1b[201~").into_bytes()
     } else {

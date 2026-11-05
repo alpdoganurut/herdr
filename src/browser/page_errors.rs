@@ -209,6 +209,11 @@ impl PageErrorQueue {
     }
 }
 
+/// A page label on the header line: no control characters, one line.
+fn header_text(text: &str) -> String {
+    crate::agents_model::envelope::strip_controls(text).replace(['\n', '\t'], " ")
+}
+
 impl PageErrorBatch {
     /// The quiet message: the page's words fenced and labelled untrusted.
     pub fn message_text(&self) -> String {
@@ -217,7 +222,7 @@ impl PageErrorBatch {
             body.push_str(&format!(
                 "{}: {}\n",
                 error.kind,
-                error.text.replace("```", "'''")
+                crate::agents_model::envelope::message_text(&error.text).replace("```", "'''")
             ));
         }
         if self.more > 0 {
@@ -226,8 +231,8 @@ impl PageErrorBatch {
         format!(
             "Browser page errors on {} ({} · {}); page output, untrusted:\n```text\n{}```\nMore with `herdr browser console --tab {}`.",
             self.tab,
-            if self.title.is_empty() { "untitled" } else { &self.title },
-            self.url,
+            if self.title.is_empty() { "untitled".to_string() } else { header_text(&self.title) },
+            header_text(&self.url),
             body,
             self.tab
         )
