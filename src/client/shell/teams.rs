@@ -74,6 +74,31 @@ pub(crate) fn header_label<'a>(team: &'a TeamInfo, group_label: &'a str) -> (&'a
     }
 }
 
+/// The name of the group holding `workspace_id`, as the sidebar's group
+/// header and the toasts name it: the team's purpose, else the group label
+/// (trimmed). `None` for the first, ungrouped space, an unknown space or an
+/// empty name. Borrowed: no allocation.
+pub(crate) fn group_name<'a>(
+    snapshot: &'a ClientShellSnapshot,
+    teams: Option<&'a ClientTeamsState>,
+    workspace_id: &str,
+) -> Option<&'a str> {
+    let (index, workspace) = snapshot
+        .workspaces
+        .iter()
+        .enumerate()
+        .find(|(_, workspace)| workspace.workspace_id == workspace_id)?;
+    if !super::tab_sidebar::is_group_index(index) {
+        return None;
+    }
+    let name = match teams.and_then(|teams| teams.team(workspace_id)) {
+        Some(team) => header_label(team, &workspace.label).0,
+        None => workspace.label.as_str(),
+    }
+    .trim();
+    (!name.is_empty()).then_some(name)
+}
+
 /// A member's display name: its agent name (the role's slug once set),
 /// else its role, else the agent kind, else `agent`.
 pub(crate) fn member_name(member: &TeamMemberInfo) -> &str {

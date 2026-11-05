@@ -656,14 +656,16 @@ pub(super) fn put_group_text(
                 Style::default().fg(palette.overlay1),
             );
         }
-        None => put_truncated(
-            buffer,
-            x,
-            y,
-            room,
-            &workspace.label,
-            Style::default().fg(palette.overlay0),
-        ),
+        None => {
+            put_truncated(
+                buffer,
+                x,
+                y,
+                room,
+                &workspace.label,
+                Style::default().fg(palette.overlay0),
+            );
+        }
     }
 }
 

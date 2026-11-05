@@ -471,8 +471,10 @@ pub(super) fn put_text(buffer: &mut Buffer, x: u16, y: u16, width: u16, text: &s
 }
 
 /// Fork (sidebar v2): `text` in at most `width` cells at (`x`, `y`); text
-/// that does not fit keeps `width - 1` cells and ends with `…`. Allocates
-/// nothing.
+/// that does not fit keeps `width - 1` cells and ends with `…`. Returns the
+/// column after the last written cell (after the `…` when truncated, so a
+/// wide character cut short leaves no stray blank before what follows).
+/// Allocates nothing.
 pub(super) fn put_truncated(
     buffer: &mut Buffer,
     x: u16,
@@ -480,16 +482,17 @@ pub(super) fn put_truncated(
     width: u16,
     text: &str,
     style: Style,
-) {
+) -> u16 {
     if width == 0 || y >= buffer.area.bottom() || x >= buffer.area.right() {
-        return;
+        return x;
     }
-    if display_width(text) <= width {
+    let text_width = display_width(text);
+    if text_width <= width {
         buffer.set_stringn(x, y, text, usize::from(width), style);
-        return;
+        return x.saturating_add(text_width);
     }
     let (end_x, _) = buffer.set_stringn(x, y, text, usize::from(width - 1), style);
-    buffer.set_stringn(end_x, y, "…", 1, style);
+    buffer.set_stringn(end_x, y, "…", 1, style).0
 }
 
 pub(super) fn display_width(text: &str) -> u16 {
