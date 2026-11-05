@@ -170,6 +170,31 @@ thread_local! {
     static AGENT_OP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+/// Fork (page API): the sidecar ops that fire page script or trusted
+/// input (an agent's of them makes its page "driven").
+const DRIVING_SIDECAR_OPS: [&str; 5] = ["act", "eval", "navigate", "history", "dialog"];
+
+/// Fork (page API): whether `op` fires page script or trusted input, or
+/// makes the page (show, open); a batch when any step does.
+fn op_drives_page(op: &BrowserOp) -> bool {
+    match op {
+        BrowserOp::Batch { ops, .. } => ops.iter().any(|step| op_drives_page(&step.op)),
+        BrowserOp::Show { .. }
+        | BrowserOp::Open { .. }
+        | BrowserOp::Navigate { .. }
+        | BrowserOp::History { .. }
+        | BrowserOp::Eval { .. }
+        | BrowserOp::Dialog { .. }
+        | BrowserOp::Click { .. }
+        | BrowserOp::Type { .. }
+        | BrowserOp::Press { .. }
+        | BrowserOp::Select { .. }
+        | BrowserOp::Fill { .. }
+        | BrowserOp::Hover { .. } => true,
+        _ => false,
+    }
+}
+
 /// Fork (page API): an agent's request on a companion page, in flight
 /// until dropped.
 struct AgentOpGuard<'a> {
@@ -1387,7 +1412,10 @@ impl BrowserHub {
         ACTIVITY.with(|slot| *slot.borrow_mut() = None);
         // Fork (page API): a page an agent op just created or used counts as
         // driven for the grace too (its target was not known up front).
-        if let (true, Ok((_, Some(key), _))) = (agent && is_companion(&profile), &result) {
+        if let (true, Ok((_, Some(key), _))) = (
+            agent && is_companion(&profile) && op_drives_page(&params.op),
+            &result,
+        ) {
             self.inner
                 .agent_ops
                 .lock()
@@ -3374,16 +3402,23 @@ impl BrowserHub {
         }
     }
 
-    /// Send one request and wait for its reply.
-    /// Fork (page API): an agent's request on a companion page marks the
-    /// page driven while it runs (and for the grace after).
+    /// Fork (page API): an agent's request on a companion page that fires
+    /// page script or trusted input (act, eval, navigate, history, dialog)
+    /// marks the page driven while it runs (and for the grace after). A
+    /// read, wait, find, snapshot, screenshot, links, console or network
+    /// never does (its residue: a read can still grant transient
+    /// activation; the companion's rate limit bounds it).
     fn agent_op_guard(
         &self,
+        op: &str,
         profile: Option<&str>,
         target: Option<&str>,
     ) -> Option<AgentOpGuard<'_>> {
         let target = target.filter(|t| !t.is_empty())?;
-        if !profile.is_some_and(is_companion) || !AGENT_OP.with(std::cell::Cell::get) {
+        if !DRIVING_SIDECAR_OPS.contains(&op)
+            || !profile.is_some_and(is_companion)
+            || !AGENT_OP.with(std::cell::Cell::get)
+        {
             return None;
         }
         self.inner
@@ -3417,6 +3452,7 @@ impl BrowserHub {
             .touched(target, Instant::now());
     }
 
+    /// Send one request and wait for its reply.
     pub fn request(
         &self,
         op: &str,
@@ -3425,7 +3461,7 @@ impl BrowserHub {
         args: Value,
         deadline: Duration,
     ) -> Result<HostReply, BrowserError> {
-        let _driving = self.agent_op_guard(profile, target);
+        let _driving = self.agent_op_guard(op, profile, target);
         let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = mpsc::channel();
         self.inner.pending.lock().unwrap().insert(id, tx);

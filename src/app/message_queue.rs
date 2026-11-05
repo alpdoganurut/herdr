@@ -241,6 +241,12 @@ impl QueuedMessage {
     }
 
     /// The message on its way in.
+    /// Fork (page API): a page message (pointer relation `Page`), which is
+    /// never pasted.
+    fn is_page_message(&self) -> bool {
+        self.outgoing().pointer.relation == crate::agents_model::envelope::PointerRelation::Page
+    }
+
     fn outgoing(&self) -> Outgoing {
         Outgoing {
             id: self.id().to_string(),
@@ -2434,6 +2440,10 @@ impl App {
         // only the message that started its turn (the turn origin and marker
         // name one id), so a batch would leave messages 2..N unanswerable.
         let max_combined = if coordinator { 1 } else { MAX_COMBINED };
+        // Fork (page API): a page message only ever goes in as a pointer
+        // line; while the target reads no messages by id it waits (its TTL
+        // ages it out), never the paste fallback.
+        let reads = self.reads_messages(&terminal_id);
         let mut items: Vec<Outgoing> = Vec::new();
         let mut chars = 0;
         for entry in self
@@ -2447,6 +2457,7 @@ impl App {
                 entry.typed_unix.is_none() && entry.attempts < submit::MAX_SUBMIT_ATTEMPTS
             })
             .filter(|entry| !coordinator_only || entry.from_coordinator)
+            .filter(|entry| reads || !entry.is_page_message())
         {
             if !items.is_empty()
                 && (items.len() >= max_combined
@@ -2456,6 +2467,11 @@ impl App {
             }
             chars += entry.envelope.len() + 2;
             items.push(entry.outgoing());
+        }
+        if items.is_empty() {
+            // only held page messages: look again (a reader may come back)
+            next.push(now + RETRY);
+            return false;
         }
         let ids: Vec<String> = items.iter().map(|item| item.id.clone()).collect();
         let first = ids.first().cloned().unwrap_or_default();

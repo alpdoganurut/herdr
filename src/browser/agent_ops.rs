@@ -8,8 +8,10 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-/// How long after an agent op ends its page still counts as driven.
-pub const AGENT_DRIVEN_GRACE: Duration = Duration::from_millis(1_000);
+/// How long after an agent op ends its page still counts as driven: above
+/// Chromium's transient user activation (about 5 s), so a page script an
+/// agent's click or eval started (a `setTimeout` send) is still dropped.
+pub const AGENT_DRIVEN_GRACE: Duration = Duration::from_millis(6_000);
 /// The most targets kept (ended marks past the grace go first).
 const MAX_TARGETS: usize = 256;
 
@@ -95,6 +97,11 @@ mod tests {
         let end = t0 + Duration::from_secs(6);
         ops.end("T1", end);
         assert!(ops.driving("T1", end + Duration::from_millis(999)));
+        assert!(
+            ops.driving("T1", end + Duration::from_millis(1_500)),
+            "an eval's setTimeout(1500) send is still the agent's"
+        );
+        assert!(ops.driving("T1", end + Duration::from_millis(5_900)));
         assert!(!ops.driving("T1", end + AGENT_DRIVEN_GRACE));
         assert!(!ops.driving("T2", end), "another page is not driven");
         ops.touched("T3", end);

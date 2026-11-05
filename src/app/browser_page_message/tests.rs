@@ -424,3 +424,52 @@ fn page_data_is_compact_json_with_a_depth_and_size_cap() {
     assert_eq!(page_data(Some(&deep)).unwrap_err().0, "invalid_data");
     assert_eq!(page_data(Some("{")).unwrap_err().0, "invalid_data");
 }
+
+/// Audit A2: a queued page message is never pasted. While its target reads
+/// no messages by id it waits in the queue (the TTL ages it out); once a
+/// reader is back it goes in as a pointer line.
+#[tokio::test]
+async fn a_queued_page_message_waits_instead_of_being_pasted() {
+    use crate::detect::{Agent, AgentState};
+    let mut app = model_app();
+    let page = setup(&mut app);
+    let mut rx = live(&mut app, 1, 1);
+    reader(&mut app, 1, 1);
+    let opener = pane(&app, 1, 1);
+    crate::app::agents_model::tests::terminal_mut(&mut app, opener)
+        .set_detected_state(Some(Agent::Claude), AgentState::Working);
+    let reply = send(&mut app, params(&page));
+    assert_eq!(reply["result"]["outcome"], "queued", "{reply}");
+    let id = reply["result"]["message_id"].as_str().unwrap().to_string();
+    // the reader goes away, the agent goes idle
+    app.agents_model.message_readers.clear();
+    crate::app::agents_model::tests::terminal_mut(&mut app, opener)
+        .set_detected_state(Some(Agent::Claude), AgentState::Idle);
+    app.message_queue.mark_due();
+    let t0 = std::time::Instant::now();
+    let now_unix = crate::coordinator::now_unix();
+    app.message_queue_pass(t0, now_unix);
+    app.message_queue_pass(t0 + crate::app::message_queue::SETTLE, now_unix);
+    let text = typed(&mut rx);
+    assert!(!text.contains(PASTE_START), "never pasted: {text:?}");
+    assert!(!text.contains("page content"), "{text:?}");
+    assert!(
+        app.message_queue
+            .entries
+            .iter()
+            .any(|entry| entry.message.id.as_deref() == Some(id.as_str())),
+        "it waits in the queue"
+    );
+    // a reader again: a pointer line
+    reader(&mut app, 1, 1);
+    app.message_queue.mark_due();
+    let t1 = std::time::Instant::now();
+    app.message_queue_pass(t1, now_unix);
+    app.message_queue_pass(t1 + crate::app::message_queue::SETTLE, now_unix);
+    let text = typed(&mut rx);
+    assert!(!text.contains(PASTE_START), "{text:?}");
+    assert!(
+        text.contains(&format!("herdr+ message {id} from a page you showed")),
+        "{text:?}"
+    );
+}

@@ -3260,6 +3260,103 @@ fn a_page_api_show_reaches_the_companion_only_without_network_and_with_the_switc
     assert!(!plain.text.contains("window.herdr"));
 }
 
+/// Audit A1/A8: only an agent op that fires page script or trusted input
+/// (eval, act, navigate, history, dialog) makes a companion page "driven";
+/// an agent's read or wait never does, a user's op never does.
+#[test]
+fn only_an_agents_eval_or_act_drives_a_companion_page() {
+    let (hub, _shared, _stream, home) = hub("agent-driving");
+    hub.host_register(&register_params("a"))
+        .expect("registered");
+    let file = home.join("p.html");
+    std::fs::write(&file, "<p>p</p>").unwrap();
+    let shown = hub
+        .run(
+            &BrowserActor::User,
+            params(BrowserOp::Show {
+                file: file.display().to_string(),
+                allow_network: false,
+                page_api: false,
+                watch: false,
+                focus: false,
+                title: None,
+            }),
+        )
+        .expect("a user's show");
+    let tab = shown.tab.clone().expect("a tab");
+    let target = hub
+        .with_state_mut(|state| {
+            state
+                .resolve_tab("companion", &tab)
+                .map(|r| r.target_id.clone())
+        })
+        .expect("the ledger knows the view");
+    assert!(
+        !hub.agent_driving(&target),
+        "a user's show is not an agent's"
+    );
+    let on_tab = |op: BrowserOp| BrowserRunParams {
+        tab: Some(tab.clone()),
+        ..params(op)
+    };
+    let agent = pane("w2:pD");
+    hub.run(
+        &agent,
+        on_tab(BrowserOp::Read {
+            format: None,
+            selector: None,
+            ref_: None,
+            offset: None,
+            max: None,
+            all: false,
+            interactive: false,
+        }),
+    )
+    .expect("read");
+    hub.run(
+        &agent,
+        on_tab(BrowserOp::Wait {
+            text: None,
+            gone: None,
+            selector: None,
+            url: None,
+            load: Some("load".into()),
+            timeout_s: Some(1),
+        }),
+    )
+    .expect("wait");
+    assert!(
+        !hub.agent_driving(&target),
+        "an agent's read or wait drives nothing"
+    );
+    hub.run(
+        &BrowserActor::User,
+        on_tab(BrowserOp::Eval {
+            expr: "1".into(),
+            max: None,
+        }),
+    )
+    .expect("a user's eval");
+    assert!(!hub.agent_driving(&target), "a user's eval is the user's");
+    hub.run(
+        &agent,
+        on_tab(BrowserOp::Eval {
+            expr: "setTimeout(() => window.herdr.send({text: 'x'}), 1500)".into(),
+            max: None,
+        }),
+    )
+    .expect("an agent's eval");
+    assert!(
+        hub.agent_driving(&target),
+        "an agent's eval drives the page"
+    );
+    std::thread::sleep(Duration::from_millis(1_500));
+    assert!(
+        hub.agent_driving(&target),
+        "its setTimeout(1500) send still lands inside the grace"
+    );
+}
+
 #[test]
 fn a_supervisor_pass_never_drops_a_live_lease() {
     let (hub, _shared, _stream, _home) = hub("companion-expiry");
