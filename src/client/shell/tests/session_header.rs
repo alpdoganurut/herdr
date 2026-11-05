@@ -1006,3 +1006,70 @@ fn the_header_names_the_focused_tabs_group_and_its_team_purpose() {
     let row = super::tab_sidebar_golden::sidebar_lines(&frame, COLS, 0, 1).remove(0);
     assert!(row.contains("Search It · restart screen"), "{row}");
 }
+
+#[test]
+fn in_browser_view_the_group_leaves_the_notice_line_where_it_is_without_one() {
+    let palette = ClientShellConfig::from_config(&Config::default()).palette;
+    let viewing = |group| SessionHeader {
+        group,
+        browser: Some(HeaderBrowser {
+            viewing: true,
+            docked: false,
+        }),
+        ..header("local clean up", &palette)
+    };
+    let hits = |header: &SessionHeader<'_>, width: u16| {
+        let area = Rect::new(0, 0, width, 1);
+        let mut buffer = Buffer::empty(area);
+        let hits = session_header::render(&mut buffer, area, header, &palette);
+        let row = (0..width)
+            .map(|x| buffer[(x, 0)].symbol().to_owned())
+            .collect::<String>();
+        (hits, row)
+    };
+    let (grouped, plain) = (viewing(Some("Search It")), viewing(None));
+    for width in 40u16..=110 {
+        let (with, row) = hits(&grouped, width);
+        let (without, _) = hits(&plain, width);
+        if row.contains("Sea") {
+            // the group only moves the notice line's start: it stays after
+            // the facts (never over the group or the name) where it was
+            // after them without a group, with at least BANNER_MIN cells
+            // and the same right edge
+            assert!(without.banner.x > 3, "{width}: {row:?}");
+            assert!(with.banner.x > 3, "{width}: {row:?}");
+            assert!(with.banner.width >= 16, "{width}: {row:?}");
+            assert_eq!(with.banner.right(), without.banner.right(), "{width}");
+        } else {
+            // dropped: the notice line is the one without a group
+            assert_eq!(with.banner, without.banner, "{width}: {row:?}");
+        }
+    }
+    // a wide row still names the group, with the notice line after the facts
+    let (wide, row) = hits(&grouped, 110);
+    assert!(row.contains("Search It · local clean up"), "{row:?}");
+    assert!(wide.banner.width >= 16, "{wide:?}");
+}
+
+#[test]
+fn a_wide_character_cut_leaves_no_blank_before_the_separator() {
+    let palette = ClientShellConfig::from_config(&Config::default()).palette;
+    let grouped = SessionHeader {
+        group: Some("検索検索検索"),
+        context: None,
+        subagents: 0,
+        mail: None,
+        browser: None,
+        ..header("name", &palette)
+    };
+    // the name's room is width-7 and the group gets width-7-4-3 cells: 6 at
+    // width 20, where `検索` and `…` fill only 5 (the third 検 does not fit
+    // the 5 cells before the `…`); the separator follows the `…` directly
+    // (`text` shows a wide character's second cell as a blank)
+    let row = text(&grouped, 20);
+    assert!(row.contains("● 検 索 … · name"), "{row:?}");
+    assert!(!row.contains("…  ·"), "{row:?}");
+    // 7 cells at width 21 cut cleanly
+    let row = text(&grouped, 21);
+    assert!(row.contains("● 検 索 検 … · name"), "{row:?}");
+}

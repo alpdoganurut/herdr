@@ -384,27 +384,35 @@ pub(crate) fn render(
     let show_facts = facts > 0 && room > facts + 2;
     let name_room = if show_facts { room - facts - 2 } else { room };
     // The group, dim, before the name: only in the cells the whole name
-    // leaves, so the name, the facts and the controls keep theirs.
+    // leaves, so the name, the facts and the controls keep theirs; in
+    // Browser view also the notice line's (`BANNER_MIN` and its gap), so
+    // the notice sits where it sits without a group.
     let mut name_at = name_x;
     if let Some(group) = header.group {
         let separator = display_width(GROUP_SEPARATOR);
         let group_width = display_width(group);
+        let notice = if header.browser.is_some_and(|browser| browser.viewing) {
+            BANNER_MIN + 2
+        } else {
+            0
+        };
         let group_room = name_room
             .saturating_sub(name_width)
             .saturating_sub(separator)
+            .saturating_sub(notice)
             .min(group_width);
         if group_width > 0 && group_room >= group_width.min(MIN_GROUP) {
             let group_style = fg(palette.overlay1);
-            put_truncated(buffer, name_x, y, group_room, group, group_style);
+            let group_end = put_truncated(buffer, name_x, y, group_room, group, group_style);
             put_text(
                 buffer,
-                name_x + group_room,
+                group_end,
                 y,
                 separator,
                 GROUP_SEPARATOR,
                 group_style,
             );
-            name_at = name_x + group_room + separator;
+            name_at = group_end + separator;
         }
     }
     let name_room = name_room - (name_at - name_x);
