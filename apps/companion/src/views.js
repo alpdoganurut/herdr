@@ -14,6 +14,14 @@ const NETWORK_URLS = ['http://*/*', 'https://*/*', 'ws://*/*', 'wss://*/*'];
 const PAGE_PRELOAD = path.join(__dirname, 'preload', 'page.js');
 const { downloadAllowed } = require('./context-menu.js');
 
+// A page session's user agent without the Electron/x.y.z token: sites that see it serve their
+// desktop-app pages (Slack: window drag regions, app-only behaviour) instead of the web ones.
+function webUserAgent(ses) {
+  try {
+    ses.setUserAgent(ses.getUserAgent().replace(/\sElectron\/\S+/, ''));
+  } catch {}
+}
+
 // Every download of a page's session (a link, Save Image As…) goes through the save dialog
 // (no save path is set: Electron asks where), starting in Downloads; a local file is never
 // copied out (file: and other non-web URLs are cancelled).
@@ -96,6 +104,7 @@ function htmlSession(rootReal, allowNetwork) {
   ses.setPermissionRequestHandler((_wc, _perm, cb) => cb(false));
   ses.setPermissionCheckHandler(() => false);
   guardDownloads(ses);
+  webUserAgent(ses);
   const out = { ses, rootReal, ready, partition };
   htmlSessions.set(partition, out);
   return out;
@@ -208,6 +217,7 @@ class ViewManager {
     if (this.webSessionReady) return ses;
     this.webSessionReady = true;
     guardDownloads(ses);
+    webUserAgent(ses);
     ses.setPermissionRequestHandler((wc, permission, cb, details = {}) => {
       if (ALLOWED.has(permission)) return cb(true);
       const viewId = this.viewIdOf(wc);

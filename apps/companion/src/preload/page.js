@@ -6,8 +6,16 @@
 //   blocked until then, as in a browser.
 // * html views without network (`--herdr-nonet`): WebRTC goes around webRequest and the
 //   sidecar's routes, so its constructors are removed from the page's world first.
+// * no drag regions: the views sit in frameless windows, where Electron honours a page's
+//   `app-region: drag` (Slack's desktop CSS) and sends the mouse over it to the window, never
+//   to the page or the dock's auto-hidden bar above it. A user-origin !important rule beats
+//   the page's own, in every document of every frame, before its first paint.
 'use strict';
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webFrame } = require('electron');
+
+try {
+  webFrame.insertCSS('*,*::before,*::after{app-region:no-drag !important;-webkit-app-region:no-drag !important}', { cssOrigin: 'user' });
+} catch {}
 
 const ask = (type, message, defaultValue) => ipcRenderer.sendSync('herdr-companion:dialog', { type, message, default_value: defaultValue });
 
