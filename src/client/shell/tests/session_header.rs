@@ -28,6 +28,7 @@ fn header<'a>(name: &'a str, palette: &crate::app::state::Palette) -> SessionHea
         browser: Some(HeaderBrowser {
             viewing: false,
             docked: false,
+            pages: 0,
         }),
         notes_docked: false,
         hover: None,
@@ -79,6 +80,7 @@ fn golden_session_header_at_several_widths() {
         browser: Some(HeaderBrowser {
             viewing: true,
             docked: false,
+            pages: 0,
         }),
         notes_docked: true,
         ..header("header-design", &palette)
@@ -91,6 +93,7 @@ fn golden_session_header_at_several_widths() {
         browser: Some(HeaderBrowser {
             viewing: false,
             docked: true,
+            pages: 0,
         }),
         hover: Some(HeaderTarget::NotesDock),
         ..header("endpoint-compatibility-review", &palette)
@@ -117,6 +120,21 @@ fn golden_session_header_at_several_widths() {
     for width in [80, 62, 59] {
         section("in a group", &grouped, width);
     }
+    // the page count badge after `Browser`
+    let with_pages = |pages: u32, viewing: bool| SessionHeader {
+        browser: Some(HeaderBrowser {
+            viewing,
+            docked: false,
+            pages,
+        }),
+        ..header("header-design-and-navigation", &palette)
+    };
+    section("7 pages", &with_pages(7, false), 110);
+    section("12 pages", &with_pages(12, false), 110);
+    section("150 pages", &with_pages(150, false), 110);
+    section("7 pages, browser view", &with_pages(7, true), 110);
+    section("7 pages, short form", &with_pages(7, false), 37);
+    section("12 pages, toggle only", &with_pages(12, false), 26);
     super::tab_sidebar_golden::assert_golden("session_header", &out);
 }
 
@@ -146,6 +164,177 @@ fn the_name_truncates_first_then_the_view_tabs_shrink_and_the_toggles_stay() {
             assert!(row.contains('◨'), "{width}: {row:?}");
         }
     }
+}
+
+/// `header` with the tab's browser at `pages` (Browser view on or off).
+fn paged<'a>(
+    name: &'a str,
+    palette: &crate::app::state::Palette,
+    pages: u32,
+    viewing: bool,
+) -> SessionHeader<'a> {
+    SessionHeader {
+        browser: Some(HeaderBrowser {
+            viewing,
+            docked: false,
+            pages,
+        }),
+        ..header(name, palette)
+    }
+}
+
+/// `header` drawn on a fresh buffer: the buffer and the hits.
+fn drawn(
+    header: &SessionHeader<'_>,
+    width: u16,
+) -> (Buffer, super::super::session_header::SessionHeaderHits) {
+    let palette = ClientShellConfig::from_config(&Config::default()).palette;
+    let area = Rect::new(0, 0, width, 1);
+    let mut buffer = Buffer::empty(area);
+    let hits = session_header::render(&mut buffer, area, header, &palette);
+    (buffer, hits)
+}
+
+#[test]
+fn the_browser_button_shows_the_page_count_in_a_badge() {
+    let palette = ClientShellConfig::from_config(&Config::default()).palette;
+    let name = "header-design-and-navigation";
+    // none at 0
+    let row = text(&paged(name, &palette, 0, false), 110);
+    assert!(row.contains("Terminal  Browser ◨  ≡"), "{row}");
+    // ` 7 ` after a blank; 10+ one cell wider; 99+ from 100
+    for (pages, label) in [
+        (1, "Browser  1  ◨  ≡"),
+        (7, "Browser  7  ◨  ≡"),
+        (12, "Browser  12  ◨  ≡"),
+        (99, "Browser  99  ◨  ≡"),
+        (100, "Browser  99+  ◨  ≡"),
+        (4321, "Browser  99+  ◨  ≡"),
+    ] {
+        let row = text(&paged(name, &palette, pages, false), 110);
+        assert!(row.contains(label), "{pages}: {row}");
+    }
+    // the short form: the bare count right after `B`
+    let row = text(&paged(name, &palette, 7, false), 37);
+    assert!(row.contains("T  B7 ◨  ≡"), "{row}");
+    let row = text(&paged(name, &palette, 12, false), 38);
+    assert!(row.contains("T  B12 ◨  ≡"), "{row}");
+    // only `◨` left: no count
+    let row = text(&paged(name, &palette, 12, false), 26);
+    assert!(row.trim_end().ends_with("◨  ≡"), "{row}");
+    assert!(!row.contains("12"), "{row}");
+}
+
+#[test]
+fn the_badge_is_grey_and_accent_while_browser_view_is_on() {
+    let palette = ClientShellConfig::from_config(&Config::default()).palette;
+    let chrome = palette.sidebar_chrome();
+    let name = "header-design-and-navigation";
+    for (viewing, fg, bg) in [
+        (false, palette.text, palette.surface1),
+        (true, chrome, palette.accent),
+    ] {
+        let (buffer, hits) = drawn(&paged(name, &palette, 12, viewing), 110);
+        // `Browser` then a blank on the chrome, then ` 12 ` as one block
+        let label_end = hits.browser.x + 7;
+        assert_eq!(buffer[(label_end, 0)].bg, chrome, "the blank");
+        let block: String = (label_end + 1..label_end + 5)
+            .map(|x| buffer[(x, 0)].symbol().to_owned())
+            .collect();
+        assert_eq!(block, " 12 ");
+        for x in label_end + 1..label_end + 5 {
+            let cell = &buffer[(x, 0)];
+            assert_eq!((cell.fg, cell.bg), (fg, bg), "viewing {viewing}, x {x}");
+        }
+        assert_eq!(buffer[(label_end + 5, 0)].bg, chrome, "after the block");
+        // hover leaves the badge alone
+        let hovered = SessionHeader {
+            hover: Some(HeaderTarget::ViewBrowser),
+            ..paged(name, &palette, 12, viewing)
+        };
+        let (buffer, _) = drawn(&hovered, 110);
+        let cell = &buffer[(label_end + 2, 0)];
+        assert_eq!((cell.fg, cell.bg), (fg, bg), "hovered, viewing {viewing}");
+    }
+    // the short form's count is a block too
+    let (buffer, hits) = drawn(&paged(name, &palette, 7, false), 37);
+    let cell = &buffer[(hits.browser.x + 1, 0)];
+    assert_eq!(cell.symbol(), "7");
+    assert_eq!((cell.fg, cell.bg), (palette.text, palette.surface1));
+}
+
+#[test]
+fn the_badge_is_part_of_the_browser_button_and_the_dock_toggle_moves_right() {
+    let palette = ClientShellConfig::from_config(&Config::default()).palette;
+    let name = "header-design-and-navigation";
+    let (_, plain) = drawn(&paged(name, &palette, 0, false), 110);
+    assert_eq!(plain.browser.width, 7);
+    for (pages, badge, width) in [(7, 4, 110), (12, 5, 110), (150, 6, 110), (7, 1, 37)] {
+        let (_, hits) = drawn(&paged(name, &palette, pages, false), width);
+        let label = if width == 110 { 7 } else { 1 };
+        assert_eq!(hits.browser.width, label + badge, "{pages} @ {width}");
+        assert_eq!(
+            hits.browser_dock.x,
+            hits.browser.right() + 1,
+            "{pages} @ {width}"
+        );
+        assert_eq!(hits.browser_dock.width, 1);
+        assert_eq!(hits.notes_dock.x, hits.browser_dock.x + 3);
+        assert!(hits.terminal.right() + 2 == hits.browser.x);
+        // every badge cell is the Browser button
+        for x in hits.browser.x..hits.browser.right() {
+            assert_eq!(
+                hits.resolve((x, 0)),
+                Some(HeaderTarget::ViewBrowser),
+                "x {x}"
+            );
+        }
+        assert_eq!(hits.resolve((hits.browser.right(), 0)), None, "the gap");
+        assert_eq!(
+            hits.resolve((hits.browser_dock.x, 0)),
+            Some(HeaderTarget::BrowserDock)
+        );
+        // the banner slot ends before the view tabs
+        assert!(hits.banner.is_empty() || hits.banner.right() < hits.terminal.x);
+    }
+}
+
+#[test]
+fn the_header_counts_the_tabs_pages_and_hides_them_while_the_companion_is_stopped() {
+    let mut state = browser_state();
+    let set = |state: &mut ClientShellState, companion: &str, pages: u32| {
+        let info = state.browser.info.as_mut().expect("info");
+        info.companion_app.as_mut().expect("companion").state = companion.into();
+        info.sessions[0].pages = pages;
+        state.compose(COLS, ROWS);
+    };
+    let pages = |state: &ClientShellState| {
+        state
+            .session_header_view()
+            .and_then(|header| header.browser)
+            .map(|browser| browser.pages)
+    };
+    set(&mut state, "running", 7);
+    assert_eq!(pages(&state), Some(7));
+    // a click on the badge opens Browser view
+    let hits = state.hits.session_header;
+    assert_eq!(hits.browser.width, 7 + 4);
+    click(
+        &mut state,
+        Rect::new(hits.browser.right() - 2, hits.browser.y, 1, 1),
+    );
+    assert!(state.browser_view_open_for("tab_1"));
+    for stopped in ["stopped", "not_installed", "failed"] {
+        set(&mut state, stopped, 3);
+        assert_eq!(pages(&state), Some(0), "{stopped}");
+        assert_eq!(state.hits.session_header.browser.width, 7, "{stopped}");
+    }
+    set(&mut state, "starting", 3);
+    assert_eq!(pages(&state), Some(3));
+    // another tab's pages are not this tab's
+    let info = state.browser.info.as_mut().expect("info");
+    info.sessions[0].tab_id = "tab_9".into();
+    assert_eq!(pages(&state), Some(0));
 }
 
 #[test]
@@ -1015,6 +1204,7 @@ fn in_browser_view_the_group_leaves_the_notice_line_where_it_is_without_one() {
         browser: Some(HeaderBrowser {
             viewing: true,
             docked: false,
+            pages: 0,
         }),
         ..header("local clean up", &palette)
     };

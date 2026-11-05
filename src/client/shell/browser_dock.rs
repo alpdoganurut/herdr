@@ -1245,20 +1245,26 @@ impl ClientShellState {
 
     // ------------------------------------------------------------ what is drawn
 
+    /// Why the companion is not running (`companion stopped`, `… not
+    /// installed`, `… failed`), `None` while it runs or starts: the view
+    /// strip's notice, and no page count on the strip or the header.
+    pub(crate) fn browser_companion_stopped(&self) -> Option<&'static str> {
+        self.browser_companion()
+            .and_then(|companion| match companion.state.as_str() {
+                "stopped" => Some("companion stopped"),
+                "not_installed" => Some("companion not installed"),
+                "failed" => Some("companion failed"),
+                _ => None,
+            })
+    }
+
     /// The view strip of the focused tab (`None` when it has none).
     pub(crate) fn browser_view_strip(&self) -> Option<ViewStrip> {
         let tab_id = self.browser_dock_focused_tab()?;
         let pages = self.browser_tab_pages(tab_id);
         let attention = self.browser_attention_tabs().contains(tab_id);
         let lit = self.browser_marked_tabs().contains(tab_id);
-        let stopped =
-            self.browser_companion()
-                .and_then(|companion| match companion.state.as_str() {
-                    "stopped" => Some("companion stopped"),
-                    "not_installed" => Some("companion not installed"),
-                    "failed" => Some("companion failed"),
-                    _ => None,
-                });
+        let stopped = self.browser_companion_stopped();
         Some(ViewStrip {
             browser: self.browser_view_open_for(tab_id),
             docked: self.browser_dock_open_for(tab_id),
