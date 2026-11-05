@@ -1,0 +1,50 @@
+<!doctype html>
+<!-- herdr+ page API example. An agent shows it with
+       herdr browser show /abs/path/page-api.html --page-api
+     (MCP: browser_show {file, page_api: true}). In the companion browser, this page's
+     window.herdr.send({text, data}) reaches only the agent that showed it, as page
+     content (never as your words). No network: page_api pages cannot load remote scripts. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>QA checklist</title>
+<style>
+  body { font: 14px/1.5 -apple-system, system-ui, sans-serif; max-width: 520px; margin: 32px auto; padding: 0 16px; }
+  label { display: block; margin: 6px 0; }
+  textarea { width: 100%; min-height: 70px; }
+  button { margin-top: 10px; padding: 6px 14px; }
+  #status { margin-left: 8px; color: #666; }
+</style>
+</head>
+<body>
+<h1>QA checklist</h1>
+<label><input type="checkbox" name="step" value="login"> Login works</label>
+<label><input type="checkbox" name="step" value="search"> Search returns results</label>
+<label><input type="checkbox" name="step" value="export"> Export downloads a file</label>
+<p><textarea id="note" placeholder="Anything the agent should know"></textarea></p>
+<button id="send" disabled>Send to the agent</button><span id="status"></span>
+<script>
+  const button = document.getElementById('send');
+  const status = document.getElementById('status');
+  // window.herdr exists only when the page was shown with page_api (top frame only)
+  if (window.herdr) {
+    button.disabled = false;
+  } else {
+    status.textContent = 'not shown with page_api';
+  }
+  button.addEventListener('click', async () => {
+    const passed = [...document.querySelectorAll('input[name=step]:checked')].map((box) => box.value);
+    const note = document.getElementById('note').value.trim();
+    status.textContent = 'sending…';
+    // text: up to 4000 characters; data: any JSON up to 32 KB. One send per click; a burst of
+    // three, then one every two seconds.
+    const result = await window.herdr.send({
+      text: note || `QA: ${passed.length} of 3 steps pass`,
+      data: { passed, total: 3 },
+    });
+    // {ok: true, outcome: "sent" | "queued"} or {ok: false, outcome: "refused"}
+    status.textContent = result.ok ? `sent (${result.outcome})` : 'not sent';
+  });
+</script>
+</body>
+</html>
