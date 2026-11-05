@@ -1263,3 +1263,125 @@ fn a_wide_character_cut_leaves_no_blank_before_the_separator() {
     let row = text(&grouped, 21);
     assert!(row.contains("● 検 索 検 … · name"), "{row:?}");
 }
+
+#[test]
+fn the_group_and_the_page_badge_share_the_header() {
+    let palette = ClientShellConfig::from_config(&Config::default()).palette;
+    let make = |group, pages, viewing| SessionHeader {
+        group,
+        browser: Some(HeaderBrowser {
+            viewing,
+            docked: false,
+            pages,
+        }),
+        ..header("local clean up", &palette)
+    };
+    let row_of = |buffer: &Buffer, width: u16| {
+        (0..width)
+            .map(|x| buffer[(x, 0)].symbol().to_owned())
+            .collect::<String>()
+    };
+    let name_of = |row: &str| {
+        row.split(" · ")
+            .last()
+            .and_then(|rest| rest.trim_start_matches(['●', ' ']).split("  ").next())
+            .map(str::to_owned)
+            .unwrap_or_default()
+    };
+    for viewing in [false, true] {
+        let grouped = make(Some("Search It"), 12, viewing);
+        let plain = make(None, 12, viewing);
+        for width in 12u16..=120 {
+            let (buffer, with) = drawn(&grouped, width);
+            let (plain_buffer, without) = drawn(&plain, width);
+            let (row, plain_row) = (row_of(&buffer, width), row_of(&plain_buffer, width));
+            // the badge, the view tabs and the toggles sit where they sit
+            // without a group, and so do their hits
+            assert_eq!(
+                row.find("◨").map(|at| row[at..].to_owned()),
+                plain_row.find("◨").map(|at| plain_row[at..].to_owned()),
+                "{viewing} {width}: {row:?}"
+            );
+            assert_eq!(
+                (
+                    with.terminal,
+                    with.browser,
+                    with.browser_dock,
+                    with.notes_dock
+                ),
+                (
+                    without.terminal,
+                    without.browser,
+                    without.browser_dock,
+                    without.notes_dock
+                ),
+                "{viewing} {width}"
+            );
+            // the facts and the name are the ones without a group
+            assert_eq!(row.contains("82%"), plain_row.contains("82%"), "{width}");
+            assert_eq!(name_of(&row), name_of(&plain_row), "{width}: {row:?}");
+            // a group never reaches the view tabs or the badge
+            if row.contains("Sea") && !with.terminal.is_empty() {
+                let group_end = row.find(" · ").map(|at| row[..at].chars().count());
+                assert!(
+                    group_end.is_some_and(|end| (end as u16) < with.terminal.x),
+                    "{width}: {row:?}"
+                );
+            }
+            // the notice line stays left of the view tabs and the badge
+            let first_control = if with.terminal.is_empty() {
+                with.browser_dock.x
+            } else {
+                with.terminal.x
+            };
+            assert!(
+                with.banner.is_empty() || with.banner.right() < first_control,
+                "{viewing} {width}: {with:?}"
+            );
+            // (the notice line is used in Browser view only)
+            if !viewing {
+                continue;
+            }
+            if row.contains("Sea") {
+                if !with.banner.is_empty() {
+                    assert!(with.banner.width >= 16, "{width}: {with:?}");
+                    assert!(with.banner.x > 3, "{width}: {with:?}");
+                    assert_eq!(with.banner.right(), without.banner.right(), "{width}");
+                }
+            } else {
+                assert_eq!(with.banner, without.banner, "{width}: {row:?}");
+            }
+        }
+    }
+    // the badge's five cells take the group's room first: at a width where
+    // the group shows whole without pages it shortens with them, and where
+    // it shortens without pages it drops with them
+    let state = |pages, width| {
+        let row = text(&make(Some("Search It"), pages, false), width);
+        if row.contains("Search It · ") {
+            "whole"
+        } else if row.contains("… · ") {
+            "short"
+        } else {
+            assert!(!row.contains('·') && !row.contains("Sea"), "{row:?}");
+            "gone"
+        }
+    };
+    let widths = 40u16..=120;
+    let shortened = widths
+        .clone()
+        .find(|&width| state(0, width) == "whole" && state(12, width) == "short");
+    let dropped = widths
+        .clone()
+        .find(|&width| state(0, width) == "short" && state(12, width) == "gone");
+    assert!(
+        shortened.is_some() && dropped.is_some(),
+        "{shortened:?} {dropped:?}"
+    );
+    let (shortened, dropped) = (shortened.unwrap_or(0), dropped.unwrap_or(0));
+    let row = text(&make(Some("Search It"), 12, false), shortened);
+    assert!(row.contains("Browser  12  ◨  ≡"), "{row:?}");
+    let row = text(&make(Some("Search It"), 12, false), dropped);
+    assert!(row.contains("● local clean up  82%"), "{row:?}");
+    assert!(row.contains("Browser  12  ◨  ≡"), "{row:?}");
+}
