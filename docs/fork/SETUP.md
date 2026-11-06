@@ -4,11 +4,12 @@ What you get: [herdr-plus.html](herdr-plus.html). Configuration: [CONFIG.md](CON
 
 herdr is a terminal agent runtime: one TUI that runs Claude Code, Codex and shells in
 workspaces, tabs and panes, and tracks each agent's state. herdr+ is a fork that adds
-agent-to-agent tools (`herdr_agents` MCP), team rules, a herdr-owned Chromium browser
-for agents, and a coordinator agent with a dashboard.
+agent-to-agent tools (`herdr_agents` MCP), team rules, a browser that agents and you share
+(the herdr+ companion, docked inside herdr's window), and a coordinator agent with a dashboard.
 
 **Included:** the herdr+ binary, Claude Code and Codex integrations (hooks, agents tools,
-team rules), the `plus:*` Claude skills, the herdr browser, the coordinator.
+team rules, browser steering), the `plus:*` Claude skills (including the `/plus:setup`
+guide), the companion browser, the coordinator.
 
 **Not included:** Ghostty config (use any terminal), and the News digest. News is off by
 default; keep it off by leaving `[news]` out of your config (or `[news]` `enabled = false`)
@@ -16,6 +17,11 @@ and never running `herdr news run`.
 
 Never copy files from someone else's `~/.config/herdr`, `~/.claude` or `~/.codex`. Every
 setup step below writes your own.
+
+**Short path:** do sections 1-4 by hand (prerequisites, clone, build, install, minimal
+config), install the skills (section 6), then open a Claude tab in herdr+ and run
+`/plus:setup`: it does sections 5, 7 and 8 with you, asking before each change. Sections 5-8
+stay here for anyone who prefers to do it by hand.
 
 ---
 
@@ -49,7 +55,6 @@ Run these in a normal terminal (zsh, the macOS default).
    ```
 
 4. Zig **exactly 0.16.0** (builds the vendored libghostty-vt). Other versions fail.
-   Check the exact file name on https://ziglang.org/download/ under 0.16.0, aarch64-macos.
 
    ```bash
    mkdir -p ~/.local/zig && cd ~/.local/zig
@@ -61,18 +66,22 @@ Run these in a normal terminal (zsh, the macOS default).
 
    (`brew install zig` also works while `zig version` prints 0.16.0, but Homebrew will move on.)
 
-5. Agent CLIs: Claude Code (required for the coordinator) and optionally Codex. Install
-   each, run it once and sign in.
+5. Agent CLIs: Claude Code (required for the coordinator and `/plus:setup`) and optionally
+   Codex. Install each, run it once and sign in.
 
    ```bash
-   npm install -g @anthropic-ai/claude-code   # or Anthropic's native installer
+   curl -fsSL https://claude.ai/install.sh | bash      # or: brew install --cask claude-code
    claude --version
-   brew install codex                          # optional; or npm install -g @openai/codex
+   curl -fsSL https://chatgpt.com/codex/install.sh | sh   # optional; or: brew install --cask codex
    codex --version
    ```
 
-6. Browser prerequisites (only if you want the herdr browser): Node.js 20+ with npm, and a
-   Chromium.app (section 7).
+   npm also works (`npm install -g @anthropic-ai/claude-code`, which wants Node.js 22+;
+   `npm install -g @openai/codex`).
+
+6. Node.js 20+ with npm, for the browser (its helper and the companion's Electron download).
+   Skip it only if you turn the browser off (`[browser] enabled = false`). No Chromium is
+   needed; the separate Chromium window is optional (section 7).
 
    ```bash
    brew install node
@@ -105,6 +114,9 @@ git branch --show-current          # fork
 cargo build --release --locked
 ```
 
+Keep the clone at `~/src/herdr-plus`: `/plus:setup` looks for it there (it asks for the path
+otherwise).
+
 - The first build needs open network access to crates.io, deps.files.ghostty.org and
   codeberg.org (Zig fetches libghostty-vt deps into `~/.cache/zig`).
 - Every build prints a `cargo:warning` telling AI agents about the external-contributor
@@ -117,7 +129,7 @@ cargo build --release --locked
 ## 3. Install
 
 Install to a fixed path **before** running any setup command. The coordinator's MCP config,
-the browser MCP registrations and the agent wrap all record the absolute path of the herdr
+the browser MCP registrations, the companion install and the agent wrap all record the absolute path of the herdr
 binary that ran them. Running them from `target/release` ties them to the build directory.
 
 Use copy, sign, then rename. Never `cp` straight over a running `~/.local/bin/herdr`: that
@@ -159,7 +171,7 @@ self-updater. They download upstream herdr and replace `~/.local/bin/herdr`, whi
 coordinator, agents tools and browser. herdr+ reports the same version as upstream (0.9.5),
 so once upstream ships a newer release herdr will offer an update. **Never run those
 commands**. herdr+ turns its background update checks off by default (`[update] version_check` and
-`manifest_check`); leave them off. Update herdr+ only as in section 9.
+`manifest_check`); do not turn them on. Update herdr+ only as in section 9.
 
 ---
 
@@ -183,10 +195,12 @@ EOF
 ```
 
 If the file already exists, add or edit those keys inside the existing tables instead.
+Check it with `herdr config check`.
 
-No `[ui]` or `[update]` lines are needed: herdr+ already defaults to the `tabs` sidebar
-(`sidebar_layout = "tabs"`) and has upstream's update checks off (`version_check = false`,
-`manifest_check = false`). An older config that sets them to those values still works.
+Everything else is already a herdr+ default, so no `[ui]`, `[update]` or `[browser]` lines
+are needed: the `tabs` sidebar with its session header, upstream's update checks off, and
+the companion browser (`[browser] host = "companion"`, `window = false`). Optional extras
+(autosuspend, toasts, keys) are in [CONFIG.md](CONFIG.md); `/plus:setup` offers them too.
 
 Leave out: `[news]`, `[agents.handoff] command` (empty uses herdr's own handoff prompt),
 `ui.tab_bar_right`, and `[agents] context_window` unless your model really has that window.
@@ -198,7 +212,9 @@ herdr
 ```
 
 This starts the server and attaches the TUI. After config edits while it runs:
-`herdr server reload-config`.
+`herdr server reload-config` (or `prefix+shift+r`). Settings is `prefix+s` (`ctrl+b`, `s`).
+
+Next: section 6 (skills), then `/plus:setup` in a Claude tab, or sections 5-8 by hand.
 
 ---
 
@@ -216,6 +232,11 @@ herdr integration status --outdated-only   # should list nothing
 This writes hook scripts under `~/.claude/hooks` and `~/.codex` and registers them in each
 agent's settings. Reinstall after each herdr+ update when `--outdated-only` lists them.
 
+The Claude integration (v17) includes the browser-steering hook: in a Claude launched through
+the wrap, a WebFetch, an `open` of a URL or local HTML file, or another browser MCP is denied
+once and pointed at the herdr browser; the same call again within 2 minutes runs. It needs the
+wrap (below) and `[browser] steer_agents` (on by default; `false` turns it off).
+
 Install the zsh shell hook so a plain `claude` or `codex` typed in a herdr pane goes through
 the wrap (agents tools, instructions, team roster, `codex --no-daemon`):
 
@@ -225,8 +246,8 @@ grep 'herdr+' ~/.zshrc
 ```
 
 It adds one guarded line to `~/.zshrc` (or `$ZDOTDIR/.zshrc`) that sources
-`~/.config/herdr/shell/herdr-plus.zsh`. It is zsh-only; bash and fish get no wrap. Open a
-new pane afterwards.
+`~/.config/herdr/shell/herdr-plus.zsh` (`--shell --remove` takes it out). It is zsh-only;
+bash and fish get no wrap. Open a new pane afterwards.
 
 Verify inside a new herdr pane:
 
@@ -260,10 +281,16 @@ This installs into `${CLAUDE_CONFIG_DIR:-~/.claude}/skills/plus:<name>`. It is s
 re-run; a differing existing copy is moved to `~/.claude/skills-backup/` first. Restart
 Claude Code afterwards.
 
+Then open a Claude tab in herdr+ and run `/plus:setup`. It gives a short tour, offers the
+options, installs what is missing (hooks, shell hook, companion browser, MCP registrations),
+runs the health check and, with your go, a safe `live-handoff` restart. It asks before every
+change and backs up each file first. Run it again any time to re-check your setup.
+
 | Skill | What it does |
 |---|---|
 | `/plus:notes` | Writes or refreshes this session's notes in the notes pane (context, work in flight, plan). Only on request. |
 | `/plus:notify` | Sets, shows or clears when this agent should alert you through `agents_notify`. |
+| `/plus:setup` | Guided onboarding and check-up: tour, options, installs, health check, a safe restart. Asks before every change and backs up each file first. Re-run any time. |
 | `/plus:status` | One-shot digest of agents: working, blocked, done, what waits on you. Args: `[group \| all]`. |
 | `/plus:team-build` | Runs a multi-agent build as a herdr+ team: design, contracts, lanes, review, gate, cutover. |
 
@@ -275,30 +302,21 @@ tools (section 5). `/plus:status all` needs `jq` and herdr+'s `herdr` on PATH.
 
 ## 7. The herdr browser
 
-A Chromium window herdr owns, which your agents drive through the `herdr-browser` MCP
-server and which you can use too.
+The herdr+ companion browser: an Electron app herdr installs, starts and watches. Agents
+drive it through the `herdr-browser` MCP server; you use it too. It docks on the right of a
+tab or covers the tab (Browser view), following herdr's terminal window. `/plus:setup` runs
+these steps for you.
 
-1. **Get a Chromium.app for Mac arm64.** The repo ships none. Use Chromium, not Google
-   Chrome: auto-detection never looks for Chrome, the bundle must contain
-   `Contents/MacOS/Chromium`, and Chrome ignores `--load-extension`. One source is the
-   Mac_Arm snapshots at
-   https://commondatastorage.googleapis.com/chromium-browser-snapshots/index.html?prefix=Mac_Arm/
-   (download `chrome-mac.zip`). Unzip it into its own new folder.
-
-2. **Install a branded, signed copy** (copies to `~/Applications/herdr+ Browser.app`,
-   strips quarantine, ad-hoc signs, refreshes LaunchServices):
+1. **Install the companion** (its app files, Electron 45.2.1, and on macOS the
+   `herdr+ companion` app; it asks before the download of about 115 MB, `--yes` answers yes;
+   a rerun only updates what changed):
 
    ```bash
-   herdr browser install-chromium ~/Downloads/chrome-mac/Chromium.app
+   herdr browser setup --companion
    ```
 
-   Lookup order with the default `executable = "auto"`: `~/Applications/herdr+ Browser.app`,
-   `~/Applications/Chromium.app`, `/Applications/Chromium.app`. For another location set
-   `[browser]` `executable = "/path/to/Chromium.app"`. If you skip `install-chromium`, run
-   `xattr -dr com.apple.quarantine /path/to/Chromium.app` once.
-
-3. **Set up the sidecar and MCP registrations** (runs `npm ci` for playwright-core, needs
-   npm registry access; registers `herdr-browser` for Claude Code at user scope via
+2. **Set up the helper and MCP registrations** (runs `npm ci` for playwright-core, needs npm
+   registry access; registers `herdr-browser` for Claude Code at user scope via
    `claude mcp add-json` and for Codex in `~/.codex/config.toml`):
 
    ```bash
@@ -307,9 +325,9 @@ server and which you can use too.
 
    Variants: `--claude` or `--codex` for one agent only, `--no-mcp` to skip registrations,
    `--node /abs/path/to/node` if node is somewhere unusual (or `[browser]` `node = "..."`).
-   `claude` must be on PATH for the Claude registration.
+   `claude` must be on PATH for the Claude registration. Both steps are needed.
 
-4. **Check:**
+3. **Check:**
 
    ```bash
    herdr browser doctor
@@ -317,21 +335,37 @@ server and which you can use too.
    grep herdr-browser ~/.codex/config.toml
    ```
 
-   All six doctor checks should be ok: `executable`, `helper`, `extension`, `mcp_claude`,
-   `mcp_codex`, `launch_context`.
+   Every line should start `ok`: `executable` and `extension` say
+   `not used ([browser] window = false)`, then `helper`, `companion_app`, `mcp_claude`,
+   `mcp_codex`, `launch_context` and `shell_hook`.
 
-5. **First launch:** `herdr browser start` (or let an agent call `browser_open`). macOS asks
-   for Keychain access to "Chromium Safe Storage": choose Always Allow. It asks again after a
-   re-install because the ad-hoc signature changes. No Screen Recording or Accessibility
-   permission is needed.
+4. **First use:** the companion starts on the first page an agent opens (or with the server:
+   `[browser] companion_autostart = true`). By hand: `herdr browser companion start`; also
+   `status`, `stop`, `restart`, `focus`, `log`. In the session header, `◨` docks the browser
+   on the tab and `Terminal` / `Browser` switch to Browser view; `ctrl+shift+b` cycles none,
+   docked, Browser view (Ghostty and iTerm2 with CSI u; kitty and WezTerm need a setting, see
+   [CONFIG.md](CONFIG.md)). The first dock in Ghostty asks for Automation access: allow it.
+   Sign in to sites by hand in the companion; its profile lives under
+   `~/.local/state/herdr/browser/companion-app/`.
 
-6. If a Codex app/daemon was already running, restart it so it loads
-   `[mcp_servers.herdr-browser]`. Relaunch running Claude/Codex agents too.
+5. Relaunch running Claude/Codex agents, and restart a running Codex app/daemon, so they load
+   `herdr-browser`. Re-run both setup commands if you ever move the herdr binary.
 
-Optional: `[browser]` `autostart = true` launches the `main` profile with the server
-(default: lazy, on first use). Profiles and logins live under `~/.local/state/herdr/browser/`;
-sign in by hand in the browser window. Re-run `herdr browser setup` if you ever move the
-herdr binary.
+**Optional: the separate Chromium window.** Off by default. Turn it on only if you want a
+Chromium window instead of the companion:
+
+1. Get a Chromium.app for Mac arm64 (not Google Chrome: it ignores `--load-extension`), e.g.
+   `chrome-mac.zip` from the Mac_Arm snapshots at
+   https://commondatastorage.googleapis.com/chromium-browser-snapshots/index.html?prefix=Mac_Arm/,
+   unzipped into its own new folder.
+2. `herdr browser install-chromium ~/Downloads/chrome-mac/Chromium.app` (copies to
+   `~/Applications/herdr+ Browser.app`, strips quarantine, ad-hoc signs).
+3. In `config.toml`: `[browser]` `window = true`. Agents still use the companion while it
+   runs; `host = "auto"` falls back to the window when the companion is not running, and
+   `host = "window"` sends everything to the window (no dock, no Browser view).
+4. `herdr browser doctor`: `executable` and `extension` must now be ok. On first launch macOS
+   asks for Keychain access to "Chromium Safe Storage": choose Always Allow (again after a
+   re-install).
 
 ---
 
@@ -348,7 +382,7 @@ need News.
 1. Check Claude from a login shell:
 
    ```bash
-   zsh -lc 'command -v claude && claude --version'
+   zsh -lic 'command -v claude && claude --version'
    ```
 
 2. Enable it. Either the config key from section 4 (then restart the server so it runs from
@@ -375,7 +409,7 @@ need News.
    If port 7718 is taken (`lsof -iTCP:7718 -sTCP:LISTEN`), set `[coordinator]`
    `dashboard_port = 7728`; `0` turns serving off.
 
-5. Optional: `herdr browser setup --claude` gives the coordinator the browser tools it uses
+5. Optional: the browser setup (section 7) gives the coordinator the browser tools it uses
    to show the dashboard. Without it the coordinator still works.
 
 Other verbs: `herdr coordinator start [--new]` (restart, `--new` = fresh session),
@@ -435,10 +469,13 @@ Then:
 ```bash
 herdr integration status --outdated-only    # reinstall any listed: herdr integration install <agent>
 scripts/install-plus-skills.sh              # refresh the skills
+herdr browser setup --companion             # updates the companion if this build bundles a newer one
 herdr browser doctor                        # re-run `herdr browser setup` if a check fails
+herdr browser companion restart             # applies an updated companion
 ```
 
-Relaunch agents to pick up new tools or instructions. Never use `herdr update`.
+Relaunch agents to pick up new tools or instructions (or run `/plus:setup` for the same
+check-up). Never use `herdr update`.
 
 ---
 
@@ -458,14 +495,21 @@ Relaunch agents to pick up new tools or instructions. Never use `herdr update`.
 | No `herdr_agents` tools in an agent | Wrap off, shell hook missing, non-zsh shell, or agent started earlier | `[agents] wrap/tools = true`; `herdr browser setup --shell`; new pane; relaunch agent |
 | Config or browser setup "does nothing" | Done with a debug build (`~/.config/herdr-dev`) | Use the release binary in `~/.local/bin` |
 | MCP entries point into `target/release` | Setup ran from the build dir | Re-run `herdr browser setup` from `~/.local/bin/herdr`; restart server |
-| Doctor `executable` fails | No Chromium.app found | Section 7 steps 1-2, or `[browser] executable = "..."` |
+| Doctor `companion_app` fails (not installed / Electron not downloaded) | Companion never set up, or the download was declined | `herdr browser setup --companion` in a terminal |
+| Browser area shows `[ Start companion ]`, or agents get no browser | Companion not running | `herdr browser doctor`; `herdr browser companion status`, then `herdr browser companion start` |
+| Browser area says it stopped after 5 crashes | Companion gave up (5 crashes in 5 minutes) | `herdr browser companion log`; `herdr browser companion restart` |
+| Browser area says "Click here once to dock the browser to this window", or the dock does not follow the window | Several terminal windows could be herdr's, or Automation was refused | Click the area once; allow Automation for Ghostty in System Settings > Privacy & Security > Automation |
+| `ctrl+shift+b` does nothing | Terminal does not send it apart from `ctrl+b` | Ghostty or iTerm2 with CSI u; kitty `map kitty_mod+b no_op`; WezTerm `enable_kitty_keyboard = true`; or the header's `◨` |
+| An agent's WebFetch or `open` is denied once | Browser steering (Claude integration v17) | Expected; the same call again runs. `[browser] steer_agents = false` turns it off |
+| Doctor `shell_hook` fails (missing or outdated) | Shell hook not installed or from an older build | `herdr browser setup --shell`; new pane |
 | Doctor `helper` fails | Node < 20, npm missing, or npm registry blocked | `brew install node`; `herdr browser setup --node /abs/node` |
+| Doctor `executable` fails (window on) | No Chromium.app found | Section 7, optional window, or `[browser] executable = "..."` |
 | Doctor `mcp_claude` fails | `claude` not on PATH during setup | Install Claude Code; `herdr browser setup --claude` |
 | Doctor `mcp_codex` fails / Codex agents lack browser | Not registered, or old Codex daemon running | `herdr browser setup --codex`; restart the Codex app/daemon |
-| Chromium won't open ("damaged"/blocked) | Quarantined download | `herdr browser install-chromium <app>` or `xattr -dr com.apple.quarantine <app>` |
-| Repeated Keychain prompt "Chromium Safe Storage" | New ad-hoc signature | Always Allow |
+| Chromium won't open ("damaged"/blocked) (window on) | Quarantined download | `herdr browser install-chromium <app>` or `xattr -dr com.apple.quarantine <app>` |
+| Repeated Keychain prompt "Chromium Safe Storage" (window on) | New ad-hoc signature | Always Allow |
 | "coordinator needs you" | Claude's trust-folder prompt | Answer it in the `coordinator` tab |
-| Coordinator never starts | `enabled` false, `claude` not on login-shell PATH, not signed in | `herdr coordinator enable`; `zsh -lc 'command -v claude'`; `claude` then `/login` |
+| Coordinator never starts | `enabled` false, `claude` not on login-shell PATH, not signed in | `herdr coordinator enable`; `zsh -lic 'command -v claude'`; `claude` then `/login` |
 | Dashboard not reachable | Port 7718 in use | `[coordinator] dashboard_port = 7728` |
 | `/plus:*` skills missing or dangling in instructions | Skills not installed | `scripts/install-plus-skills.sh`; restart Claude Code |
 | `/plus:status all` fails | `jq` missing | `brew install jq` |

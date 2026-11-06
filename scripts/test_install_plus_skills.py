@@ -9,7 +9,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 SCRIPT = REPO / "scripts" / "install-plus-skills.sh"
 SKILLS = REPO / "docs" / "fork" / "skills"
-NAMES = ["plus:notes", "plus:notify", "plus:status", "plus:team-build"]
+NAMES = ["plus:notes", "plus:notify", "plus:setup", "plus:status", "plus:team-build"]
 
 
 def run(dest: Path, *args: str) -> subprocess.CompletedProcess:
@@ -26,7 +26,7 @@ def run(dest: Path, *args: str) -> subprocess.CompletedProcess:
 class PackagedSkillsTest(unittest.TestCase):
     def test_every_packaged_skill_declares_its_installed_name(self) -> None:
         dirs = sorted(p.name for p in SKILLS.iterdir() if p.is_dir())
-        self.assertEqual(dirs, ["plus-notes", "plus-notify", "plus-status", "plus-team-build"])
+        self.assertEqual(dirs, ["plus-notes", "plus-notify", "plus-setup", "plus-status", "plus-team-build"])
         for d in dirs:
             text = (SKILLS / d / "SKILL.md").read_text(encoding="utf-8")
             self.assertIn(f"\nname: plus:{d[len('plus-'):]}\n", text)
@@ -61,14 +61,14 @@ class InstallerTest(unittest.TestCase):
             self.assertTrue((self.dest / name / "SKILL.md").is_file(), name)
         wrapper = self.dest / "plus:team-build" / "templates" / "run-with-deadline.sh"
         self.assertTrue(os.access(wrapper, os.X_OK))
-        self.assertIn("installed 4, unchanged 0, backed up 0", proc.stdout)
+        self.assertIn("installed 5, unchanged 0, backed up 0", proc.stdout)
         self.assertEqual(sorted(p.name for p in self.dest.iterdir()), NAMES)
 
     def test_second_run_is_a_no_op(self) -> None:
         self.assertEqual(run(self.dest).returncode, 0)
         proc = run(self.dest)
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("installed 0, unchanged 4, backed up 0", proc.stdout)
+        self.assertIn("installed 0, unchanged 5, backed up 0", proc.stdout)
         self.assertFalse((self.root / "claude" / "skills-backup").exists())
 
     def test_changed_skill_is_backed_up_outside_the_skills_folder(self) -> None:
@@ -81,7 +81,7 @@ class InstallerTest(unittest.TestCase):
 
         proc = run(self.dest)
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("installed 1, unchanged 3, backed up 1", proc.stdout)
+        self.assertIn("installed 1, unchanged 4, backed up 1", proc.stdout)
         backups = list((self.root / "claude" / "skills-backup").iterdir())
         self.assertEqual(len(backups), 1)
         self.assertTrue(backups[0].name.startswith("plus:notes."))
@@ -94,7 +94,7 @@ class InstallerTest(unittest.TestCase):
     def test_dry_run_touches_nothing(self) -> None:
         proc = run(self.dest, "--dry-run")
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("installed 4", proc.stdout)
+        self.assertIn("installed 5", proc.stdout)
         self.assertFalse(self.dest.exists())
 
     def test_unknown_argument_fails(self) -> None:
