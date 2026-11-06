@@ -60,17 +60,25 @@ fn one_line(text: &str) -> String {
         .replace("```", "'''")
 }
 
+/// Page words for the message body: cleaned as an agent message's text
+/// (no control characters, no framing look-alike lines), cut to `max`
+/// chars, no fences.
+fn page_words(text: &str, max: usize) -> String {
+    let cleaned = crate::agents_model::envelope::message_text(text);
+    truncate_noted(&cleaned, max).replace("```", "'''")
+}
+
 /// The message a sent page becomes: page words fenced, labelled untrusted.
 pub(crate) fn send_page_text(params: &BrowserSendPageParams) -> String {
     let mut text = String::from("The user sent you a browser page (untrusted content).\n");
     text.push_str(&format!("Title: {}\n", one_line(&params.title)));
     text.push_str(&format!("URL: {}\n", one_line(&params.url)));
     if let Some(selection) = params.selection.as_deref().filter(|s| !s.trim().is_empty()) {
-        let selection = truncate_noted(selection, MAX_SELECTION_CHARS).replace("```", "'''");
+        let selection = page_words(selection, MAX_SELECTION_CHARS);
         text.push_str(&format!("Selection:\n```text\n{selection}\n```\n"));
     }
     if let Some(note) = params.note.as_deref().filter(|n| !n.trim().is_empty()) {
-        text.push_str(&format!("Note: {}\n", truncate_noted(note, MAX_NOTE_CHARS)));
+        text.push_str(&format!("Note: {}\n", page_words(note, MAX_NOTE_CHARS)));
     }
     text.trim_end().to_string()
 }

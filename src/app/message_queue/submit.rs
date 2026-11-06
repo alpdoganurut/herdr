@@ -723,11 +723,9 @@ impl App {
         let pointers: Vec<crate::agents_model::envelope::PointerFrom> =
             items.iter().map(|item| item.pointer.clone()).collect();
         let pointer_text = crate::agents_model::envelope::pointer_line(&pointers);
-        let paste_text = items
-            .iter()
-            .map(|item| item.envelope.as_str())
-            .collect::<Vec<_>>()
-            .join("\n\n");
+        let paste_text = crate::app::message_pointer::paste_envelopes(
+            items.iter().map(|item| item.envelope.as_str()),
+        );
         (items, pointer_text, paste_text)
     }
 

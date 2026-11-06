@@ -299,17 +299,33 @@ pub fn pointer_is_safe(line: &str) -> bool {
 /// footer) gets a full-width bracket, so a body cannot forge an envelope or
 /// a team update line inside the typed block.
 pub fn message_text(value: &str) -> String {
-    let cleaned: String = value
-        .replace("\r\n", "\n")
-        .replace('\r', "\n")
-        .chars()
-        .filter(|ch| !ch.is_control() || matches!(ch, '\n' | '\t'))
-        .collect();
-    cleaned
+    strip_controls(value)
         .split('\n')
         .map(defuse_framing_line)
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Untrusted text with its control characters stripped: `\r\n` and a lone
+/// `\r` become `\n`, and every other control character but newline and tab
+/// is dropped: C0 (ESC, so no `ESC[201~` can end a bracketed paste early
+/// and no escape sequence can follow), DEL and C1 (U+0080..U+009F, the
+/// 8-bit CSI included). Clean text comes back unchanged. Outside a
+/// bracketed paste a newline is still a line break (Enter): safety there
+/// rests on the callers' agent-only target gates, not on this.
+pub fn strip_controls(value: &str) -> String {
+    if !value
+        .chars()
+        .any(|ch| ch.is_control() && !matches!(ch, '\n' | '\t'))
+    {
+        return value.to_string();
+    }
+    value
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .chars()
+        .filter(|ch| !ch.is_control() || matches!(ch, '\n' | '\t'))
+        .collect()
 }
 
 /// The line, with a leading `[` of a framing look-alike made full-width.

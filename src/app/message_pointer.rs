@@ -83,6 +83,14 @@ pub(crate) fn prune_delivered(delivered: &mut Vec<DeliveredMessage>, now_unix: u
     }
 }
 
+/// The paste a batch of messages goes in as: their envelopes, a blank line
+/// apart, with control characters stripped (`envelope::strip_controls`):
+/// text from other agents or a page never ends the paste or types keys.
+pub(crate) fn paste_envelopes<'a>(envelopes: impl IntoIterator<Item = &'a str>) -> String {
+    let joined = envelopes.into_iter().collect::<Vec<_>>().join("\n\n");
+    crate::agents_model::envelope::strip_controls(&joined)
+}
+
 impl App {
     /// Record that the herdr_agents server `pid` reads messages for the
     /// agent in `terminal_id`.
@@ -149,11 +157,7 @@ impl App {
                 "message pointer: unsafe pointer line, pasting instead"
             );
         }
-        let text = items
-            .iter()
-            .map(|item| item.envelope.as_str())
-            .collect::<Vec<_>>()
-            .join("\n\n");
+        let text = paste_envelopes(items.iter().map(|item| item.envelope.as_str()));
         MessageInput { text, typed: false }
     }
 

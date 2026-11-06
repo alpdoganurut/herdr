@@ -1728,3 +1728,21 @@ fn queued_messages_follow_a_session_restore_advanced() {
     );
     assert_eq!(terminal(&mut app).session_advanced_from, None, "once");
 }
+
+/// Security: an older sender's `agent.prompt` (coordinator:/plus:) typed at
+/// once goes in without control characters, like a queued message: no ESC
+/// to end the paste, no CR to press Enter early.
+#[tokio::test]
+async fn a_legacy_agent_message_typed_at_once_loses_its_control_characters() {
+    for id in ["coordinator:agent.prompt", "plus:agent.prompt"] {
+        let mut app = app();
+        let mut rx = rev(&mut app, AgentState::Idle);
+        let reply = deferred_prompt(&mut app, id, "hi\x1b[201~echo pwned\r\x03ok\u{9b}", true);
+        assert!(reply.get("error").is_none(), "{reply}");
+        let out = typed(&mut rx);
+        let text = out.strip_suffix('\r').unwrap_or(&out);
+        let text = text.strip_prefix("\x1b[200~").unwrap_or(text);
+        let text = text.strip_suffix("\x1b[201~").unwrap_or(text);
+        assert_eq!(text, "hi[201~echo pwned\nok", "{id}: {out:?}");
+    }
+}

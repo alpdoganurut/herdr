@@ -1765,6 +1765,9 @@ impl App {
         mut params: AgentPromptParams,
     ) -> LegacyPrompt {
         params.guard_user_typing = true;
+        // Fork: another agent's words; typed at once or queued, never with
+        // control characters (as the queued and pointer paths).
+        params.text = crate::agents_model::envelope::strip_controls(&params.text);
         let Ok(target) = self.resolve_agent_target(&params.target) else {
             return LegacyPrompt::TypeNow(params);
         };
