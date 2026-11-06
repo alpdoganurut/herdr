@@ -892,10 +892,15 @@ impl BrowserHub {
                 "page_api is for pages without network; drop allow_network",
             ));
         }
+        // Fork (page API): who showed it, as an identity that changes with
+        // the agent (agent_ops::Openers); without one there is no bridge.
+        let opener = actor.pane_id().and_then(|pane| self.pane_opener(pane));
         let page_api_note = if !show.page_api {
             None
         } else if actor.pane_id().is_none() {
             Some("page_api needs an agent to message; ignored")
+        } else if opener.is_none() {
+            Some("page_api: herdr does not know this pane's agent yet; ignored")
         } else if !is_companion(profile) {
             Some("page_api works in the companion browser only; ignored")
         } else if !self.config().page_api {
@@ -928,6 +933,7 @@ impl BrowserHub {
                 "root": root,
                 "allow_network": show.allow_network,
                 "page_api": page_api,
+                "opener": opener.as_deref().filter(|_| page_api),
                 "watch": show.watch,
                 "focus": show.focus,
                 "title": show.title,

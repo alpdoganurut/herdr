@@ -77,6 +77,67 @@ impl AgentOps {
     }
 }
 
+/// The most panes and terminals an [`Openers`] book keeps (it starts over
+/// past it: every page shown before then fails closed).
+const MAX_OPENERS: usize = 4_096;
+
+/// Fork (page API): who opened a page, as an identity that changes when
+/// the agent does. A token is `<boot>:<terminal id>:<run>`: `boot` is new
+/// with every server process (a restart or live handoff), the terminal id
+/// changes when the pane gets a new terminal, and `run` grows whenever
+/// detection sees the terminal's agent go or change (a restart, another
+/// agent in the pane). A page stores its opener's token at show; a page
+/// message is refused unless the pane's current token is the same, so it
+/// fails closed.
+#[derive(Debug)]
+pub struct Openers {
+    boot: String,
+    runs: HashMap<String, u64>,
+    /// pane id -> its terminal id, as the last browser call resolved it.
+    panes: HashMap<String, String>,
+}
+
+impl Openers {
+    pub fn new(boot: String) -> Self {
+        Self {
+            boot,
+            runs: HashMap::new(),
+            panes: HashMap::new(),
+        }
+    }
+
+    /// The current opener token of `terminal_id`.
+    pub fn token(&self, terminal_id: &str) -> String {
+        let run = self.runs.get(terminal_id).copied().unwrap_or(0);
+        format!("{}:{terminal_id}:{run}", self.boot)
+    }
+
+    /// The terminal's agent went or changed: every page its agent showed
+    /// stops sending.
+    pub fn bump(&mut self, terminal_id: &str) {
+        if self.runs.len() >= MAX_OPENERS && !self.runs.contains_key(terminal_id) {
+            // starting over must not hand a stale page a matching token
+            self.boot = format!("{}+", self.boot);
+            self.runs.clear();
+        }
+        *self.runs.entry(terminal_id.to_string()).or_insert(0) += 1;
+    }
+
+    /// `pane_id` runs in `terminal_id` (an agent's browser call resolved it).
+    pub fn note_pane(&mut self, pane_id: &str, terminal_id: &str) {
+        if self.panes.len() >= MAX_OPENERS && !self.panes.contains_key(pane_id) {
+            self.panes.clear();
+        }
+        self.panes
+            .insert(pane_id.to_string(), terminal_id.to_string());
+    }
+
+    /// The opener token of the agent in `pane_id` now, when known.
+    pub fn pane_token(&self, pane_id: &str) -> Option<String> {
+        self.panes.get(pane_id).map(|terminal| self.token(terminal))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -106,6 +167,23 @@ mod tests {
         assert!(!ops.driving("T2", end), "another page is not driven");
         ops.touched("T3", end);
         assert!(ops.driving("T3", end + Duration::from_millis(10)));
+    }
+
+    #[test]
+    fn an_opener_token_changes_with_the_agent_terminal_and_server() {
+        let mut book = Openers::new("boot1".into());
+        book.note_pane("w1:p2", "t-7");
+        let shown = book.pane_token("w1:p2").unwrap();
+        assert_eq!(shown, book.token("t-7"), "the same agent");
+        book.bump("t-7");
+        assert_ne!(book.token("t-7"), shown, "its agent restarted or changed");
+        assert_ne!(book.token("t-8"), shown, "another terminal");
+        assert_ne!(
+            Openers::new("boot2".into()).token("t-7"),
+            shown,
+            "another server"
+        );
+        assert!(book.pane_token("w9:p9").is_none());
     }
 
     #[test]

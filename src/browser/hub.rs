@@ -149,6 +149,9 @@ struct Inner {
     companion_wait_ms: AtomicU64,
     /// Fork (page API): the companion pages agent ops are driving.
     agent_ops: Mutex<super::agent_ops::AgentOps>,
+    /// Fork (page API): page openers' identities (runtime; the boot id is
+    /// new with each server process).
+    openers: Mutex<super::agent_ops::Openers>,
 }
 
 /// The new tab page's snapshot goes out at most this often.
@@ -204,9 +207,10 @@ struct AgentOpGuard<'a> {
 
 impl Drop for AgentOpGuard<'_> {
     fn drop(&mut self) {
-        if let Ok(mut ops) = self.ops.lock() {
-            ops.end(&self.target, Instant::now());
-        }
+        self.ops
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .end(&self.target, Instant::now());
     }
 }
 
@@ -317,6 +321,9 @@ impl BrowserHub {
                 launcher: super::companion_app::Launcher::new(),
                 companion_wait_ms: AtomicU64::new(0),
                 agent_ops: Mutex::new(Default::default()),
+                openers: Mutex::new(super::agent_ops::Openers::new(super::session::random_hex(
+                    16,
+                ))),
             }),
         }
     }
@@ -1419,7 +1426,7 @@ impl BrowserHub {
             self.inner
                 .agent_ops
                 .lock()
-                .unwrap()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .touched(&key.target_id, Instant::now());
         }
         let ms = started.elapsed().as_millis() as u64;
@@ -3424,7 +3431,7 @@ impl BrowserHub {
         self.inner
             .agent_ops
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .start(target, Instant::now());
         Some(AgentOpGuard {
             ops: &self.inner.agent_ops,
@@ -3438,8 +3445,36 @@ impl BrowserHub {
         self.inner
             .agent_ops
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .driving(target, Instant::now())
+    }
+
+    fn openers(&self) -> std::sync::MutexGuard<'_, super::agent_ops::Openers> {
+        self.inner
+            .openers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Fork (page API): the opener token of `terminal_id`'s agent now.
+    pub fn opener_token(&self, terminal_id: &str) -> String {
+        self.openers().token(terminal_id)
+    }
+
+    /// Fork (page API): `terminal_id`'s agent went or changed.
+    pub fn agent_run_changed(&self, terminal_id: &str) {
+        self.openers().bump(terminal_id);
+    }
+
+    /// Fork (page API): `pane_id` runs in `terminal_id` (resolved for a
+    /// browser call).
+    pub fn note_pane_terminal(&self, pane_id: &str, terminal_id: &str) {
+        self.openers().note_pane(pane_id, terminal_id);
+    }
+
+    /// Fork (page API): the opener token of the agent in `pane_id` now.
+    pub fn pane_opener(&self, pane_id: &str) -> Option<String> {
+        self.openers().pane_token(pane_id)
     }
 
     /// Tests: mark companion page `target` as just driven by an agent.
@@ -3448,7 +3483,7 @@ impl BrowserHub {
         self.inner
             .agent_ops
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .touched(target, Instant::now());
     }
 

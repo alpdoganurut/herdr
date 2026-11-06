@@ -3811,6 +3811,13 @@
                 "null"
               ]
             },
+            "opener": {
+              "description": "Fork (page API): the opener's identity at show (herdr's token; a\npage message is refused once it no longer matches the pane's agent).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "page_api": {
               "description": "Fork (page API): html_view shown with `page_api` (its page may\nmessage its opener).",
               "type": "boolean"
@@ -15662,6 +15669,13 @@
             },
             "opened_by": {
               "description": "`user` or `agent:<pane_id>`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "opener": {
+              "description": "Fork (page API): the opener's identity at show (herdr's token; a\npage message is refused once it no longer matches the pane's agent).",
               "type": [
                 "string",
                 "null"

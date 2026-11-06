@@ -3206,6 +3206,8 @@ fn a_page_api_show_reaches_the_companion_only_without_network_and_with_the_switc
     let (hub, shared, _stream, home) = hub("show-page-api");
     hub.host_register(&register_params("a"))
         .expect("registered");
+    // the App notes the pane's terminal when it resolves the caller
+    hub.note_pane_terminal("w2:pD", "term-7");
     let file = home.join("board.html");
     std::fs::write(&file, "<button>go</button>").unwrap();
     let show = |page_api: bool, allow_network: bool| {
@@ -3232,9 +3234,18 @@ fn a_page_api_show_reaches_the_companion_only_without_network_and_with_the_switc
             .unwrap()
     };
     let shown = show(true, false).expect("show");
-    assert_eq!(shown.data["page_api"], true, "{:?}", shown.data);
+    assert_eq!(
+        shown.data["page_api"], true,
+        "{:?} {}",
+        shown.data, shown.text
+    );
     assert!(shown.text.contains("window.herdr.send"), "{}", shown.text);
     assert_eq!(last_show()["page_api"], true);
+    assert_eq!(
+        last_show()["opener"],
+        hub.opener_token("term-7").as_str(),
+        "who showed it, for the companion to keep on the entry"
+    );
     let tab = shown.tab.clone().expect("a tab");
     let target = hub
         .with_state_mut(|state| {
@@ -3256,6 +3267,29 @@ fn a_page_api_show_reaches_the_companion_only_without_network_and_with_the_switc
     assert!(off.data.get("page_api").is_none());
     assert!(off.text.contains("page messages are off"), "{}", off.text);
     assert_eq!(last_show()["page_api"], false);
+    assert!(
+        last_show()["opener"].is_null(),
+        "no opener without the bridge"
+    );
+    config.page_api = true;
+    hub.apply_config(&config);
+    let unknown = hub
+        .run(
+            &pane("w2:pE"),
+            params(BrowserOp::Show {
+                file: file.display().to_string(),
+                allow_network: false,
+                page_api: true,
+                watch: false,
+                focus: false,
+                title: None,
+            }),
+        )
+        .expect("show");
+    assert!(
+        unknown.data.get("page_api").is_none(),
+        "an unknown opener gets no bridge"
+    );
     let plain = show(false, false).expect("show");
     assert!(!plain.text.contains("window.herdr"));
 }

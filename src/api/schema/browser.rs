@@ -1027,6 +1027,10 @@ pub struct BrowserHostEntry {
     /// message its opener).
     #[serde(default, skip_serializing_if = "super::is_false")]
     pub page_api: bool,
+    /// Fork (page API): the opener's identity at show (herdr's token; a
+    /// page message is refused once it no longer matches the pane's agent).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opener: Option<String>,
     /// `user` or `agent:<pane_id>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opened_by: Option<String>,

@@ -201,6 +201,17 @@ impl App {
                 )
             }
         };
+        // Fail closed: only the exact agent that showed the page (the same
+        // server, terminal and agent run); a restarted or replaced agent, a
+        // restored page, a page from before this server: owner_gone.
+        if entry.opener.as_deref() != Some(hub().opener_token(&target.terminal_id).as_str()) {
+            return refuse(
+                id,
+                "owner_gone",
+                format!("the agent that showed this page ({owner}) has restarted or changed; it must show the page again"),
+                file,
+            );
+        }
         if entry
             .target
             .as_deref()

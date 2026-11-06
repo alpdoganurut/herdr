@@ -782,12 +782,13 @@ try {
   fs.writeFileSync(path.join(papi, 'frame.html'), '<p>frame</p>');
   fs.writeFileSync(path.join(papi, 'other.html'), `<title>other</title>${sendBtn("'from other'")}`);
   const boardFile = path.join(papi, 'board.html');
-  const psh = await ctl(`__herdrCompanion.show({tab_id:'w1:t2', file:${JSON.stringify(boardFile)}, page_api:true, focus:true, opened_by:'agent:w1:p9'})`);
+  const psh = await ctl(`__herdrCompanion.show({tab_id:'w1:t2', file:${JSON.stringify(boardFile)}, page_api:true, focus:true, opened_by:'agent:w1:p9', opener:'boot1:term-9:2'})`);
   const pp = await waitFor(() => pageForTarget(psh.target_id), 5000);
   await pp.waitForLoadState('load').catch(() => {});
   // herdr only knows the entry after a sync: wait for it before any click
   const pentry = await waitFor(() => mock.state.tabs.get('w1:t2').browser.entries.find((e) => e.view_id === psh.view_id && e.id && e.page_api), 5000);
   check('a page_api view syncs page_api', pentry, pentry);
+  check('it keeps and syncs herdr\'s opener identity', pentry && pentry.opener === 'boot1:term-9:2', pentry);
   check('its top frame has a frozen window.herdr.send', await pp.evaluate(() => typeof (window.herdr && window.herdr.send) === 'function' && Object.isFrozen(window.herdr)));
   const pframe = await waitFor(() => pp.frames().find((f) => f.url().endsWith('frame.html')), 3000);
   check('an iframe of the page has no window.herdr', pframe && (await pframe.evaluate(() => typeof window.herdr)) === 'undefined');

@@ -28,6 +28,7 @@ fn page_entry(opened_by: &str) -> TabBrowserEntry {
         file: Some(FILE.into()),
         allow_network: false,
         page_api: true,
+        opener: None,
         target: Some(TARGET.into()),
         view_id: Some("v1".into()),
         opened_by: opened_by.into(),
@@ -41,10 +42,20 @@ fn set_entry(app: &mut App, entry: TabBrowserEntry) {
     app.state.workspaces[1].tabs[0].browser = Some(browser);
 }
 
+/// The page as the opener (team tab 1's agent) showed it now: its
+/// opener token recorded.
+fn shown_entry(app: &App) -> TabBrowserEntry {
+    TabBrowserEntry {
+        opener: Some(hub().opener_token(&terminal_id(app, 1, 1))),
+        ..page_entry(&format!("agent:{}", public(app, 1, 1)))
+    }
+}
+
 fn setup(app: &mut App) -> Page {
     hub().install_test_lease(LEASE);
     let opener = public(app, 1, 1);
-    set_entry(app, page_entry(&format!("agent:{opener}")));
+    let entry = shown_entry(app);
+    set_entry(app, entry);
     Page {
         tab_id: app.public_tab_id(1, 0).unwrap(),
         opener,
@@ -312,7 +323,8 @@ fn every_refusal_fails_closed_and_delivers_nothing() {
         set_entry(&mut app, entry);
         assert_eq!(refused(&mut app, params(&page)), want);
     }
-    set_entry(&mut app, page_entry(&opener));
+    let entry = shown_entry(&app);
+    set_entry(&mut app, entry);
     // an agent's own click or eval on the page
     hub().test_mark_agent_driven(TARGET);
     assert_eq!(refused(&mut app, params(&page)), "agent_driving");
@@ -471,5 +483,87 @@ async fn a_queued_page_message_waits_instead_of_being_pasted() {
     assert!(
         text.contains(&format!("herdr+ message {id} from a page you showed")),
         "{text:?}"
+    );
+}
+
+/// Audit A6 (fail closed): only the exact agent that showed the page. A
+/// restarted agent, another agent in the pane, a page restored from before
+/// this server, a page without an opener: owner_gone.
+#[tokio::test]
+async fn only_the_exact_agent_that_showed_the_page_gets_its_messages() {
+    use crate::detect::{Agent, AgentState};
+    let mut app = model_app();
+    let page = setup(&mut app);
+    let _rx = live(&mut app, 1, 1);
+    reader(&mut app, 1, 1);
+    let opener_pane = pane(&app, 1, 1);
+    // the same agent: sent
+    let reply = send(&mut app, params(&page));
+    assert_eq!(code(&reply), "ok", "{reply}");
+    // the server's detection path: the agent exits (released), comes back
+    let detect = |app: &mut App, agent: Option<Agent>, released: bool| {
+        let update = app
+            .state
+            .update_terminal_state(opener_pane, |terminal| {
+                let change = terminal.set_detected_state(agent, AgentState::Idle);
+                Some(crate::terminal::TerminalStateMutation {
+                    effective_state_change: change,
+                    session_ref_changed: false,
+                    agent_released: released,
+                })
+            })
+            .expect("a state update");
+        app.emit_pane_state_update(&update);
+    };
+    detect(&mut app, None, true);
+    detect(&mut app, Some(Agent::Claude), false);
+    let restarted = send(&mut app, params(&page));
+    assert_eq!(
+        code(&restarted),
+        "owner_gone",
+        "a restarted agent: {restarted}"
+    );
+    // shown again by the new run: sent
+    let entry = shown_entry(&app);
+    set_entry(&mut app, entry);
+    assert_eq!(code(&send(&mut app, params(&page))), "ok");
+    // another agent in the pane
+    detect(&mut app, Some(Agent::Codex), false);
+    let other = send(&mut app, params(&page));
+    assert_eq!(code(&other), "owner_gone", "another agent: {other}");
+    // a page persisted by an earlier server (another boot id), and one from
+    // before openers were recorded
+    detect(&mut app, Some(Agent::Claude), false);
+    let entry = shown_entry(&app);
+    let token = entry.opener.clone().unwrap();
+    let (_boot, rest) = token.split_once(':').unwrap();
+    let restored = TabBrowserEntry {
+        opener: Some(format!("an-earlier-boot:{rest}")),
+        ..entry.clone()
+    };
+    let snapshot = serde_json::to_value(&restored).unwrap();
+    assert_eq!(
+        snapshot["opener"],
+        restored.opener.clone().unwrap().as_str(),
+        "persisted next to opened_by"
+    );
+    let back: TabBrowserEntry = serde_json::from_value(snapshot).unwrap();
+    set_entry(&mut app, back);
+    assert_eq!(
+        code(&send(&mut app, params(&page))),
+        "owner_gone",
+        "after a restore"
+    );
+    set_entry(
+        &mut app,
+        TabBrowserEntry {
+            opener: None,
+            ..entry
+        },
+    );
+    assert_eq!(
+        code(&send(&mut app, params(&page))),
+        "owner_gone",
+        "no opener recorded"
     );
 }

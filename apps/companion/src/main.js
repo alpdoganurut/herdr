@@ -1252,6 +1252,8 @@ class Companion {
         allow_network: !!a.allow_network,
         // page API: only while herdr advertises it, never with network
         page_api: !!a.page_api && !a.allow_network && !!(this.features && this.features.has(pageApi.FEATURE)),
+        // who showed it, as herdr's opener identity (herdr refuses a page message when it changed)
+        opener: a.page_api && typeof a.opener === 'string' ? a.opener.slice(0, 300) : null,
         url: pathToFileURL(file).toString(),
         title: a.title || path.basename(file),
         title_fixed: !!a.title, // an explicit --title: the page's <title> never replaces it

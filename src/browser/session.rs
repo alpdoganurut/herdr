@@ -65,6 +65,10 @@ pub struct TabBrowserEntry {
     /// message the agent that opened it (`browser.page_message`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub page_api: bool,
+    /// Fork (page API): the identity of the agent that showed it with
+    /// page_api (`agent_ops::Openers` token), next to `opened_by`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opener: Option<String>,
     /// The CDP target id while a host has the view (runtime only).
     #[serde(skip)]
     pub target: Option<String>,
@@ -262,6 +266,7 @@ impl TabBrowser {
                 file: entry.file.clone(),
                 allow_network: entry.allow_network,
                 page_api: entry.page_api,
+                opener: entry.opener.clone(),
                 opened_by: (!entry.opened_by.is_empty()).then(|| entry.opened_by.clone()),
             })
             .collect()
@@ -361,6 +366,7 @@ fn persisted_differs(new: &TabBrowserEntry, old: &TabBrowserEntry) -> bool {
         || new.file != old.file
         || new.allow_network != old.allow_network
         || new.page_api != old.page_api
+        || new.opener != old.opener
 }
 
 fn entry_from_wire(
@@ -386,6 +392,11 @@ fn entry_from_wire(
         allow_network: kind == TabBrowserKind::HtmlView && wire.allow_network,
         // a page with network never gets the page API
         page_api: kind == TabBrowserKind::HtmlView && !wire.allow_network && wire.page_api,
+        opener: wire
+            .opener
+            .clone()
+            .filter(|opener| !opener.is_empty() && opener.len() <= 300)
+            .filter(|_| kind == TabBrowserKind::HtmlView && !wire.allow_network && wire.page_api),
         target: wire.target.clone().filter(|target| !target.is_empty()),
         view_id: wire.view_id.clone().filter(|view| !view.is_empty()),
         opened_by: wire

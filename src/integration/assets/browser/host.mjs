@@ -1206,7 +1206,7 @@ const ops = {
     let viewId = null;
     let targetId;
     if (profile.kind === 'companion') {
-      const answer = await profile.serial(() => profile.control.call('show', { tab_id: args.tab_id || null, opened_by: args.opened_by || undefined, file, root: args.root || nodePath.dirname(file), allow_network: allowNetwork, page_api: Boolean(args.page_api) && !allowNetwork, focus: Boolean(args.focus), title: args.title || null }));
+      const answer = await profile.serial(() => profile.control.call('show', { tab_id: args.tab_id || null, opened_by: args.opened_by || undefined, file, root: args.root || nodePath.dirname(file), allow_network: allowNetwork, page_api: Boolean(args.page_api) && !allowNetwork, opener: args.page_api && !allowNetwork && args.opener ? String(args.opener) : undefined, focus: Boolean(args.focus), title: args.title || null }));
       viewId = answer && answer.view_id ? String(answer.view_id) : null;
       targetId = await viewTarget(profile, answer, (u) => u === url || (viewId && u === VIEW_MARKER + viewId), deadlineAt);
       profile.control.remember(targetId, viewId);
