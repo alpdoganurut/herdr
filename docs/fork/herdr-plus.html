@@ -135,16 +135,17 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
 <nav aria-label="Sections"><div class="in">
   <span class="brand">herdr<b>+</b></span>
   <a class="l" href="#top">Overview</a>
-  <a class="l" href="#coordinator">Coordinator</a>
   <a class="l" href="#control">Control</a>
   <a class="l" href="#teams">Teams</a>
   <a class="l" href="#messaging">Messaging</a>
   <a class="l" href="#sidebar">Sidebar</a>
   <a class="l" href="#info">Notes pane</a>
   <a class="l" href="#notify">Notifications</a>
+  <a class="l" href="#browser">Browser</a>
   <a class="l" href="#more">More</a>
   <a class="l" href="#handoff">Auto handoff</a>
   <a class="l" href="#eng">Engineering</a>
+  <a class="l" href="#coordinator">Coordinator</a>
   <a class="x first" href="config.html">Configuration</a>
   <a class="x" href="SETUP.md">Setup guide</a>
 </div></nav>
@@ -228,47 +229,9 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
   </div>
 </section>
 
-<!-- ============ COORDINATOR ============ -->
-<section id="coordinator">
-  <p class="eyebrow">01 · coordinator</p>
-  <h2>A coordinator agent, run by herdr itself</h2>
-  <p class="lede">One long-running Claude Code session that knows who is doing what, keeps a dashboard, remembers what you tell it, and acts when you ask. It doesn't relay messages: agents talk to each other directly, and it reads the log.</p>
-  <div class="two">
-    <div class="grid" style="grid-template-columns:1fr">
-      <div class="card"><h3><span class="g">◉</span>Native, server-run</h3><p>You never run it yourself: herdr starts it in its own <code>coordinator</code> tab, resumes it after restarts and relaunches it if it disappears. Turn it on with <code>[coordinator] enabled = true</code>.</p></div>
-      <div class="card"><h3><span class="g">▤</span>HTML dashboard on <code>127.0.0.1:7718</code></h3><p>One page with every agent's status, recent messages and actions, plus the coordinator's own summaries and suggestions. Opens in herdr's browser or yours.</p></div>
-      <div class="card"><h3><span class="g">❖</span>Its own memory</h3><p>It remembers what you tell it across restarts: one fact per file, with an index it reads every time it starts or wakes.</p></div>
-      <div class="card"><h3><span class="g">⊘</span>Acts only on your word</h3><p>It changes things only when you asked, by typing in its pane. When it wakes up by itself, it updates the dashboard and makes suggestions, but changes nothing.</p></div>
-    </div>
-    <div>
-      <div class="term solo" style="width:100%;margin-bottom:14px" role="img" aria-label="Coordinator row states">
-        <div class="bar">pinned bottom row, its states</div>
-        <div class="sb">
-          <div class="r"><span>  <span class="o0">○</span> <span class="s0">coordinator</span></span><span class="o1">12 watched</span></div>
-          <div class="r"><span>  <span class="ye">◐</span> <span class="s0">coordinator</span></span><span class="o1">waking</span></div>
-          <div class="r"><span>  <span class="ac">●</span> <span class="s0">coordinator</span></span><span class="o1">3 ideas</span></div>
-          <div class="r"><span>  <span class="o0">◌</span> <span class="s0">coordinator</span></span><span class="o1">capped</span></div>
-          <div class="r"><span>  <span class="ye">!</span> <span class="s0">coordinator</span></span><span class="o1">locked</span></div>
-          <div class="r"><span>  <span class="re">×</span> <span class="s0">coordinator</span></span><span class="o1">down</span></div>
-        </div>
-      </div>
-      <p class="dim" style="font-size:.82rem;margin:-.4rem 0 14px">capped = hit its wake-up limit · locked = another herdr server runs it · down = stopped after too many relaunches or a failed start</p>
-      <div class="tbl"><table>
-        <tr><th>Wake-up limit</th><th>Default</th></tr>
-        <tr><td><code>cap_hour</code></td><td>12 wake-ups an hour</td></tr>
-        <tr><td><code>cap_day</code></td><td>80 a day</td></tr>
-        <tr><td><code>periodic_minutes</code></td><td>a slow check every 60 min</td></tr>
-        <tr><td><code>relaunch_cap_hour</code></td><td>3 relaunches an hour, then <code>down</code></td></tr>
-        <tr><td><code>notify_daily_cap</code></td><td>6 of its own notifications a day, plus <code>quiet_hours</code></td></tr>
-        <tr><td><code>wake_scope</code></td><td><code>opened</code>: only agents the coordinator opened can wake it</td></tr>
-      </table></div>
-    </div>
-  </div>
-</section>
-
 <!-- ============ CONTROL ============ -->
 <section id="control">
-  <p class="eyebrow">02 · agents control herdr</p>
+  <p class="eyebrow">01 · agents control herdr</p>
   <h2>Agents can drive herdr, within clear rules</h2>
   <p class="lede">Every Claude Code or Codex agent can get the <code>herdr_agents</code> tools to read, message and manage other tabs. herdr checks every request against the rules below and logs every change and every refusal.</p>
 
@@ -301,7 +264,7 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
 
 <!-- ============ TEAMS ============ -->
 <section id="teams">
-  <p class="eyebrow">03 · teams</p>
+  <p class="eyebrow">02 · teams</p>
   <h2>Turn a group into a team</h2>
   <p class="lede">A group of tabs becomes a team with a purpose and roles. Members know each other from their first turn.</p>
   <div class="two">
@@ -332,7 +295,7 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
 
 <!-- ============ MESSAGING ============ -->
 <section id="messaging">
-  <p class="eyebrow">04 · agent-to-agent messaging</p>
+  <p class="eyebrow">03 · agent-to-agent messaging</p>
   <h2>Messages that never type over you</h2>
   <p class="lede">Agents can message each other without ever typing over your half-written prompt: herdr queues each message and types it in when the agent is free and you aren't typing.</p>
 
@@ -361,7 +324,7 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
 
 <!-- ============ SIDEBAR ============ -->
 <section id="sidebar">
-  <p class="eyebrow">05 · sidebar</p>
+  <p class="eyebrow">04 · sidebar</p>
   <h2>A sidebar that shows who needs you</h2>
   <p class="lede">One row per tab across every workspace, grouped and foldable, with blocks for what's active, pinned and scheduled, so you see at a glance who needs you.</p>
 
@@ -373,8 +336,6 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
           <div class="hdr"><span><span class="re">◉</span> <span class="t b">endpoint-compat…</span></span><span><span class="ac">T</span>  B <span class="ac">◨</span>  ≡</span></div>
         </div>
         <p>The block after <code>Browser</code> counts the tab's open pages. On a narrow window the row shortens instead of wrapping: the group goes first, then the name, then the view tabs shrink to <code>T</code> <code>B</code>.</p></div>
-      <div class="card"><h3><span class="g">◨</span>One dock slot</h3><p>The right edge holds one dock: your notes or the browser, never both. <code>≡</code> and <code>◨</code> swap it and each keeps its own width; drag the divider to resize. The notes have a title bar, <code>≡ Notes  ✎  ✕</code>; the browser's own bar (it hides until you hover its top) has <code>⤢</code> for Browser view and <code>✕</code>. In Browser view the notes stay beside the page.</p></div>
-      <div class="card"><h3><span class="g">◎</span>One key for the browser</h3><p><code>ctrl+shift+b</code>, no prefix, steps the focused tab's browser: docked beside the panes, then Browser view over the whole tab, then gone again. Works in Ghostty and in iTerm2 with CSI u; kitty needs <code>map kitty_mod+b no_op</code> and WezTerm <code>enable_kitty_keyboard = true</code>.</p></div>
       <div class="card"><h3><span class="g">▾</span>Active · Pinned · Scheduled</h3><p><b>Active</b>: blocked, working, subagent-running and just-finished tabs, the ones that need you first. <b>Pinned</b>: tabs you pin from the menu. <b>Scheduled</b>: tabs with a reminder and the time to the next one. Folded blocks still show their count.</p></div>
       <div class="card"><h3><span class="g">◌</span>Suspended runs fold</h3><p>Three or more suspended tabs in a row become one <code>◌ N suspended ▸</code> row. Hover lists them. Off in Settings → Indicators (<code>fold suspended runs</code>).</p></div>
       <div class="card"><h3><span class="g">%</span>Context use</h3><p>Shows when an agent is running out of room: a percentage on the row and in the session header from 75% (yellow, red from 90%).</p></div>
@@ -425,7 +386,7 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
 
 <!-- ============ NOTES PANE ============ -->
 <section id="info">
-  <p class="eyebrow">06 · notes pane</p>
+  <p class="eyebrow">05 · notes pane</p>
   <h2>Your notes beside every agent</h2>
   <p class="lede">A notes pane on the right of each agent: your page for the session, not the agent's log. Agents write to it only when you ask.</p>
   <div class="two">
@@ -468,7 +429,7 @@ Flags go to the owner in <span class="t b">Turkish</span>, see <span class="pu" 
 
 <!-- ============ NOTIFICATIONS ============ -->
 <section id="notify">
-  <p class="eyebrow">07 · notifications</p>
+  <p class="eyebrow">06 · notifications</p>
   <h2>Cards from agents, and quiet when you want it</h2>
   <p class="lede">An agent can put a sticky card in front of you. It stays until you dismiss it or open the agent's tab.</p>
   <div class="two">
@@ -489,6 +450,20 @@ Flags go to the owner in <span class="t b">Turkish</span>, see <span class="pu" 
   </div>
 </section>
 
+<!-- ============ BROWSER ============ -->
+<section id="browser">
+  <p class="eyebrow">07 · browser</p>
+  <h2>A browser agents and you share</h2>
+  <p class="lede">One companion browser that agents drive and you watch, docked beside the panes or over the whole tab.</p>
+  <div class="grid">
+    <div class="card"><h3><span class="g">◎</span>Built-in browser</h3><p>Agents browse in the herdr+ companion (<code>herdr-browser</code> MCP), the same browser you watch and sign in to: one group of pages per tab, following the tab you focus, a glow and cursor while an agent acts, and it never takes your keyboard. <code>herdr browser setup --companion</code> installs it; herdr starts it on an agent's first page, restarts it after a crash and quits it with the server. Start, stop, restart and focus it from Settings → Browser, the Browser overlay or <code>herdr browser companion</code>.</p></div>
+      <div class="card"><h3><span class="g">◨</span>One dock slot</h3><p>The right edge holds one dock: your notes or the browser, never both. <code>≡</code> and <code>◨</code> swap it and each keeps its own width; drag the divider to resize. The notes have a title bar, <code>≡ Notes  ✎  ✕</code>; the browser's own bar (it hides until you hover its top) has <code>⤢</code> for Browser view and <code>✕</code>. In Browser view the notes stay beside the page.</p></div>
+      <div class="card"><h3><span class="g">◎</span>One key for the browser</h3><p><code>ctrl+shift+b</code>, no prefix, steps the focused tab's browser: docked beside the panes, then Browser view over the whole tab, then gone again. Works in Ghostty and in iTerm2 with CSI u; kitty needs <code>map kitty_mod+b no_op</code> and WezTerm <code>enable_kitty_keyboard = true</code>.</p></div>
+    <div class="card"><h3><span class="g">⇡</span>Pages that talk back</h3><p>An agent can show you a page with a button that answers it: <code>browser_show</code> with <code>page_api</code> (or <code>herdr browser show --page-api</code>) gives the page <code>window.herdr.send({text, data})</code>. A click reaches only the agent that showed the page, labelled as page content, never as your words, and the companion's bar says who got it. Only local pages without network get it, never iframes or web tabs; the agent's own clicks send nothing, a parked agent is never woken, and a flood is cut. Turn it off with <code>[browser] page_api = false</code>.</p></div>
+    <div class="card"><h3><span class="g">◉</span>Dialogs, and agents stay on it</h3><p>A page's alert, confirm and prompt show in its own card, and agents answer them with <code>herdr browser dialog</code>. Wrapped Claude agents that reach for WebFetch, <code>open</code> or another browser are sent to the companion once, unless you asked for that.</p></div>
+  </div>
+</section>
+
 <!-- ============ MORE ============ -->
 <section id="more">
   <p class="eyebrow">08 · more</p>
@@ -500,9 +475,6 @@ Flags go to the owner in <span class="t b">Turkish</span>, see <span class="pu" 
     <div class="card"><h3><span class="g">⎘</span>Copy session ID</h3><p>Tab and pane menus copy the Claude Code session ID or Codex thread ID, for <code>--resume</code> elsewhere.</p></div>
     <div class="card"><h3><span class="g">≋</span>Steady scrolling</h3><p>Streaming output lands on a fixed 60 fps grid, in step with the display, instead of drifting at ~55 fps. On a 120 Hz display, <code>[ui] render_fps = 120</code>. A fast wheel scroll in an agent UI or pager no longer freezes and then jumps: each redraw reaches the screen whole. Scrolling herdr's own scrollback moves the pane region on the terminal and draws only the new lines, so a fast wheel scroll does not hitch.</p></div>
     <div class="card"><h3><span class="g">⤧</span>Smaller fixes</h3><p>Launches wait for the shell, so nothing is cut off; drops land where the marker shows; resizing is smooth and the sidebar no longer flickers.</p></div>
-    <div class="card"><h3><span class="g">◎</span>Built-in browser</h3><p>Agents browse in the herdr+ companion (<code>herdr-browser</code> MCP), the same browser you watch and sign in to: one group of pages per tab, following the tab you focus, a glow and cursor while an agent acts, and it never takes your keyboard. <code>herdr browser setup --companion</code> installs it; herdr starts it on an agent's first page, restarts it after a crash and quits it with the server. Start, stop, restart and focus it from Settings → Browser, the Browser overlay or <code>herdr browser companion</code>.</p></div>
-    <div class="card"><h3><span class="g">◉</span>Dialogs, and agents stay on it</h3><p>A page's alert, confirm and prompt show in its own card, and agents answer them with <code>herdr browser dialog</code>. Wrapped Claude agents that reach for WebFetch, <code>open</code> or another browser are sent to the companion once, unless you asked for that.</p></div>
-    <div class="card"><h3><span class="g">⇡</span>Pages that talk back</h3><p>An agent can show you a page with a button that answers it: <code>browser_show</code> with <code>page_api</code> (or <code>herdr browser show --page-api</code>) gives the page <code>window.herdr.send({text, data})</code>. A click reaches only the agent that showed the page, labelled as page content, never as your words, and the companion's bar says who got it. Only local pages without network get it, never iframes or web tabs; the agent's own clicks send nothing, a parked agent is never woken, and a flood is cut. Turn it off with <code>[browser] page_api = false</code>.</p></div>
     <div class="card"><h3><span class="g">⏸</span>Suspend, activate, restart</h3><p>Suspend an idle agent to free resources and bring it back later in the same pane and session. If it's still busy (working, a subagent, a background shell, a <code>/loop</code>), suspend is refused and the notice offers <b>Force suspend</b> or <b>Force restart</b>. Only you can force it, not agents. While it comes back the pane reads <code>↻ restarting</code> or <code>↻ waking</code>, and says so if it doesn't.</p></div>
     <div class="card"><h3><span class="g">⏲</span>Autosuspend</h3><p>Suspends a Claude agent you've seen and left idle for a set time (<code>[agents.autosuspend] after = "1d"</code>, off by default). It never touches one that needs you, is on screen, is busy in the background or has messages waiting. A message to it wakes it up.</p></div>
     <div class="card"><h3><span class="g">⌂</span>Removed worktree, session back</h3><p>If a pane's folder was deleted (say, a removed worktree), herdr recreates it empty after a restart so <code>--resume</code> still finds the session. You get one card, and the agent is told so it can warn you.</p></div>
@@ -540,6 +512,44 @@ Flags go to the owner in <span class="t b">Turkish</span>, see <span class="pu" 
     <div class="card"><h3><span class="g">§</span>FORK.md merge contract</h3><p><code>FORK.md</code> lists everything the fork owns and how to merge upstream; the <code>fork-sync</code> tool reads it and refuses a sync that would collide.</p></div>
     <div class="card"><h3><span class="g">⚖</span>Audited</h3><p>Big features are reviewed by three independent audits and a second model, then smoke-tested live on a throwaway server.</p></div>
     <div class="card"><h3><span class="g">↑</span>Synced with upstream</h3><p>Based on upstream herdr 0.9.5.</p></div>
+  </div>
+</section>
+
+<!-- ============ COORDINATOR ============ -->
+<section id="coordinator">
+  <p class="eyebrow">11 · coordinator</p>
+  <h2>A coordinator agent, run by herdr itself</h2>
+  <p class="lede">One long-running Claude Code session that knows who is doing what, keeps a dashboard, remembers what you tell it, and acts when you ask. It doesn't relay messages: agents talk to each other directly, and it reads the log.</p>
+  <div class="two">
+    <div class="grid" style="grid-template-columns:1fr">
+      <div class="card"><h3><span class="g">◉</span>Native, server-run</h3><p>You never run it yourself: herdr starts it in its own <code>coordinator</code> tab, resumes it after restarts and relaunches it if it disappears. Turn it on with <code>[coordinator] enabled = true</code>.</p></div>
+      <div class="card"><h3><span class="g">▤</span>HTML dashboard on <code>127.0.0.1:7718</code></h3><p>One page with every agent's status, recent messages and actions, plus the coordinator's own summaries and suggestions. Opens in herdr's browser or yours.</p></div>
+      <div class="card"><h3><span class="g">❖</span>Its own memory</h3><p>It remembers what you tell it across restarts: one fact per file, with an index it reads every time it starts or wakes.</p></div>
+      <div class="card"><h3><span class="g">⊘</span>Acts only on your word</h3><p>It changes things only when you asked, by typing in its pane. When it wakes up by itself, it updates the dashboard and makes suggestions, but changes nothing.</p></div>
+    </div>
+    <div>
+      <div class="term solo" style="width:100%;margin-bottom:14px" role="img" aria-label="Coordinator row states">
+        <div class="bar">pinned bottom row, its states</div>
+        <div class="sb">
+          <div class="r"><span>  <span class="o0">○</span> <span class="s0">coordinator</span></span><span class="o1">12 watched</span></div>
+          <div class="r"><span>  <span class="ye">◐</span> <span class="s0">coordinator</span></span><span class="o1">waking</span></div>
+          <div class="r"><span>  <span class="ac">●</span> <span class="s0">coordinator</span></span><span class="o1">3 ideas</span></div>
+          <div class="r"><span>  <span class="o0">◌</span> <span class="s0">coordinator</span></span><span class="o1">capped</span></div>
+          <div class="r"><span>  <span class="ye">!</span> <span class="s0">coordinator</span></span><span class="o1">locked</span></div>
+          <div class="r"><span>  <span class="re">×</span> <span class="s0">coordinator</span></span><span class="o1">down</span></div>
+        </div>
+      </div>
+      <p class="dim" style="font-size:.82rem;margin:-.4rem 0 14px">capped = hit its wake-up limit · locked = another herdr server runs it · down = stopped after too many relaunches or a failed start</p>
+      <div class="tbl"><table>
+        <tr><th>Wake-up limit</th><th>Default</th></tr>
+        <tr><td><code>cap_hour</code></td><td>12 wake-ups an hour</td></tr>
+        <tr><td><code>cap_day</code></td><td>80 a day</td></tr>
+        <tr><td><code>periodic_minutes</code></td><td>a slow check every 60 min</td></tr>
+        <tr><td><code>relaunch_cap_hour</code></td><td>3 relaunches an hour, then <code>down</code></td></tr>
+        <tr><td><code>notify_daily_cap</code></td><td>6 of its own notifications a day, plus <code>quiet_hours</code></td></tr>
+        <tr><td><code>wake_scope</code></td><td><code>opened</code>: only agents the coordinator opened can wake it</td></tr>
+      </table></div>
+    </div>
   </div>
 </section>
 
