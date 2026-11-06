@@ -9,8 +9,18 @@
 // * page API (`--herdr-page-api`, an agent's html view shown with page_api): the top frame
 //   gets a frozen, send-only window.herdr; iframes and every other page never do. The main
 //   process re-checks every call (src/page-api.js), herdr again (browser.page_message).
+// * no drag regions: the views sit in frameless windows, where Electron honours a page's
+//   `app-region: drag` (Slack's desktop CSS) and sends the mouse over it to the window, never
+//   to the page or the dock's auto-hidden bar above it. A user-origin !important rule beats
+//   the page's own, in every document of every frame, before its first paint.
 'use strict';
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webFrame } = require('electron');
+
+try {
+  webFrame.insertCSS('*,*::before,*::after{app-region:no-drag !important;-webkit-app-region:no-drag !important}', { cssOrigin: 'user' });
+} catch (e) {
+  console.warn('herdr: no-drag style failed', e && e.message);
+}
 
 const ask = (type, message, defaultValue) => ipcRenderer.sendSync('herdr-companion:dialog', { type, message, default_value: defaultValue });
 

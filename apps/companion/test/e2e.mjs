@@ -113,8 +113,16 @@ const stripPage = () => mock.state.browser.contexts()[0].pages().find((p) => p.u
 
 // a local http server to observe html-view network blocking
 let hits = 0;
+const webAgents = []; // user-agent headers seen
+// pages declaring window drag regions (Slack's desktop CSS); /dragframe is embedded cross-site
+const DRAG_CSS = '<style>#d{app-region:drag !important;-webkit-app-region:drag !important;height:40px}#d::before{content:"";app-region:drag}</style>';
 const web = http.createServer((req, res) => {
   hits++;
+  webAgents.push(req.headers['user-agent'] || '');
+  const u = req.url.split('?')[0];
+  res.setHeader('content-type', 'text/html');
+  if (u === '/drag1' || u === '/drag2') return res.end(`<title>${u}</title>${DRAG_CSS}<div id=d>d</div><iframe src="http://localhost:${web.address().port}/dragframe"></iframe>`);
+  if (u === '/dragframe') return res.end(`<title>frame</title>${DRAG_CSS}<div id=d>f</div>`);
   res.end('<title>web</title>web');
 });
 await new Promise((r) => web.listen(0, '127.0.0.1', r));
@@ -832,6 +840,63 @@ try {
   await pp.click('#go');
   const paway = await lastResult();
   check('a page navigated away from the shown file is refused', paway && paway.ok === false && mock.state.pageMessages.length === awayBefore, paway);
+
+  // a page cannot claim a window drag region (it would take the mouse from the dock's bar);
+  // the companion's own strip keeps its drag region
+  {
+    const regions = async (pg) =>
+      Promise.all(
+        pg.frames().map((f) =>
+          f
+            .evaluate(() => {
+              const d = document.getElementById('d');
+              return d ? [getComputedStyle(d).appRegion, getComputedStyle(d, '::before').appRegion, getComputedStyle(d).webkitAppRegion] : null;
+            })
+            .catch((e) => e.message),
+        ),
+      );
+    const two = async (pg) => ((x) => (x.filter(Boolean).length === 2 ? x : null))(await regions(pg));
+    const allNoDrag = (rs) => rs.filter(Boolean).length === 2 && rs.filter(Boolean).every((r) => Array.isArray(r) && r.every((v) => v === 'no-drag'));
+    const od = await ctl(`__herdrCompanion.open({tab_id:'w1:t2', url:'http://127.0.0.1:${webPort}/drag1', background:false})`);
+    const dp = await waitFor(() => pageForTarget(od.target_id), 5000);
+    const r1 = await waitFor(() => two(dp), 5000);
+    check('a web page and its cross-site frame get no drag region (drag !important, ::before)', r1 && allNoDrag(r1), r1);
+    const agentsBefore = webAgents.length;
+    await dp.evaluate((u) => {
+      location.href = u;
+    }, `http://127.0.0.1:${webPort}/drag2`);
+    const r2 = await waitFor(async () => (dp.url().endsWith('/drag2') ? two(dp) : null), 5000);
+    check('… nor after navigating to another drag page', r2 && allNoDrag(r2), r2);
+    const ua = await dp.evaluate(() => navigator.userAgent);
+    const seen = webAgents.slice(agentsBefore);
+    check(
+      "a web page's user agent has no Electron/ token (navigator and request header)",
+      !/Electron\//.test(ua) && /Chrome\//.test(ua) && seen.length > 0 && seen.every((a) => a && !/Electron\//.test(a)),
+      { ua, seen },
+    );
+    await ctl(`__herdrCompanion.close(${JSON.stringify(od.view_id)})`);
+    fs.writeFileSync(path.join(site, 'drag.html'), `<title>drag</title>${DRAG_CSS}<div id=d>d</div><iframe src="dragframe.html"></iframe>`);
+    fs.writeFileSync(path.join(site, 'dragframe.html'), `${DRAG_CSS}<div id=d>f</div>`);
+    const sd = await ctl(`__herdrCompanion.show({tab_id:'w1:t2', file:${JSON.stringify(path.join(site, 'drag.html'))}})`);
+    const sp = await waitFor(() => pageForTarget(sd.target_id), 5000);
+    const r3 = await waitFor(() => two(sp), 5000);
+    check('an html view and its frame get no drag region', r3 && allNoDrag(r3), r3);
+    const hua = await sp.evaluate(() => navigator.userAgent);
+    check("an html view's user agent has no Electron/ token", !/Electron\//.test(hua), hua);
+    await ctl(`__herdrCompanion.close(${JSON.stringify(sd.view_id)})`);
+    const strips = mock.state.browser.contexts().flatMap((c) => c.pages()).filter((p) => p.url().startsWith('herdr-companion://ui/strip.html'));
+    const own = await Promise.all(
+      strips.map((p) =>
+        p.evaluate(() => ({ docked: document.body.classList.contains('docked'), bar: getComputedStyle(document.getElementById('bar')).appRegion })),
+      ),
+    );
+    // strip.css: the floating bar drags its window; the docked one has no drag region
+    check(
+      'the strip keeps its own drag region (floating: drag, docked: no-drag)',
+      own.length > 0 && own.some((o) => !o.docked) && own.every((o) => o.bar === (o.docked ? 'no-drag' : 'drag')),
+      own,
+    );
+  }
 
   // an agent focus() into a non-focused herdr tab survives unrelated tab events
   const fo = await ctl(`__herdrCompanion.show({tab_id:'w1:t1', file:${JSON.stringify(path.join(site, 'inside.html'))}, focus:true})`);
