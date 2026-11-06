@@ -135,13 +135,13 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
 <nav aria-label="Sections"><div class="in">
   <a class="brand" href="herdr-plus.html">herdr<b>+</b> <span>config</span></a>
   <a class="l" href="#top">Overview</a>
-  <a class="l" href="#agents">Agents</a>
   <a class="l" href="#sidebar">Sidebar</a>
   <a class="l" href="#tabmenu">Per-tab toggles</a>
-  <a class="l" href="#notes">Notes pane</a>
-  <a class="l" href="#reminders">Reminders &amp; sounds</a>
-  <a class="l" href="#coordinator">Coordinator</a>
+  <a class="l" href="#reminders">herdr's notifications</a>
   <a class="l" href="#browser">Browser</a>
+  <a class="l" href="#notes">Notes pane</a>
+  <a class="l" href="#agents">Agents</a>
+  <a class="l" href="#coordinator">Coordinator</a>
   <a class="l" href="#rendering">Rendering</a>
   <a class="l" href="#updates">Updates</a>
   <a class="l" href="#news">News</a>
@@ -188,132 +188,9 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
   </div>
 </section>
 
-<!-- ============ AGENTS ============ -->
-<section id="agents">
-  <p class="eyebrow">01 · agents</p>
-  <h2>Agents <code>[agents]</code></h2>
-  <p class="lede">Wrapping changes apply at the next agent launch; running agents keep what they started with.</p>
-  <div class="rows">
-    <div class="row head"><span>Feature</span><span>Default</span><span>Where to change</span><span>In Settings?</span></div>
-    <div class="row">
-      <div class="f"><h3>Wrap plain <code>claude</code> / <code>codex</code></h3><p>In herdr+ panes. Master switch for tools and instructions.</p></div>
-      <div class="d"><span class="pill off">off</span><small>unset; falls back to legacy <code>[browser] wrap_agents</code>, else off</small></div>
-      <div class="k"><code>[agents] wrap = true</code></div>
-      <div class="s"><span class="badge set">in Settings</span><small>agents → wrap</small></div>
-    </div>
-    <div class="row">
-      <div class="f"><h3>Agent tools</h3><p>The herdr_agents MCP server on wrapped launches.</p></div>
-      <div class="d"><span class="pill off">off</span></div>
-      <div class="k"><code>[agents] tools = true</code><small>needs <code>wrap</code></small></div>
-      <div class="s"><span class="badge set">in Settings</span><small>agents</small></div>
-    </div>
-    <div class="row">
-      <div class="f"><h3>herdr+ instructions</h3><p>The instructions paragraph on wrapped launches.</p></div>
-      <div class="d"><span class="pill off">off</span></div>
-      <div class="k"><code>[agents] instructions = true</code><small>needs <code>wrap</code></small></div>
-      <div class="s"><span class="badge set">in Settings</span><small>agents</small></div>
-    </div>
-    <div class="row">
-      <div class="f"><h3>Custom instructions text</h3></div>
-      <div class="d"><span class="pill val">built-in</span></div>
-      <div class="k"><code>[agents] instructions_file = "~/path.md"</code><small>empty = built-in</small></div>
-      <div class="s"><span class="badge set">in Settings</span><small>toggles built-in and <code>agents.md</code> in the config dir; other paths config only</small></div>
-    </div>
-    <div class="row">
-      <div class="f"><h3>Team roster</h3><p>Roster, purpose and team tools for agents launched in a team group.</p></div>
-      <div class="d"><span class="pill on">on</span></div>
-      <div class="k"><code>[agents] team_roster = false</code></div>
-      <div class="s"><span class="badge set">in Settings</span><small>agents</small></div>
-    </div>
-    <div class="row">
-      <div class="f"><h3>Agent notices</h3><p><code>agents_notify</code>, <code>herdr agent notify</code>.</p></div>
-      <div class="d"><span class="pill on">on</span></div>
-      <div class="k"><code>[agents] notices = false</code></div>
-      <div class="s"><span class="badge cfg">config only</span></div>
-    </div>
-    <div class="row">
-      <div class="f"><h3>Program status</h3><p>OSC 7501 probe; Claude Code 2.1.295+. Screen detection still decides the state. Applied live.</p></div>
-      <div class="d"><span class="pill on">on</span></div>
-      <div class="k"><code>[agents] program_status = false</code></div>
-      <div class="s"><span class="badge set">in Settings</span><small>agents</small></div>
-    </div>
-    <div class="row">
-      <div class="f"><h3>Context window per agent</h3><p>Sidebar context %.</p></div>
-      <div class="d"><span class="pill val">from session / model</span></div>
-      <div class="k"><code>[agents] context_window = { claude = 1000000 }</code></div>
-      <div class="s"><span class="badge ro">read-only</span><small>No, shown read-only</small></div>
-    </div>
-  </div>
-
-  <h4>Handoff and compact · <code>[agents.handoff]</code> · Claude only</h4>
-  <p class="lede" style="margin-bottom:.9rem">Before a Claude agent's context is compacted, herdr has it write a handoff, saves the transcript, types <code>/compact</code> and points the new session back at both.</p>
-  <div class="rows">
-    <div class="row head"><span>Feature</span><span>Default</span><span>Where to change</span><span>In Settings?</span></div>
-    <div class="row">
-      <div class="f"><h3>Handoff feature as a whole</h3></div>
-      <div class="d"><span class="pill on">on</span></div>
-      <div class="k"><code>[agents.handoff] enabled = false</code><small>Off also removes the menu item, the <code>handoff_compact</code> key and the PreCompact safety net</small></div>
-      <div class="s"><span class="badge set">in Settings</span><small>agents</small></div>
-    </div>
-    <div class="row">
-      <div class="f"><h3>Automatic trigger</h3><p>At context use.</p></div>
-      <div class="d"><span class="pill val">80</span></div>
-      <div class="k"><code>[agents.handoff] at_percent = 0..100</code><small>0 = no automatic trigger</small></div>
-      <div class="s"><span class="badge set">in Settings</span><small>cycles 60 / 70 / 80 / 90 / off</small></div>
-    </div>
-    <div class="row">
-      <div class="f"><h3>Custom handoff prompt</h3></div>
-      <div class="d"><span class="pill val">herdr's own</span></div>
-      <div class="k"><code>[agents.handoff] command = "/my:handoff {path}"</code><small><code>{path}</code> is replaced; appended when missing</small></div>
-      <div class="s"><span class="badge ro">read-only</span><small>No, shown read-only</small></div>
-    </div>
-    <div class="row">
-      <div class="f"><h3>Resume line after compaction</h3></div>
-      <div class="d"><span class="pill on">on</span></div>
-      <div class="k"><code>[agents.handoff] resume = false</code></div>
-      <div class="s"><span class="badge cfg">config only</span></div>
-    </div>
-  </div>
-
-  <h4>Suspend and autosuspend</h4>
-  <div class="rows">
-    <div class="row head"><span>Feature</span><span>Default</span><span>Where to change</span><span>In Settings?</span></div>
-    <div class="row">
-      <div class="f"><h3>Suspend / activate an agent by hand</h3></div>
-      <div class="d"><span class="pill val">always available</span></div>
-      <div class="k">Tab menu "Suspend agent" / "Activate agent", or bind <code>toggle_agent_suspend</code></div>
-      <div class="s"><span class="badge tab">tab menu</span><small>n/a</small></div>
-    </div>
-    <div class="row">
-      <div class="f"><h3>Autosuspend idle Claude agents</h3><p>Idle and seen, nothing running; a message wakes it.</p></div>
-      <div class="d"><span class="pill off">off</span></div>
-      <div class="k"><code>[agents.autosuspend] after = "off"</code> or <code>"&lt;N&gt;m"</code>, <code>"&lt;N&gt;h"</code>, <code>"&lt;N&gt;d"</code><small>at most 365 days</small></div>
-      <div class="s"><span class="badge set">in Settings</span><small>agents, cycles 1h / 4h / 1d / 3d / off</small></div>
-    </div>
-    <div class="row">
-      <div class="f"><h3>Restart an idle agent in place</h3></div>
-      <div class="d"><span class="pill val">always available</span></div>
-      <div class="k">Tab menu "Restart agent", or bind <code>restart_agent</code></div>
-      <div class="s"><span class="badge tab">tab menu</span><small>n/a</small></div>
-    </div>
-    <div class="row">
-      <div class="f"><h3>Transcript backups</h3><p>A copy of each open or suspended agent's native transcript, put back before a resume when the agent deleted its own.</p></div>
-      <div class="d"><span class="pill on">on</span></div>
-      <div class="k"><code>[session] backup_agent_transcripts = false</code></div>
-      <div class="s"><span class="badge ro">status only</span><small>backups section</small></div>
-    </div>
-    <div class="row">
-      <div class="f"><h3>Resume agents on session restore</h3><p>Upstream.</p></div>
-      <div class="d"><span class="pill on">on</span></div>
-      <div class="k"><code>[session] resume_agents_on_restore = false</code></div>
-      <div class="s"><span class="badge cfg">config only</span></div>
-    </div>
-  </div>
-</section>
-
 <!-- ============ SIDEBAR ============ -->
 <section id="sidebar">
-  <p class="eyebrow">02 · sidebar</p>
+  <p class="eyebrow">01 · sidebar</p>
   <h2>Sidebar <code>[ui]</code> <code>tabs</code> layout</h2>
   <div class="rows" style="margin-top:1rem">
     <div class="row head"><span>Feature</span><span>Default</span><span>Where to change</span><span>In Settings?</span></div>
@@ -409,10 +286,10 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
       <div class="s">none<small>grouping is in the tab menu</small></div>
     </div>
   </div>
-  <p class="note">The notes pane toggle moved to the session header's <code>▤</code>. The sidebar has no Browser row and no detail strip any more: the browser's controls are in <a href="#browser">Settings → Browser</a>, the focused tab's facts in the session header.</p>
+  <p class="note">The notes pane toggle moved to the session header's <code>≡</code>. The sidebar has no Browser row and no detail strip any more: the browser's controls are in <a href="#browser">Settings → Browser</a>, the focused tab's facts in the session header.</p>
 
   <h4 id="session-header">Session header</h4>
-  <p class="lede" style="margin-bottom:.9rem">One row on top of the session area, in the <code>tabs</code> layout only (the <code>spaces</code> layout keeps its tab bar and view strip): <code>● name  82% ⚭3 ✉1 … Terminal  Browser ◧  ▤</code>. Selection and hover change only the text colour: the active view and the open dock are accent, other controls dim (<code>overlay0</code>), a hovered one <code>text</code>.</p>
+  <p class="lede" style="margin-bottom:.9rem">One row on top of the session area, in the <code>tabs</code> layout only (the <code>spaces</code> layout keeps its tab bar and view strip): <code>● group · name  82% ⚭3 ✉1 … Terminal  Browser 3 ◨  ≡</code>. Selection and hover change only the text colour: the active view and the open dock are accent, other controls dim (<code>overlay0</code>), a hovered one <code>text</code>.</p>
   <div class="rows">
     <div class="row head"><span>Part</span><span>Shown when</span><span>What it shows or does</span><span>Key / setting</span></div>
     <div class="row">
@@ -422,6 +299,12 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
       <div class="s"><code>[ui] status_indicators = "symbols"</code><small>uses the sidebar's symbol set</small></div>
     </div>
     <div class="row">
+      <div class="f"><h3>Group, then <code>·</code></h3></div>
+      <div class="d"><span class="pill val">while the tab is in a group</span></div>
+      <div class="k">The tab's group, dim (<code>overlay1</code>), named as the sidebar's group header names it: the team's purpose, else the group label<small>It only takes the cells the whole name leaves: it shortens with <code>…</code> and drops once fewer than 4 of its cells fit</small></div>
+      <div class="s"><span class="badge na">n/a</span></div>
+    </div>
+    <div class="row">
       <div class="f"><h3>Name, <code>NN%</code>, <code>⚭N</code>, <code>✉N</code></h3></div>
       <div class="d"><span class="pill val">the use from 75 %</span><small>the counts when not zero</small></div>
       <div class="k">The tab's name (bold, its colour tag; it truncates first), its agents' fullest context use as on the tab row, running subagents, quiet messages waiting</div>
@@ -429,31 +312,32 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
     </div>
     <div class="row">
       <div class="f"><h3><code>Terminal</code> / <code>Browser</code></h3></div>
-      <div class="d"><span class="pill val">while the browser docks here</span><small>this machine's herdr running the companion; shrink to <code>T</code> / <code>B</code>, then go, on a narrow row</small></div>
-      <div class="k">Switch the tab between its terminal and Browser view</div>
+      <div class="d"><span class="pill val">while the browser docks here</span><small>this machine's herdr running the companion; shrink to <code>T</code> / <code>B</code> (<code>B7</code> with pages), then go, on a narrow row</small></div>
+      <div class="k">Switch the tab between its terminal and Browser view<small><code>Browser</code> carries the tab's open page count in a small block: accent while Browser view is on, none at 0 pages or while the companion is stopped, <code>99+</code> from 100</small></div>
       <div class="s"><code>toggle_browser_view</code> <kbd>prefix</kbd>+<kbd>shift</kbd>+<kbd>z</kbd><small><code>[ui] browser_view_strip = "off"</code> hides them</small></div>
     </div>
     <div class="row">
-      <div class="f"><h3><code>◧</code> browser dock</h3></div>
+      <div class="f"><h3><code>◨</code> browser dock</h3></div>
       <div class="d"><span class="pill val">same as the view tabs</span><small>also on the narrowest row</small></div>
       <div class="k">Docks the browser on the right of the tab; in Browser view it brings the terminal back with the browser docked<small>Lit while docked</small></div>
       <div class="s"><code>toggle_browser_dock</code> <kbd>prefix</kbd>+<kbd>shift</kbd>+<kbd>b</kbd></div>
     </div>
     <div class="row">
-      <div class="f"><h3><code>▤</code> notes dock</h3></div>
+      <div class="f"><h3><code>≡</code> notes dock</h3></div>
       <div class="d"><span class="pill val">always, the far right</span></div>
       <div class="k">Opens or closes the tab's notes pane, never taking the keyboard<small>Lit while open</small></div>
       <div class="s"><code>toggle_info_pane</code><small>unbound</small></div>
     </div>
   </div>
-  <p class="note">One dock slot on the right: the notes pane or the browser, never both. <code>◧</code> and <code>▤</code> swap it, and each keeps its own width (<code>[ui] info_pane_width</code>, <code>[ui] browser_dock_width</code>, or the width you dragged). Each dock has a one-line title bar: notes <code>▤ Notes  ✎  ✕</code> (<code>✎</code> edits or leaves the editor, <code>✕</code> closes), browser <code>◧ &lt;page title&gt;  ⤢  ✕</code> (<code>⤢</code> turns the tab to Browser view and frees the slot). The page's back, forward and reload stay in the companion's own bar. In Browser view the notes pane stays beside the page.</p>
+  <p class="note">One dock slot on the right: the notes pane or the browser, never both. <code>◨</code> and <code>≡</code> swap it, and each keeps its own width (<code>[ui] info_pane_width</code>, <code>[ui] browser_dock_width</code>, or the width you dragged). The notes pane has a one-line title bar, <code>≡ Notes  ✎  ✕</code> (<code>✎</code> edits or leaves the editor, <code>✕</code> closes).</p>
+  <p class="note"><b>Browser dock title:</b> herdr's own <code>◨ &lt;page title&gt;  ⤢  ✕</code> (<code>⤢</code> turns the tab to Browser view and frees the slot, <code>✕</code> closes) shows only while the companion is not over the dock: not installed, not running, not docked yet, or a companion older than its compact bar. While the companion covers the dock, its own bar is on top instead. Docked and in Browser view that bar hides by default to a thin line at the top of the page (gold while a page loads, rust while a tab needs you); hover there and it shows over the page, and it hides again when the pointer leaves. It holds the page count pill, this session's pages, back / forward / reload, the URL, send to agent, and expand (to Browser view; restore in it) and close; <kbd>⌘⇧.</kbd> pins it in place. In Browser view the notes pane stays beside the page.</p>
 </section>
 
 <!-- ============ PER-TAB ============ -->
 <section id="tabmenu">
-  <p class="eyebrow">03 · per-tab toggles</p>
+  <p class="eyebrow">02 · per-tab toggles</p>
   <h2>Per-tab toggles <code>tab menu</code></h2>
-  <p class="lede">Right-click a tab. These are per tab, not config keys. Important, pin, mute, do not disturb, the reminder and the colour are server session state: they are saved with the tab in <code>session.json</code>, so they survive a server restart (session restore) and a live handoff, and move with the tab. Only the notes pane's open or closed state belongs to the client and is never saved.</p>
+  <p class="lede">Right-click a tab. These are per tab, not config keys. Important, pin, mute, do not disturb, the reminder and the colour are server session state: they are saved with the tab in <code>session.json</code>, so they survive a server restart (session restore) and a live handoff, and move with the tab. Only whether the notes pane, the browser dock or Browser view is open belongs to the client and is never saved.</p>
   <div class="rows">
     <div class="row head"><span>Item</span><span>Default (new tab)</span><span>What it does</span><span>Key</span></div>
     <div class="row">
@@ -471,7 +355,7 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
     <div class="row">
       <div class="f"><h3>Mute notifications</h3></div>
       <div class="d"><span class="pill off">off</span></div>
-      <div class="k">No herdr automatic notifications for the tab (toasts, sounds, system/terminal notifications, bells, reminders); agent cards still show</div>
+      <div class="k">None of herdr's own notifications for the tab (toasts, sounds, system/terminal notifications, bells, reminders); notifications from agents still show</div>
       <div class="s"><span class="badge tab">tab menu</span></div>
     </div>
     <div class="row">
@@ -496,37 +380,23 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
       <div class="f"><h3>Info pane</h3></div>
       <div class="d"><span class="pill off">hidden, every start</span></div>
       <div class="k">Shows or hides the tab's notes pane. Which tabs have it open is client-only: after a restart or in a new client every notes pane starts hidden</div>
-      <div class="s"><span class="badge tab">tab menu</span><small>also key <code>toggle_info_pane</code>, or the session header's <code>▤</code></small></div>
-    </div>
-  </div>
-</section>
-
-<!-- ============ NOTES ============ -->
-<section id="notes">
-  <p class="eyebrow">04 · notes pane</p>
-  <h2>Notes pane <code>[notes]</code></h2>
-  <div class="rows" style="margin-top:1rem">
-    <div class="row head"><span>Feature</span><span>Default</span><span>Where to change</span><span>In Settings?</span></div>
-    <div class="row">
-      <div class="f"><h3>Notes pane and the agents' notes tools</h3></div>
-      <div class="d"><span class="pill on">on</span></div>
-      <div class="k"><code>[notes] enabled = false</code><small>nothing is read or written under <code>&lt;config dir&gt;/notes/</code></small></div>
-      <div class="s"><span class="badge cfg">config only</span></div>
+      <div class="s"><span class="badge tab">tab menu</span><small>also key <code>toggle_info_pane</code>, or the session header's <code>≡</code></small></div>
     </div>
     <div class="row">
-      <div class="f"><h3>Notes pane default width</h3></div>
-      <div class="d"><span class="pill val">44</span></div>
-      <div class="k"><code>[ui] info_pane_width = 28..120</code><small>A width you drag or step is saved per client and wins from then on</small></div>
-      <div class="s"><span class="badge cfg">config only</span></div>
+      <div class="f"><h3>Dock browser, Browser view</h3></div>
+      <div class="d"><span class="pill off">off, every start</span></div>
+      <div class="k">The tab's browser dock and Browser view. Shown while the companion browser docks here; client-only like the notes pane</div>
+      <div class="s"><span class="badge tab">tab menu</span><small>also keys <code>toggle_browser_dock</code>, <code>toggle_browser_view</code>, <code>cycle_browser</code></small></div>
     </div>
   </div>
 </section>
 
 <!-- ============ REMINDERS ============ -->
 <section id="reminders">
-  <p class="eyebrow">05 · reminders, toasts and sounds</p>
-  <h2>Reminders, toasts and sounds <code>[ui]</code> <code>[ui.toast]</code> <code>[ui.sound]</code></h2>
-  <div class="rows" style="margin-top:1rem">
+  <p class="eyebrow">03 · herdr's own notifications</p>
+  <h2>herdr's own notifications <code>[ui]</code> <code>[ui.toast]</code> <code>[ui.sound]</code></h2>
+  <p class="lede">Reminders, toasts and sounds: what herdr itself tells you when a tab finished, needs you, or has a reminder due. Notifications from agents (what agents send with <code>agents_notify</code>) are separate: they stay until you dismiss them or open the agent's tab, <code>[agents] notices = false</code> turns them off, and a tab's mute leaves them alone.</p>
+  <div class="rows">
     <div class="row head"><span>Feature</span><span>Default</span><span>Where to change</span><span>In Settings?</span></div>
     <div class="row">
       <div class="f"><h3>Idle reminders for important tabs</h3></div>
@@ -585,9 +455,287 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
   </div>
 </section>
 
+<!-- ============ BROWSER ============ -->
+<section id="browser">
+  <p class="eyebrow">04 · browser</p>
+  <h2>Browser <code>[browser]</code></h2>
+  <p class="lede">The browser herdr runs for agents: the herdr+ companion browser. <code>herdr browser setup --companion</code> installs it; the first page an agent opens starts it; <code>herdr browser companion</code>, Settings → Browser and the Browser overlay start, stop, restart and focus it. The herdr+ Chromium window is off unless <code>[browser] window = true</code>.</p>
+  <div class="rows">
+    <div class="row head"><span>Feature</span><span>Default</span><span>Where to change</span><span>In Settings?</span></div>
+    <div class="row">
+      <div class="f"><h3>Browser feature</h3></div>
+      <div class="d"><span class="pill on">on</span></div>
+      <div class="k"><code>[browser] enabled = false</code></div>
+      <div class="s"><span class="badge set">in Settings</span><small>browser</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Where <code>open</code> / <code>show</code> go</h3><p>The companion browser, started on demand. <code>"auto"</code>: the companion while it runs, else the herdr+ window when it is on. <code>"window"</code> with the window on: herdr never starts the companion and offers no dock or Browser view.</p></div>
+      <div class="d"><span class="pill val">"companion"</span></div>
+      <div class="k"><code>[browser] host = "auto"</code> or <code>"window"</code></div>
+      <div class="s"><span class="badge cfg">config only</span></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Start the companion with the server</h3><p>In the background; else it starts on the first page an agent opens.</p></div>
+      <div class="d"><span class="pill off">off</span></div>
+      <div class="k"><code>[browser] companion_autostart = true</code></div>
+      <div class="s"><span class="badge cfg">config only</span></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>The herdr+ Chromium window</h3><p>Off: agents use the companion browser; a window profile answers <code>window_disabled</code>.</p></div>
+      <div class="d"><span class="pill off">off</span></div>
+      <div class="k"><code>[browser] window = true</code></div>
+      <div class="s"><span class="badge cfg">config only</span></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Start the herdr+ window with the server</h3><p>Only with <code>window = true</code>; the companion's is <code>companion_autostart</code>.</p></div>
+      <div class="d"><span class="pill off">off</span><small>lazy</small></div>
+      <div class="k"><code>[browser] autostart = true</code></div>
+      <div class="s"><span class="badge cfg">config only</span></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Close the herdr+ window when the server stops</h3><p>Not on a live handoff. The companion herdr started always stops with the server, never on a live handoff.</p></div>
+      <div class="d"><span class="pill off">off</span><small>the window survives herdr</small></div>
+      <div class="k"><code>[browser] stop_with_server = true</code></div>
+      <div class="s"><span class="badge cfg">config only</span></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Page API</h3><p>A page an agent shows with <code>page_api</code> (<code>herdr browser show --page-api</code>) may message that agent with <code>window.herdr.send({text, data})</code>, as page content: local pages without network only, top frame only, never a wake-up. Example: <code>docs/fork/examples/page-api.html</code>.</p></div>
+      <div class="d"><span class="pill on">on</span></div>
+      <div class="k"><code>[browser] page_api = false</code></div>
+      <div class="s"><span class="badge cfg">config only</span></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Page errors of a tab an agent uses</h3><p>Stored quietly for that Claude agent; others read them with <code>herdr browser console</code>.</p></div>
+      <div class="d"><span class="pill val">"agent"</span></div>
+      <div class="k"><code>[browser] page_errors = "off"</code></div>
+      <div class="s"><span class="badge cfg">config only</span></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Steer agents to the herdr browser</h3><p>The MCP instructions, the wrap instructions and, in wrapped Claude launches, the Claude integration's PreToolUse hook (v17): a WebFetch, an <code>open</code>/<code>xdg-open</code> of a URL or local HTML file, or another browser MCP is denied once with the herdr-browser tool to use; the same call again within 2 minutes runs. The hook stays out of the way while the herdr-browser MCP is not registered for Claude.</p></div>
+      <div class="d"><span class="pill on">on</span></div>
+      <div class="k"><code>[browser] steer_agents = false</code></div>
+      <div class="s"><span class="badge set">in Settings</span><small>browser ("agents prefer herdr's browser (when wrapped)")</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Turn off agents' own browsers</h3><p>While <code>wrap</code> is on.</p></div>
+      <div class="d"><span class="pill on">on</span></div>
+      <div class="k"><code>[browser] disable_native_browser = false</code></div>
+      <div class="s"><span class="badge set">in Settings</span><small>browser</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>MCP registration</h3></div>
+      <div class="d"><span class="pill val">claude and codex</span></div>
+      <div class="k"><code>[browser] mcp_agents = ["claude"]</code></div>
+      <div class="s"><span class="badge set">in Settings</span><small>both / claude / codex / none</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Activity overlay</h3><p>Tab groups, glow, cursor.</p></div>
+      <div class="d"><span class="pill on">on</span></div>
+      <div class="k"><code>[browser] show_activity = false</code></div>
+      <div class="s"><span class="badge set">in Settings</span><small>browser</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Activity color</h3></div>
+      <div class="d"><span class="pill val"><span style="color:#aa6eff">●</span> #aa6eff</span></div>
+      <div class="k"><code>[browser] activity_color = "#rrggbb"</code></div>
+      <div class="s"><span class="badge set">in Settings</span><small>5 presets</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Pinned dashboard tab</h3></div>
+      <div class="d"><span class="pill on">on</span></div>
+      <div class="k"><code>[browser] pin_dashboard = false</code></div>
+      <div class="s"><span class="badge set">in Settings</span><small>browser</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3><code>eval</code>, act family, typing into password fields</h3></div>
+      <div class="d"><span class="pill on">on</span> <span class="pill on">on</span> <span class="pill off">off</span></div>
+      <div class="k"><code>[browser] allow_eval</code>, <code>allow_act</code>, <code>type_into_password_fields</code></div>
+      <div class="s"><span class="badge cfg">config only</span></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Restore tabs on relaunch</h3></div>
+      <div class="d"><span class="pill on">on</span></div>
+      <div class="k"><code>[browser] restore_tabs = false</code></div>
+      <div class="s"><span class="badge cfg">config only</span></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3><code>◨</code> Dock the browser on the focused tab</h3><p>A band at the window's right edge; the companion covers it and follows the terminal window (hidden while it moves, is minimised, hidden or on another Space).</p></div>
+      <div class="d"><span class="pill val">off, per tab</span></div>
+      <div class="k"><code>toggle_browser_dock</code> <kbd>prefix</kbd>+<kbd>shift</kbd>+<kbd>b</kbd><small>also the session header's <code>◨</code> (also in the <code>spaces</code> view strip), the tab menu's Dock browser, Settings → Browser</small></div>
+      <div class="s"><span class="badge cfg">config only</span></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Dock width</h3><p>Drag the divider to resize, double-click it for the default; the dragged width is saved per client.</p></div>
+      <div class="d"><span class="pill val">45 %</span></div>
+      <div class="k"><code>[ui] browser_dock_width = 20..80</code></div>
+      <div class="s"><span class="badge cfg">config only</span></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Browser view</h3><p>The browser over the whole tab; the panes keep running and keep their size, and keys, pastes and IME text never reach them. herdr's notices, toasts and notifications from agents show as one line on the session header (the view strip in the <code>spaces</code> layout).</p></div>
+      <div class="d"><span class="pill val">off, per tab</span></div>
+      <div class="k"><code>toggle_browser_view</code> <kbd>prefix</kbd>+<kbd>shift</kbd>+<kbd>z</kbd><small><code>cycle_browser</code> <kbd>ctrl</kbd>+<kbd>shift</kbd>+<kbd>b</kbd> (no prefix) steps none, docked, Browser view, none; also the session header's <code>Terminal</code> / <code>Browser</code> (the <code>spaces</code> view strip's <code>◫ Terminal</code> / <code>◎ Browser</code>), the dock's expand (<code>⤢</code> on herdr's title bar, or the companion's bar), the tab menu's Browser view</small></div>
+      <div class="s"><span class="badge cfg">config only</span></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>The view controls</h3><p>The <code>tabs</code> layout: the session header's view tabs and <code>◨</code>. The <code>spaces</code> layout: the view strip, <code>◫ Terminal  ◎ Browser · 3 … ◨</code> at the top of a tab.</p></div>
+      <div class="d"><span class="pill val">"auto"</span><small>the header's while the browser docks here; the strip while the tab has pages, the dock or Browser view</small></div>
+      <div class="k"><code>[ui] browser_view_strip = "off"</code><small>hides both</small></div>
+      <div class="s"><span class="badge cfg">config only</span></div>
+    </div>
+  </div>
+  <p class="note"><b>Docking:</b> macOS, the herdr on this machine, herdr directly in a terminal window (Ghostty measured exactly; other terminals best effort). Clicking the page gives it the keyboard; clicking the terminal, or <kbd>cmd</kbd>+<kbd>esc</kbd> in the browser, gives it back. While the browser is not over its area the area says why (starting, not running with a Start button, not installed, stopped after crashes with a Restart button, "click here once" when several terminal windows could be this one, or why it cannot dock). Tabs with pages wear a dim <code>◎</code>; the companion's count pill (<code>3 · 12</code>) lists every session with pages.</p>
+  <p class="note"><b>Settings → Browser</b> lists, after its own rows, what the sidebar's old Browser row menu had: focus, start, restart or stop the companion, the focused tab's browser dock, focus or start / stop the herdr+ window (while it is on), open the Browser overlay. Its facts start with the live state (<code>now  ◎ companion · 3 tabs · 2 agents</code>).</p>
+  <p class="note"><b>Companion browser:</b> the Electron app in <code>apps/companion</code>; <code>apps/companion/scripts/try.sh</code> tries it against a throwaway herdr in one command (run it in a plain terminal).</p>
+  <p class="note"><b>Legacy keys:</b> <code>wrap_agents</code> is only read as a fallback for <code>[agents] wrap</code> (a Settings change to wrap removes it), and <code>shell_hook</code> is inert. The commented default file still says <code>stop_with_server</code> is not honoured; it is, for the herdr+ window.</p>
+</section>
+
+<!-- ============ NOTES ============ -->
+<section id="notes">
+  <p class="eyebrow">05 · notes pane</p>
+  <h2>Notes pane <code>[notes]</code></h2>
+  <div class="rows" style="margin-top:1rem">
+    <div class="row head"><span>Feature</span><span>Default</span><span>Where to change</span><span>In Settings?</span></div>
+    <div class="row">
+      <div class="f"><h3>Notes pane and the agents' notes tools</h3></div>
+      <div class="d"><span class="pill on">on</span></div>
+      <div class="k"><code>[notes] enabled = false</code><small>nothing is read or written under <code>&lt;config dir&gt;/notes/</code></small></div>
+      <div class="s"><span class="badge cfg">config only</span></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Notes pane default width</h3></div>
+      <div class="d"><span class="pill val">44</span></div>
+      <div class="k"><code>[ui] info_pane_width = 28..120</code><small>A width you drag or step is saved per client and wins from then on</small></div>
+      <div class="s"><span class="badge cfg">config only</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ AGENTS ============ -->
+<section id="agents">
+  <p class="eyebrow">06 · agents</p>
+  <h2>Agents <code>[agents]</code></h2>
+  <p class="lede">Wrapping changes apply at the next agent launch; running agents keep what they started with.</p>
+  <div class="rows">
+    <div class="row head"><span>Feature</span><span>Default</span><span>Where to change</span><span>In Settings?</span></div>
+    <div class="row">
+      <div class="f"><h3>Wrap plain <code>claude</code> / <code>codex</code></h3><p>In herdr+ panes. Master switch for tools and instructions.</p></div>
+      <div class="d"><span class="pill off">off</span><small>unset; falls back to legacy <code>[browser] wrap_agents</code>, else off</small></div>
+      <div class="k"><code>[agents] wrap = true</code></div>
+      <div class="s"><span class="badge set">in Settings</span><small>agents → wrap</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Agent tools</h3><p>The herdr_agents MCP server on wrapped launches.</p></div>
+      <div class="d"><span class="pill off">off</span></div>
+      <div class="k"><code>[agents] tools = true</code><small>needs <code>wrap</code></small></div>
+      <div class="s"><span class="badge set">in Settings</span><small>agents</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>herdr+ instructions</h3><p>The instructions paragraph on wrapped launches.</p></div>
+      <div class="d"><span class="pill off">off</span></div>
+      <div class="k"><code>[agents] instructions = true</code><small>needs <code>wrap</code></small></div>
+      <div class="s"><span class="badge set">in Settings</span><small>agents</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Custom instructions text</h3></div>
+      <div class="d"><span class="pill val">built-in</span></div>
+      <div class="k"><code>[agents] instructions_file = "~/path.md"</code><small>empty = built-in</small></div>
+      <div class="s"><span class="badge set">in Settings</span><small>toggles built-in and <code>agents.md</code> in the config dir; other paths config only</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Team roster</h3><p>Roster, purpose and team tools for agents launched in a team group.</p></div>
+      <div class="d"><span class="pill on">on</span></div>
+      <div class="k"><code>[agents] team_roster = false</code></div>
+      <div class="s"><span class="badge set">in Settings</span><small>agents</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Notifications from agents</h3><p><code>agents_notify</code>, <code>herdr agent notify</code>; off answers <code>notices_off</code>.</p></div>
+      <div class="d"><span class="pill on">on</span></div>
+      <div class="k"><code>[agents] notices = false</code></div>
+      <div class="s"><span class="badge cfg">config only</span></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Program status</h3><p>OSC 7501 probe; Claude Code 2.1.295+. Screen detection still decides the state. Applied live.</p></div>
+      <div class="d"><span class="pill on">on</span></div>
+      <div class="k"><code>[agents] program_status = false</code></div>
+      <div class="s"><span class="badge set">in Settings</span><small>agents</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Context window per agent</h3><p>Sidebar context %.</p></div>
+      <div class="d"><span class="pill val">from session / model</span></div>
+      <div class="k"><code>[agents] context_window = { claude = 1000000 }</code></div>
+      <div class="s"><span class="badge ro">read-only</span><small>No, shown read-only</small></div>
+    </div>
+  </div>
+
+  <h4>Handoff and compact · <code>[agents.handoff]</code> · Claude only</h4>
+  <p class="lede" style="margin-bottom:.9rem">Before a Claude agent's context is compacted, herdr has it write a handoff, saves the transcript, types <code>/compact</code> and points the new session back at both.</p>
+  <div class="rows">
+    <div class="row head"><span>Feature</span><span>Default</span><span>Where to change</span><span>In Settings?</span></div>
+    <div class="row">
+      <div class="f"><h3>Handoff feature as a whole</h3></div>
+      <div class="d"><span class="pill on">on</span></div>
+      <div class="k"><code>[agents.handoff] enabled = false</code><small>Off also removes the menu item, the <code>handoff_compact</code> key and the PreCompact safety net</small></div>
+      <div class="s"><span class="badge set">in Settings</span><small>agents</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Automatic trigger</h3><p>At context use.</p></div>
+      <div class="d"><span class="pill val">80</span></div>
+      <div class="k"><code>[agents.handoff] at_percent = 0..100</code><small>0 = no automatic trigger</small></div>
+      <div class="s"><span class="badge set">in Settings</span><small>cycles 60 / 70 / 80 / 90 / off</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Custom handoff prompt</h3></div>
+      <div class="d"><span class="pill val">herdr's own</span></div>
+      <div class="k"><code>[agents.handoff] command = "/my:handoff {path}"</code><small><code>{path}</code> is replaced; appended when missing</small></div>
+      <div class="s"><span class="badge ro">read-only</span><small>No, shown read-only</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Resume line after compaction</h3></div>
+      <div class="d"><span class="pill on">on</span></div>
+      <div class="k"><code>[agents.handoff] resume = false</code></div>
+      <div class="s"><span class="badge cfg">config only</span></div>
+    </div>
+  </div>
+
+  <h4>Suspend and autosuspend</h4>
+  <div class="rows">
+    <div class="row head"><span>Feature</span><span>Default</span><span>Where to change</span><span>In Settings?</span></div>
+    <div class="row">
+      <div class="f"><h3>Suspend / activate an agent by hand</h3></div>
+      <div class="d"><span class="pill val">always available</span></div>
+      <div class="k">Tab menu "Suspend agent" / "Activate agent", or bind <code>toggle_agent_suspend</code></div>
+      <div class="s"><span class="badge tab">tab menu</span><small>n/a</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Autosuspend idle Claude agents</h3><p>Idle and seen, nothing running; a message wakes it.</p></div>
+      <div class="d"><span class="pill off">off</span></div>
+      <div class="k"><code>[agents.autosuspend] after = "off"</code> or <code>"&lt;N&gt;m"</code>, <code>"&lt;N&gt;h"</code>, <code>"&lt;N&gt;d"</code><small>at most 365 days</small></div>
+      <div class="s"><span class="badge set">in Settings</span><small>agents, cycles 1h / 4h / 1d / 3d / off</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Restart an idle agent in place</h3></div>
+      <div class="d"><span class="pill val">always available</span></div>
+      <div class="k">Tab menu "Restart agent", or bind <code>restart_agent</code></div>
+      <div class="s"><span class="badge tab">tab menu</span><small>n/a</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Transcript backups</h3><p>A copy of each open or suspended agent's native transcript, put back before a resume when the agent deleted its own.</p></div>
+      <div class="d"><span class="pill on">on</span></div>
+      <div class="k"><code>[session] backup_agent_transcripts = false</code></div>
+      <div class="s"><span class="badge ro">status only</span><small>backups section</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Resume agents on session restore</h3><p>Upstream.</p></div>
+      <div class="d"><span class="pill on">on</span></div>
+      <div class="k"><code>[session] resume_agents_on_restore = false</code></div>
+      <div class="s"><span class="badge cfg">config only</span></div>
+    </div>
+  </div>
+</section>
+
 <!-- ============ COORDINATOR ============ -->
 <section id="coordinator">
-  <p class="eyebrow">06 · coordinator</p>
+  <p class="eyebrow">07 · coordinator</p>
   <h2>Coordinator <code>[coordinator]</code></h2>
   <p class="lede">A server-run Claude agent in a pinned <code>coordinator</code> tab that watches other agents and suggests next steps.</p>
   <div class="rows">
@@ -655,140 +803,6 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
   </div>
 </section>
 
-<!-- ============ BROWSER ============ -->
-<section id="browser">
-  <p class="eyebrow">07 · browser</p>
-  <h2>Browser <code>[browser]</code></h2>
-  <p class="lede">The browser herdr runs for agents: the herdr+ companion browser. <code>herdr browser setup --companion</code> installs it; the first page an agent opens starts it; <code>herdr browser companion</code>, Settings → Browser and the Browser overlay start, stop, restart and focus it. The herdr+ Chromium window is off unless <code>[browser] window = true</code>.</p>
-  <div class="rows">
-    <div class="row head"><span>Feature</span><span>Default</span><span>Where to change</span><span>In Settings?</span></div>
-    <div class="row">
-      <div class="f"><h3>Browser feature</h3></div>
-      <div class="d"><span class="pill on">on</span></div>
-      <div class="k"><code>[browser] enabled = false</code></div>
-      <div class="s"><span class="badge set">in Settings</span><small>browser</small></div>
-    </div>
-    <div class="row">
-      <div class="f"><h3>Start with the server</h3></div>
-      <div class="d"><span class="pill off">off</span><small>lazy</small></div>
-      <div class="k"><code>[browser] autostart = true</code></div>
-      <div class="s"><span class="badge cfg">config only</span></div>
-    </div>
-    <div class="row">
-      <div class="f"><h3>Close the browser when the server stops</h3><p>Not on a live handoff.</p></div>
-      <div class="d"><span class="pill off">off</span><small>the window survives herdr</small></div>
-      <div class="k"><code>[browser] stop_with_server = true</code></div>
-      <div class="s"><span class="badge cfg">config only</span></div>
-    </div>
-    <div class="row">
-      <div class="f"><h3>Activity overlay</h3><p>Tab groups, glow, cursor.</p></div>
-      <div class="d"><span class="pill on">on</span></div>
-      <div class="k"><code>[browser] show_activity = false</code></div>
-      <div class="s"><span class="badge set">in Settings</span><small>browser</small></div>
-    </div>
-    <div class="row">
-      <div class="f"><h3>Activity color</h3></div>
-      <div class="d"><span class="pill val"><span style="color:#aa6eff">●</span> #aa6eff</span></div>
-      <div class="k"><code>[browser] activity_color = "#rrggbb"</code></div>
-      <div class="s"><span class="badge set">in Settings</span><small>5 presets</small></div>
-    </div>
-    <div class="row">
-      <div class="f"><h3>Pinned dashboard tab</h3></div>
-      <div class="d"><span class="pill on">on</span></div>
-      <div class="k"><code>[browser] pin_dashboard = false</code></div>
-      <div class="s"><span class="badge set">in Settings</span><small>browser</small></div>
-    </div>
-    <div class="row">
-      <div class="f"><h3>Steer agents to the herdr browser</h3><p>The MCP and wrap instructions, and the Claude hook: a WebFetch, an <code>open</code> of a URL or local HTML file, or another browser MCP is denied once with the herdr-browser tool to use; the same call again within 2 minutes runs.</p></div>
-      <div class="d"><span class="pill on">on</span></div>
-      <div class="k"><code>[browser] steer_agents = false</code></div>
-      <div class="s"><span class="badge set">in Settings</span><small>browser</small></div>
-    </div>
-    <div class="row">
-      <div class="f"><h3>Turn off agents' own browsers</h3><p>While <code>wrap</code> is on.</p></div>
-      <div class="d"><span class="pill on">on</span></div>
-      <div class="k"><code>[browser] disable_native_browser = false</code></div>
-      <div class="s"><span class="badge set">in Settings</span><small>browser</small></div>
-    </div>
-    <div class="row">
-      <div class="f"><h3>MCP registration</h3></div>
-      <div class="d"><span class="pill val">claude and codex</span></div>
-      <div class="k"><code>[browser] mcp_agents = ["claude"]</code></div>
-      <div class="s"><span class="badge set">in Settings</span><small>both / claude / codex / none</small></div>
-    </div>
-    <div class="row">
-      <div class="f"><h3><code>eval</code>, act family, typing into password fields</h3></div>
-      <div class="d"><span class="pill on">on</span> <span class="pill on">on</span> <span class="pill off">off</span></div>
-      <div class="k"><code>[browser] allow_eval</code>, <code>allow_act</code>, <code>type_into_password_fields</code></div>
-      <div class="s"><span class="badge cfg">config only</span></div>
-    </div>
-    <div class="row">
-      <div class="f"><h3>Restore tabs on relaunch</h3></div>
-      <div class="d"><span class="pill on">on</span></div>
-      <div class="k"><code>[browser] restore_tabs = false</code></div>
-      <div class="s"><span class="badge cfg">config only</span></div>
-    </div>
-    <div class="row">
-      <div class="f"><h3>Where <code>open</code> / <code>show</code> go</h3><p>The companion browser, started on demand. <code>"auto"</code>: the companion while it runs, else the herdr+ window when it is on. <code>"window"</code> with the window on: herdr never starts the companion and offers no dock or Browser view.</p></div>
-      <div class="d"><span class="pill val">"companion"</span></div>
-      <div class="k"><code>[browser] host = "auto"</code> or <code>"window"</code></div>
-      <div class="s"><span class="badge cfg">config only</span></div>
-    </div>
-    <div class="row">
-      <div class="f"><h3>Page errors of a tab an agent uses</h3><p>Stored quietly for that Claude agent.</p></div>
-      <div class="d"><span class="pill val">"agent"</span></div>
-      <div class="k"><code>[browser] page_errors = "off"</code></div>
-      <div class="s"><span class="badge cfg">config only</span></div>
-    </div>
-    <div class="row">
-      <div class="f"><h3>Start the companion with the server</h3><p>In the background; else it starts on the first page an agent opens.</p></div>
-      <div class="d"><span class="pill off">off</span></div>
-      <div class="k"><code>[browser] companion_autostart = true</code></div>
-      <div class="s"><span class="badge cfg">config only</span></div>
-    </div>
-    <div class="row">
-      <div class="f"><h3>The herdr+ Chromium window</h3><p>Off: agents use the companion browser; a window profile answers <code>window_disabled</code>.</p></div>
-      <div class="d"><span class="pill off">off</span></div>
-      <div class="k"><code>[browser] window = true</code></div>
-      <div class="s"><span class="badge cfg">config only</span></div>
-    </div>
-    <div class="row">
-      <div class="f"><h3>Page API</h3><p>A page an agent shows with <code>page_api</code> may message that agent with <code>window.herdr.send</code>, as page content.</p></div>
-      <div class="d"><span class="pill on">on</span></div>
-      <div class="k"><code>[browser] page_api = false</code></div>
-      <div class="s"><span class="badge cfg">config only</span></div>
-    </div>
-    <div class="row">
-      <div class="f"><h3><code>◧</code> Dock the browser on the focused tab</h3><p>A band at the window's right edge; the companion covers it and follows the terminal window (hidden while it moves, is minimised, hidden or on another Space).</p></div>
-      <div class="d"><span class="pill val">off, per tab</span></div>
-      <div class="k"><code>toggle_browser_dock</code> <kbd>prefix</kbd>+<kbd>shift</kbd>+<kbd>b</kbd><small>also the session header's <code>◧</code> (the <code>◨</code> in the <code>spaces</code> view strip), the tab menu's Dock browser, Settings → Browser</small></div>
-      <div class="s"><span class="badge cfg">config only</span></div>
-    </div>
-    <div class="row">
-      <div class="f"><h3>Dock width</h3><p>Drag the divider to resize, double-click it for the default; the dragged width is saved per client.</p></div>
-      <div class="d"><span class="pill val">45 %</span></div>
-      <div class="k"><code>[ui] browser_dock_width = 20..80</code></div>
-      <div class="s"><span class="badge cfg">config only</span></div>
-    </div>
-    <div class="row">
-      <div class="f"><h3>Browser view</h3><p>The browser over the whole tab; the panes keep running and keep their size, and keys, pastes and IME text never reach them. herdr's notices and toasts show as one line on the session header (the view strip in the <code>spaces</code> layout).</p></div>
-      <div class="d"><span class="pill val">off, per tab</span></div>
-      <div class="k"><code>toggle_browser_view</code> <kbd>prefix</kbd>+<kbd>shift</kbd>+<kbd>z</kbd><small><code>cycle_browser</code> <kbd>ctrl</kbd>+<kbd>shift</kbd>+<kbd>b</kbd> (no prefix) steps none, docked, Browser view, none; also the session header's <code>Terminal</code> / <code>Browser</code> (the <code>spaces</code> view strip's <code>▣ Terminal</code> / <code>◎ Browser</code>), the dock's <code>⤢</code></small></div>
-      <div class="s"><span class="badge cfg">config only</span></div>
-    </div>
-    <div class="row">
-      <div class="f"><h3>The view controls</h3><p>The <code>tabs</code> layout: the session header's view tabs and <code>◧</code>. The <code>spaces</code> layout: the view strip, <code>▣ Terminal  ◎ Browser · 3 … ◨</code> at the top of a tab.</p></div>
-      <div class="d"><span class="pill val">"auto"</span><small>the header's while the browser docks here; the strip while the tab has pages, the dock or Browser view</small></div>
-      <div class="k"><code>[ui] browser_view_strip = "off"</code><small>hides both</small></div>
-      <div class="s"><span class="badge cfg">config only</span></div>
-    </div>
-  </div>
-  <p class="note"><b>Docking:</b> macOS, the herdr on this machine, herdr directly in a terminal window (Ghostty measured exactly; other terminals best effort). Clicking the page gives it the keyboard; clicking the terminal, or <kbd>cmd</kbd>+<kbd>esc</kbd> in the browser, gives it back. While the browser is not over its area the area says why (starting, not running with a Start button, not installed, stopped after crashes with a Restart button, "click here once" when several terminal windows could be this one, or why it cannot dock). Tabs with pages wear a dim <code>◎</code>; the companion's count pill (<code>3 · 12</code>) lists every session with pages.</p>
-  <p class="note"><b>Settings → Browser</b> lists, after its own rows, what the sidebar's old Browser row menu had: focus, start, restart or stop the companion, the focused tab's browser dock, focus or start / stop the herdr+ window (while it is on), open the Browser overlay. Its facts start with the live state (<code>now  ◎ companion · 3 tabs · 2 agents</code>).</p>
-  <p class="note"><b>Companion browser:</b> the Electron app in <code>apps/companion</code>; <code>apps/companion/scripts/try.sh</code> tries it against a throwaway herdr in one command (run it in a plain terminal).</p>
-  <p class="note"><b>Legacy keys:</b> <code>wrap_agents</code> is only read as a fallback for <code>[agents] wrap</code> (a Settings change to wrap removes it), and <code>shell_hook</code> is inert. The commented default file still says <code>stop_with_server</code> is not honoured; it is.</p>
-</section>
-
 <!-- ============ RENDERING ============ -->
 <section id="rendering">
   <p class="eyebrow">08 · rendering</p>
@@ -796,9 +810,9 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
   <div class="rows" style="margin-top:1rem">
     <div class="row head"><span>Feature</span><span>Default</span><span>Where to change</span><span>In Settings?</span></div>
     <div class="row">
-      <div class="f"><h3>Frame rate</h3><p>Scrolling output is paced to a fixed grid at this rate, so frames stay in step with the display. Set it to your display's refresh rate; 60 is also smooth on a 120 Hz display. Applies live.</p></div>
+      <div class="f"><h3>Frame rate</h3><p>Frame pacing: herdr's screen updates land on a fixed grid at this rate instead of drifting. Set it to your display's refresh rate. Out of range is clamped with a config warning; a reload applies it, no restart.</p></div>
       <div class="d"><span class="pill val">60 fps</span></div>
-      <div class="k"><code>[ui] render_fps = 30..240</code></div>
+      <div class="k"><code>[ui] render_fps = 30..240</code><small>e.g. 120 on a ProMotion display</small></div>
       <div class="s"><span class="badge cfg">config only</span></div>
     </div>
   </div>
