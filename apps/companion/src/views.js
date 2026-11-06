@@ -16,10 +16,12 @@ const { downloadAllowed } = require('./context-menu.js');
 
 // A page session's user agent without the Electron/x.y.z token: sites that see it serve their
 // desktop-app pages (Slack: window drag regions, app-only behaviour) instead of the web ones.
-function webUserAgent(ses) {
+function webUserAgent(ses, log) {
   try {
     ses.setUserAgent(ses.getUserAgent().replace(/\sElectron\/\S+/, ''));
-  } catch {}
+  } catch (e) {
+    log('page user agent not set:', e && e.message);
+  }
 }
 
 // Every download of a page's session (a link, Save Image As…) goes through the save dialog
@@ -81,7 +83,7 @@ const DEAD_PROXY = { proxyRules: 'http://127.0.0.1:9', proxyBypassRules: '<-loop
 // html_view sandbox: file:// limited to `rootReal` (canonicalized, no symlink escape),
 // network blocked unless allowed, every permission denied. Set up once per partition.
 const htmlSessions = new Map(); // partition -> {ses, rootReal, ready}
-function htmlSession(rootReal, allowNetwork) {
+function htmlSession(rootReal, allowNetwork, log) {
   const partition = viewPartition(rootReal, allowNetwork);
   const have = htmlSessions.get(partition);
   if (have) return have;
@@ -104,7 +106,7 @@ function htmlSession(rootReal, allowNetwork) {
   ses.setPermissionRequestHandler((_wc, _perm, cb) => cb(false));
   ses.setPermissionCheckHandler(() => false);
   guardDownloads(ses);
-  webUserAgent(ses);
+  webUserAgent(ses, log);
   const out = { ses, rootReal, ready, partition };
   htmlSessions.set(partition, out);
   return out;
@@ -152,11 +154,12 @@ async function targetIdOf(wc) {
 }
 
 class ViewManager {
-  // hooks: {onNav(viewId, patch), onState(viewId), onError(viewId, kind, text), onOpen(fromViewId, url, disposition), onKey(input) -> bool,
+  // hooks: {log(...args), onNav(viewId, patch), onState(viewId), onError(viewId, kind, text), onOpen(fromViewId, url, disposition), onKey(input) -> bool,
   //         onPermission(viewId, {permission,label,origin}, done(allow)), onLeave(viewId, newOrigin|null),
   //         onDialogsEnd(viewId, frameKey|null): its dialogs are cancelled (navigation, crash, destroy)}
   constructor(hooks) {
     this.hooks = hooks;
+    this.log = hooks.log || (() => {});
     this.live = new Map(); // view_id -> {view, entry, rootReal}
     this.host = null; // the window the views live in (the dock's while docked)
     this.overlays = []; // views kept above every page (the dialog modal); they move with the pages
@@ -217,7 +220,7 @@ class ViewManager {
     if (this.webSessionReady) return ses;
     this.webSessionReady = true;
     guardDownloads(ses);
-    webUserAgent(ses);
+    webUserAgent(ses, this.log);
     ses.setPermissionRequestHandler((wc, permission, cb, details = {}) => {
       if (ALLOWED.has(permission)) return cb(true);
       const viewId = this.viewIdOf(wc);
@@ -263,7 +266,7 @@ class ViewManager {
     let sesReady = null;
     const noNetwork = isHtml && !entry.allow_network;
     if (isHtml) {
-      ({ ses, rootReal, ready: sesReady } = htmlSession(viewRoot(entry.root, entry.file), entry.allow_network));
+      ({ ses, rootReal, ready: sesReady } = htmlSession(viewRoot(entry.root, entry.file), entry.allow_network, this.log));
     } else {
       ses = this._webSession();
     }

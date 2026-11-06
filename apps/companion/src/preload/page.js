@@ -15,7 +15,9 @@ const { contextBridge, ipcRenderer, webFrame } = require('electron');
 
 try {
   webFrame.insertCSS('*,*::before,*::after{app-region:no-drag !important;-webkit-app-region:no-drag !important}', { cssOrigin: 'user' });
-} catch {}
+} catch (e) {
+  console.warn('herdr: no-drag style failed', e && e.message);
+}
 
 const ask = (type, message, defaultValue) => ipcRenderer.sendSync('herdr-companion:dialog', { type, message, default_value: defaultValue });
 

@@ -152,6 +152,7 @@ class Companion {
     this.focusTimer = null;
     this.selfRaiseUntil = 0; // window focus events before this are our own raise
     this.views = new ViewManager({
+      log,
       onNav: (id, patch) => this.onNav(id, patch),
       onState: (id) => this.onViewState(id),
       onError: (id, kind, text) => this.onPageError(id, kind, text),
