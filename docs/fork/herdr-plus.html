@@ -139,9 +139,9 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
   <a class="l" href="#teams">Teams</a>
   <a class="l" href="#messaging">Messaging</a>
   <a class="l" href="#sidebar">Sidebar</a>
-  <a class="l" href="#info">Notes pane</a>
   <a class="l" href="#notify">Notifications</a>
   <a class="l" href="#browser">Browser</a>
+  <a class="l" href="#info">Notes pane</a>
   <a class="l" href="#more">More</a>
   <a class="l" href="#handoff">Auto handoff</a>
   <a class="l" href="#eng">Engineering</a>
@@ -157,7 +157,7 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
   <div>
     <p class="eyebrow">a fork of herdr</p>
     <h1>herdr<span class="p">+</span><br>run many coding agents, together.</h1>
-    <p class="lede">herdr is a terminal runtime for coding agents. herdr+ adds what you need when ten or twenty of them run at once: a coordinator, teams, agent-to-agent messages that never type over you, a sidebar that shows who needs you, a shared browser docked beside them, a notes pane that survives <code>/clear</code>, and notification cards.</p>
+    <p class="lede">herdr is a terminal runtime for coding agents. herdr+ adds what you need when ten or twenty of them run at once: a coordinator, teams, agent-to-agent messages that never type over you, a sidebar that shows who needs you, a shared browser docked beside them, a notes pane that survives <code>/clear</code>, and agent notifications.</p>
     <div class="stats">
       <div><b>1</b>coordinator agent</div>
       <div><b>27</b>agent tools</div>
@@ -313,7 +313,7 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
     <div class="card"><h3><span class="g">❝</span>One short line, not a paste</h3><p>The agent gets one short line naming the sender and a message id, then reads the full message itself, so Claude never mistakes it for something you pasted.</p></div>
     <div class="card"><h3><span class="g">⧉</span>Delivered once, when it's free</h3><p>Waiting messages go in together, as one line, once the agent has been idle for 3 s, and never twice. Claude Code tells herdr when each turn ends, so background subagents don't hold them back.</p></div>
     <div class="card"><h3><span class="g">⏱</span>Stuck-message notice</h3><p>If a message has waited 10 min on an agent whose screen hasn't moved, the sender gets one notice saying why, for example that the agent is still running a subagent.</p></div>
-    <div class="card"><h3><span class="g">?</span>Waiting on you</h3><p>When an agent is waiting for your answer, messages to it wait too. After 10 min the senders are told, and you get one card. Held messages last up to 24 h; senders hear when one expires.</p></div>
+    <div class="card"><h3><span class="g">?</span>Waiting on you</h3><p>When an agent is waiting for your answer, messages to it wait too. After 10 min the senders are told, and you get one notification. Held messages last up to 24 h; senders hear when one expires.</p></div>
     <div class="card"><h3><span class="g">!</span>Urgent interrupt, safely</h3><p><code>urgent=true</code> presses Esc once on a working agent and puts the message first. Only when you asked for it or from the coordinator, at most once every 5 min between the same two agents, and never into a dialog, voice mode or while you type.</p></div>
     <div class="card"><h3><span class="g">✉</span>Quiet messages</h3><p>For an FYI that shouldn't interrupt: <code>quiet=true</code> holds the message, and the Claude agent sees it, with sender and time, at its next prompt. Nothing is lost if delivery fails. The tab row shows <code>✉3</code>.</p></div>
     <div class="card"><h3><span class="g">☾</span>Do not disturb</h3><p>Keeps an agent focused: every message to it becomes a quiet one, urgent ones are refused, and herdr types nothing in. Your own typing is unaffected; the coordinator gets through only if an agent turned it on, not you. Tab menu, <code>herdr tab dnd on</code>, or a teammate's <code>agents_dnd</code>; shows a <code>☾</code> in the row.</p></div>
@@ -361,7 +361,7 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
         <tr><td class="m re">★</td><td>Important: reminds you while the agent waits on you</td></tr>
         <tr><td class="m o0">◷ ◑ ☼</td><td>Scheduled reminder: minutes, hours, daily</td></tr>
         <tr><td class="m"><span class="o0">◎</span> <span class="ac">◎</span> <span class="ye">◉</span></td><td>Browser pages: dim, the tab has pages; lit, its agent used the browser in the last 2 min; <span class="m ye">◉</span> a page needs you</td></tr>
-        <tr><td class="m ac">◆</td><td>Team: on the group header, with its purpose (Active entries and agent cards name it too)</td></tr>
+        <tr><td class="m ac">◆</td><td>Team: on the group header, with its purpose (Active entries and agent notifications name it too)</td></tr>
         <tr><td class="m"><span class="cl gl">⧆</span> <span class="cx gl">⧇</span></td><td>Agent icon (Claude Code / Codex), on the focused row, pulsing while it works</td></tr>
         <tr><td class="m re"><svg class="ic" viewBox="0 0 16 16"><path d="M8 1.5a2.3 2.3 0 0 0-2.3 2.3v3.9a2.3 2.3 0 0 0 4.6 0V3.8A2.3 2.3 0 0 0 8 1.5zM4.2 7.4a3.8 3.8 0 0 0 7.6 0M8 11.3v2.6M5.6 13.9h4.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></td><td>Voice mode: red mic live, dim mic muted (Codex)</td></tr>
         <tr><td class="m o0"><svg class="ic" viewBox="0 0 16 16"><path d="M6 2h4l-.6 4 2.1 2.2H4.5L6.6 6zM8 8.2V14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></td><td>Pinned tab, in the left gutter</td></tr>
@@ -384,9 +384,46 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
   </div>
 </section>
 
+<!-- ============ NOTIFICATIONS ============ -->
+<section id="notify">
+  <p class="eyebrow">05 · notifications</p>
+  <h2>Notifications from agents, and quiet when you want it</h2>
+  <p class="lede">An agent can put a sticky notification in front of you. It stays until you dismiss it or open the agent's tab.</p>
+  <div class="two">
+    <div style="padding-top:.8rem" role="img" aria-label="Agent notifications by kind">
+      <div class="ncard k-q"><span class="team">◆ api rewrite · planner</span><div class="top"><span><b>?</b>w3:p1 · planner</span><span>1m <span class="x">×</span></span></div><div class="ttl">which schema version?</div><div class="bd">need a decision</div></div>
+      <div class="ncard k-done"><div class="top"><span><b>✓</b>w1:p1 · lead</span><span>now <span class="x">×</span></span></div><div class="ttl">lead done</div></div>
+      <div class="ncard k-warn"><div class="top"><span><b>!</b>w1:p3 · docs</span><span>1m <span class="x">×</span></span></div><div class="ttl">docs build is flaky</div></div>
+      <div class="ncard k-info"><span class="team">◆ api rewrite · builder</span><div class="top"><span><b>●</b>w3:p2 · builder</span><span>now <span class="x">×</span></span></div><div class="ttl">deploy finished staging</div></div>
+      <p class="m o1" style="text-align:right;max-width:44ch;margin:0">+1 more from agents</p>
+    </div>
+    <div class="grid" style="grid-template-columns:1fr">
+      <div class="card"><h3><span class="g">▣</span>Agent notifications (<code>agents_notify</code>)</h3><p>An agent can pin a notification for you: info, question, done or warning, coloured from your theme, with its team and role on the border. Questions ring; done plays the done sound.</p></div>
+      <div class="card"><h3><span class="g">✍</span>You decide when</h3><p>Tell an agent when to ping you and about what, with <code>/plus:notify</code> or in your own words. It saves that in a <code>## Notify</code> section of its notes and follows it.</p></div>
+      <div class="card"><h3><span class="g">◆</span>Toasts name the team</h3><p>herdr's own status notifications (finished, needs attention, reminders) name the team and role, for example <code>api rewrite · builder</code>, and move left of the notes pane when it's open.</p></div>
+      <div class="card"><h3><span class="g">∅</span>Per-tab mute</h3><p>Silences a tab's pop-ups, sounds, bells and reminders; notifications from its agent still show. Tab menu, <code>herdr tab mute</code>, or a teammate's <code>agents_mute</code>.</p></div>
+      <div class="card"><h3><span class="g">★</span>Reminders and important tabs</h3><p><b>Important</b>: herdr keeps reminding you while the agent is waiting for you. <b>Remind</b>: a nudge every 5m, 10m, 30m, 1h, 6h or daily, whatever the agent is doing, optionally as an agent notification.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ BROWSER ============ -->
+<section id="browser">
+  <p class="eyebrow">06 · browser</p>
+  <h2>A browser agents and you share</h2>
+  <p class="lede">One companion browser that agents drive and you watch, docked beside the panes or over the whole tab.</p>
+  <div class="grid">
+    <div class="card"><h3><span class="g">◎</span>Built-in browser</h3><p>Agents browse in the herdr+ companion (<code>herdr-browser</code> MCP), the same browser you watch and sign in to: one group of pages per tab, following the tab you focus, a glow and cursor while an agent acts, and it never takes your keyboard. <code>herdr browser setup --companion</code> installs it; herdr starts it on an agent's first page, restarts it after a crash and quits it with the server. Start, stop, restart and focus it from Settings → Browser, the Browser overlay or <code>herdr browser companion</code>.</p></div>
+      <div class="card"><h3><span class="g">◨</span>One dock slot</h3><p>The right edge holds one dock: your notes or the browser, never both. <code>≡</code> and <code>◨</code> swap it and each keeps its own width; drag the divider to resize. The notes have a title bar, <code>≡ Notes  ✎  ✕</code>; the browser's own bar (it hides until you hover its top) has <code>⤢</code> for Browser view and <code>✕</code>. In Browser view the notes stay beside the page.</p></div>
+      <div class="card"><h3><span class="g">◎</span>One key for the browser</h3><p><code>ctrl+shift+b</code>, no prefix, steps the focused tab's browser: docked beside the panes, then Browser view over the whole tab, then gone again. Works in Ghostty and in iTerm2 with CSI u; kitty needs <code>map kitty_mod+b no_op</code> and WezTerm <code>enable_kitty_keyboard = true</code>.</p></div>
+    <div class="card"><h3><span class="g">⇡</span>Pages that talk back</h3><p>An agent can show you a page with a button that answers it: <code>browser_show</code> with <code>page_api</code> (or <code>herdr browser show --page-api</code>) gives the page <code>window.herdr.send({text, data})</code>. A click reaches only the agent that showed the page, labelled as page content, never as your words, and the companion's bar says who got it. Only local pages without network get it, never iframes or web tabs; the agent's own clicks send nothing, a parked agent is never woken, and a flood is cut. Turn it off with <code>[browser] page_api = false</code>.</p></div>
+    <div class="card"><h3><span class="g">◉</span>Dialogs, and agents stay on it</h3><p>A page's alert, confirm and prompt show in its own card, and agents answer them with <code>herdr browser dialog</code>. Wrapped Claude agents that reach for WebFetch, <code>open</code> or another browser are sent to the companion once, unless you asked for that.</p></div>
+  </div>
+</section>
+
 <!-- ============ NOTES PANE ============ -->
 <section id="info">
-  <p class="eyebrow">05 · notes pane</p>
+  <p class="eyebrow">07 · notes pane</p>
   <h2>Your notes beside every agent</h2>
   <p class="lede">A notes pane on the right of each agent: your page for the session, not the agent's log. Agents write to it only when you ask.</p>
   <div class="two">
@@ -427,43 +464,6 @@ Flags go to the owner in <span class="t b">Turkish</span>, see <span class="pu" 
   </div>
 </section>
 
-<!-- ============ NOTIFICATIONS ============ -->
-<section id="notify">
-  <p class="eyebrow">06 · notifications</p>
-  <h2>Cards from agents, and quiet when you want it</h2>
-  <p class="lede">An agent can put a sticky card in front of you. It stays until you dismiss it or open the agent's tab.</p>
-  <div class="two">
-    <div style="padding-top:.8rem" role="img" aria-label="Agent cards by kind">
-      <div class="ncard k-q"><span class="team">◆ api rewrite · planner</span><div class="top"><span><b>?</b>w3:p1 · planner</span><span>1m <span class="x">×</span></span></div><div class="ttl">which schema version?</div><div class="bd">need a decision</div></div>
-      <div class="ncard k-done"><div class="top"><span><b>✓</b>w1:p1 · lead</span><span>now <span class="x">×</span></span></div><div class="ttl">lead done</div></div>
-      <div class="ncard k-warn"><div class="top"><span><b>!</b>w1:p3 · docs</span><span>1m <span class="x">×</span></span></div><div class="ttl">docs build is flaky</div></div>
-      <div class="ncard k-info"><span class="team">◆ api rewrite · builder</span><div class="top"><span><b>●</b>w3:p2 · builder</span><span>now <span class="x">×</span></span></div><div class="ttl">deploy finished staging</div></div>
-      <p class="m o1" style="text-align:right;max-width:44ch;margin:0">+1 more from agents</p>
-    </div>
-    <div class="grid" style="grid-template-columns:1fr">
-      <div class="card"><h3><span class="g">▣</span>Agent cards (<code>agents_notify</code>)</h3><p>An agent can pin a card for you: info, question, done or warning, coloured from your theme, with its team and role on the border. Questions ring; done plays the done sound.</p></div>
-      <div class="card"><h3><span class="g">✍</span>You decide when</h3><p>Tell an agent when to ping you and about what, with <code>/plus:notify</code> or in your own words. It saves that in a <code>## Notify</code> section of its notes and follows it.</p></div>
-      <div class="card"><h3><span class="g">◆</span>Toasts name the team</h3><p>herdr's own pop-ups (finished, needs attention, reminders) name the team and role, for example <code>api rewrite · builder</code>, and move left of the notes pane when it's open.</p></div>
-      <div class="card"><h3><span class="g">∅</span>Per-tab mute</h3><p>Silences a tab's pop-ups, sounds, bells and reminders; cards from its agent still show. Tab menu, <code>herdr tab mute</code>, or a teammate's <code>agents_mute</code>.</p></div>
-      <div class="card"><h3><span class="g">★</span>Reminders and important tabs</h3><p><b>Important</b>: herdr keeps reminding you while the agent is waiting for you. <b>Remind</b>: a nudge every 5m, 10m, 30m, 1h, 6h or daily, whatever the agent is doing, optionally as a card.</p></div>
-    </div>
-  </div>
-</section>
-
-<!-- ============ BROWSER ============ -->
-<section id="browser">
-  <p class="eyebrow">07 · browser</p>
-  <h2>A browser agents and you share</h2>
-  <p class="lede">One companion browser that agents drive and you watch, docked beside the panes or over the whole tab.</p>
-  <div class="grid">
-    <div class="card"><h3><span class="g">◎</span>Built-in browser</h3><p>Agents browse in the herdr+ companion (<code>herdr-browser</code> MCP), the same browser you watch and sign in to: one group of pages per tab, following the tab you focus, a glow and cursor while an agent acts, and it never takes your keyboard. <code>herdr browser setup --companion</code> installs it; herdr starts it on an agent's first page, restarts it after a crash and quits it with the server. Start, stop, restart and focus it from Settings → Browser, the Browser overlay or <code>herdr browser companion</code>.</p></div>
-      <div class="card"><h3><span class="g">◨</span>One dock slot</h3><p>The right edge holds one dock: your notes or the browser, never both. <code>≡</code> and <code>◨</code> swap it and each keeps its own width; drag the divider to resize. The notes have a title bar, <code>≡ Notes  ✎  ✕</code>; the browser's own bar (it hides until you hover its top) has <code>⤢</code> for Browser view and <code>✕</code>. In Browser view the notes stay beside the page.</p></div>
-      <div class="card"><h3><span class="g">◎</span>One key for the browser</h3><p><code>ctrl+shift+b</code>, no prefix, steps the focused tab's browser: docked beside the panes, then Browser view over the whole tab, then gone again. Works in Ghostty and in iTerm2 with CSI u; kitty needs <code>map kitty_mod+b no_op</code> and WezTerm <code>enable_kitty_keyboard = true</code>.</p></div>
-    <div class="card"><h3><span class="g">⇡</span>Pages that talk back</h3><p>An agent can show you a page with a button that answers it: <code>browser_show</code> with <code>page_api</code> (or <code>herdr browser show --page-api</code>) gives the page <code>window.herdr.send({text, data})</code>. A click reaches only the agent that showed the page, labelled as page content, never as your words, and the companion's bar says who got it. Only local pages without network get it, never iframes or web tabs; the agent's own clicks send nothing, a parked agent is never woken, and a flood is cut. Turn it off with <code>[browser] page_api = false</code>.</p></div>
-    <div class="card"><h3><span class="g">◉</span>Dialogs, and agents stay on it</h3><p>A page's alert, confirm and prompt show in its own card, and agents answer them with <code>herdr browser dialog</code>. Wrapped Claude agents that reach for WebFetch, <code>open</code> or another browser are sent to the companion once, unless you asked for that.</p></div>
-  </div>
-</section>
-
 <!-- ============ MORE ============ -->
 <section id="more">
   <p class="eyebrow">08 · more</p>
@@ -477,7 +477,7 @@ Flags go to the owner in <span class="t b">Turkish</span>, see <span class="pu" 
     <div class="card"><h3><span class="g">⤧</span>Smaller fixes</h3><p>Launches wait for the shell, so nothing is cut off; drops land where the marker shows; resizing is smooth and the sidebar no longer flickers.</p></div>
     <div class="card"><h3><span class="g">⏸</span>Suspend, activate, restart</h3><p>Suspend an idle agent to free resources and bring it back later in the same pane and session. If it's still busy (working, a subagent, a background shell, a <code>/loop</code>), suspend is refused and the notice offers <b>Force suspend</b> or <b>Force restart</b>. Only you can force it, not agents. While it comes back the pane reads <code>↻ restarting</code> or <code>↻ waking</code>, and says so if it doesn't.</p></div>
     <div class="card"><h3><span class="g">⏲</span>Autosuspend</h3><p>Suspends a Claude agent you've seen and left idle for a set time (<code>[agents.autosuspend] after = "1d"</code>, off by default). It never touches one that needs you, is on screen, is busy in the background or has messages waiting. A message to it wakes it up.</p></div>
-    <div class="card"><h3><span class="g">⌂</span>Removed worktree, session back</h3><p>If a pane's folder was deleted (say, a removed worktree), herdr recreates it empty after a restart so <code>--resume</code> still finds the session. You get one card, and the agent is told so it can warn you.</p></div>
+    <div class="card"><h3><span class="g">⌂</span>Removed worktree, session back</h3><p>If a pane's folder was deleted (say, a removed worktree), herdr recreates it empty after a restart so <code>--resume</code> still finds the session. You get one notification, and the agent is told so it can warn you.</p></div>
     <div class="card"><h3><span class="g">⇢</span>Backgrounded Claude sessions</h3><p>Send a Claude session to the background (it continues as a new session) and herdr keeps following it: resume, restart and restore pick up the newest one.</p></div>
     <div class="card"><h3><span class="g">↺</span>Recently closed sessions</h3><p>Reopen a closed agent tab with its label, colour, group and reminders: <code>herdr tab closed</code> lists them, <code>herdr tab reopen</code> brings one back, or use Settings → Closed.</p></div>
     <div class="card"><h3><span class="g">/</span>Claude skills</h3><p><code>/plus:status</code> sums up who is working, blocked or done and what waits on you; <code>/plus:team-build</code> runs a multi-agent build as a team; <code>/plus:notes</code> and <code>/plus:notify</code> as above. Install them with <code>scripts/install-plus-skills.sh</code>.</p></div>
