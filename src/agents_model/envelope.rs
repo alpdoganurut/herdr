@@ -306,12 +306,13 @@ pub fn message_text(value: &str) -> String {
         .join("\n")
 }
 
-/// Text safe to type into a pane, in a bracketed paste or not: `\r\n` and
-/// a lone `\r` become `\n` (a CR is Enter outside a paste), and every other
-/// control character but newline and tab is dropped: C0 (ESC, so no
-/// `ESC[201~` can end the paste early and no escape sequence can follow),
-/// DEL and C1 (U+0080..U+009F, the 8-bit CSI included). Clean text comes
-/// back unchanged.
+/// Untrusted text with its control characters stripped: `\r\n` and a lone
+/// `\r` become `\n`, and every other control character but newline and tab
+/// is dropped: C0 (ESC, so no `ESC[201~` can end a bracketed paste early
+/// and no escape sequence can follow), DEL and C1 (U+0080..U+009F, the
+/// 8-bit CSI included). Clean text comes back unchanged. Outside a
+/// bracketed paste a newline is still a line break (Enter): safety there
+/// rests on the callers' agent-only target gates, not on this.
 pub fn strip_controls(value: &str) -> String {
     if !value
         .chars()
