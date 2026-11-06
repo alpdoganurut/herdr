@@ -28,6 +28,7 @@ export function createMockHerdr({ socketPath, verifyCdp = false, log = () => {},
     syncs: [],
     reports: [],
     sent: [],
+    pageMessages: [], // browser.page_message calls (page API)
     registers: [],
     sockets: new Set(),
     subscribers: new Set(),
@@ -161,6 +162,16 @@ export function createMockHerdr({ socketPath, verifyCdp = false, log = () => {},
         state.sent.push(params);
         return ok(id, { type: 'browser_send_page', outcome: 'sent', to_pane: params.tab_id.split(':')[0] + ':p1', to_name: `${t.label} · claude`, message_id: 'm' + state.sent.length });
       }
+      case 'browser.page_message': {
+        if (!leaseOk(params)) return err(id, 'lease_unknown', 'no such lease');
+        // like herdr: the synced entry decides (html_view, page_api, the file, an agent opened it)
+        const t = state.tabs.get(params.tab_id);
+        const e = t && t.browser && t.browser.entries.find((x) => (params.entry && x.id === params.entry) || (params.view_id && x.view_id === params.view_id));
+        if (!e) return err(id, 'not_found', 'no such page');
+        if (e.kind !== 'html_view' || !e.page_api || e.file !== params.file || !/^agent:/.test(e.opened_by || '')) return err(id, 'page_api_off', 'not a page_api view');
+        state.pageMessages.push(params);
+        return ok(id, { type: 'browser_page_message', outcome: 'sent', to_pane: e.opened_by.slice(6), to_name: 'rev', message_id: 'pm' + state.pageMessages.length });
+      }
       case 'tab.focus': {
         const t = state.tabs.get(params.tab_id);
         if (!t) return err(id, 'tab_not_found', 'no tab');
@@ -218,7 +229,7 @@ export function createMockHerdr({ socketPath, verifyCdp = false, log = () => {},
   }
 
   function leaseBody() {
-    return { lease_id: state.lease.lease_id, profile: 'companion', state: 'attached', heartbeat_ms: heartbeatMs, ttl_ms: ttlMs, expires_unix: now() + Math.round(ttlMs / 1000), host_protocol: 1, server_features: ['host_sync', 'host_report', 'send_page', 'show', 'page_errors'], ...(state.update ? { update: state.update } : {}) };
+    return { lease_id: state.lease.lease_id, profile: 'companion', state: 'attached', heartbeat_ms: heartbeatMs, ttl_ms: ttlMs, expires_unix: now() + Math.round(ttlMs / 1000), host_protocol: 1, server_features: ['host_sync', 'host_report', 'send_page', 'show', 'page_errors', ...(state.noPageMessages ? [] : ['page_messages'])], ...(state.update ? { update: state.update } : {}) };
   }
 
   function focus(tab_id) {

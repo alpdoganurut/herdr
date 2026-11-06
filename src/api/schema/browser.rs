@@ -329,6 +329,11 @@ pub enum BrowserOp {
         /// Let the page reach the network (default false: http(s) and ws(s) blocked).
         #[serde(default, skip_serializing_if = "super::is_false")]
         allow_network: bool,
+        /// Fork (page API): the page gets `window.herdr.send`, whose messages
+        /// reach the caller as page content (default false; not with
+        /// `allow_network`).
+        #[serde(default, skip_serializing_if = "super::is_false")]
+        page_api: bool,
         /// Reload the view when the file or its directory changes (default true).
         #[serde(default = "default_true", skip_serializing_if = "is_true")]
         watch: bool,
@@ -1018,6 +1023,14 @@ pub struct BrowserHostEntry {
     pub file: Option<String>,
     #[serde(default, skip_serializing_if = "super::is_false")]
     pub allow_network: bool,
+    /// Fork (page API): html_view shown with `page_api` (its page may
+    /// message its opener).
+    #[serde(default, skip_serializing_if = "super::is_false")]
+    pub page_api: bool,
+    /// Fork (page API): the opener's identity at show (herdr's token; a
+    /// page message is refused once it no longer matches the pane's agent).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opener: Option<String>,
     /// `user` or `agent:<pane_id>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opened_by: Option<String>,
@@ -1134,6 +1147,33 @@ pub struct BrowserSendPageParams {
     pub note: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lease_id: Option<String>,
+}
+
+/// Fork (page API): `browser.page_message`: a page an agent showed with
+/// `page_api` sends that agent a message (`window.herdr.send` in the
+/// companion). Only the live companion lease may call it; the server
+/// re-checks the entry (html_view, page_api, the file, opened by an agent)
+/// and delivers to the opener only, as page content, never as the user.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
+pub struct BrowserPageMessageParams {
+    pub lease_id: String,
+    /// The herdr tab whose browser group holds the view.
+    pub tab_id: String,
+    /// The entry id (`b<n>`), when the host knows it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry: Option<String>,
+    /// The host's view id (an entry the host has not learnt the id of yet).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view_id: Option<String>,
+    /// The file the sending document is (the host checked the frame's URL).
+    pub file: String,
+    /// The page's text (at most 4 000 characters).
+    #[serde(default)]
+    pub text: String,
+    /// The page's data as JSON text (at most 32 KiB), parsed and
+    /// re-serialized compact by the server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_json: Option<String>,
 }
 
 /// A herdr tab's browser session, for the client (`browser.get`).

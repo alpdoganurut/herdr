@@ -608,6 +608,7 @@ fn browser_command() -> Command {
             verb("show", "Show a local HTML file in a sandboxed tab of your session; it reloads when the file changes")
                 .arg(Arg::new("file").value_name("FILE.html").required(true).value_hint(ValueHint::FilePath))
                 .arg(flag("allow-network").help("Let the page reach the network (blocked by default)"))
+                .arg(flag("page-api").help("Give the page window.herdr.send to message you (companion only, not with --allow-network)"))
                 .arg(flag("no-watch").help("Do not reload when the file changes"))
                 .arg(flag("focus").help("Also show the tab and raise the window"))
                 .arg(option("title", "TITLE")),

@@ -3002,6 +3002,7 @@ fn a_show_outside_the_companion_opens_in_the_window_with_network_routed_off() {
         params(BrowserOp::Show {
             file: file.into(),
             allow_network: false,
+            page_api: false,
             watch: true,
             focus: false,
             title: None,
@@ -3103,6 +3104,7 @@ fn a_symlinked_show_file_gets_the_directory_it_really_lives_in_as_root() {
         params(BrowserOp::Show {
             file: link.display().to_string(),
             allow_network: false,
+            page_api: false,
             watch: true,
             focus: false,
             title: None,
@@ -3139,6 +3141,7 @@ fn show_takes_a_file_url_and_decodes_its_path() {
             params(BrowserOp::Show {
                 file,
                 allow_network: false,
+                page_api: false,
                 watch: false,
                 focus: false,
                 title: None,
@@ -3182,6 +3185,7 @@ fn a_companion_that_goes_takes_its_html_views_with_it() {
             params(BrowserOp::Show {
                 file: file.display().to_string(),
                 allow_network: false,
+                page_api: false,
                 watch: true,
                 focus: false,
                 title: None,
@@ -3192,6 +3196,199 @@ fn a_companion_that_goes_takes_its_html_views_with_it() {
     assert_eq!(hub.html_views_for_test("companion"), 1);
     hub.host_unregister(&lease.lease_id).expect("unregistered");
     assert_eq!(hub.html_views_for_test("companion"), 0);
+}
+
+/// Fork (page API): `show --page-api` reaches the companion as `page_api`,
+/// never with network, never while the kill switch is off; the shown page
+/// counts as driven by the agent for the grace.
+#[test]
+fn a_page_api_show_reaches_the_companion_only_without_network_and_with_the_switch_on() {
+    let (hub, shared, _stream, home) = hub("show-page-api");
+    hub.host_register(&register_params("a"))
+        .expect("registered");
+    // the App notes the pane's terminal when it resolves the caller
+    hub.note_pane_terminal("w2:pD", "term-7");
+    let file = home.join("board.html");
+    std::fs::write(&file, "<button>go</button>").unwrap();
+    let show = |page_api: bool, allow_network: bool| {
+        hub.run(
+            &pane("w2:pD"),
+            params(BrowserOp::Show {
+                file: file.display().to_string(),
+                allow_network,
+                page_api,
+                watch: false,
+                focus: false,
+                title: None,
+            }),
+        )
+    };
+    let last_show = || {
+        let state = shared.lock().unwrap();
+        state
+            .ops
+            .iter()
+            .rev()
+            .find(|(op, _, _)| op == "show")
+            .map(|op| op.2.clone())
+            .unwrap()
+    };
+    let shown = show(true, false).expect("show");
+    assert_eq!(
+        shown.data["page_api"], true,
+        "{:?} {}",
+        shown.data, shown.text
+    );
+    assert!(shown.text.contains("window.herdr.send"), "{}", shown.text);
+    assert_eq!(last_show()["page_api"], true);
+    assert_eq!(
+        last_show()["opener"],
+        hub.opener_token("term-7").as_str(),
+        "who showed it, for the companion to keep on the entry"
+    );
+    let tab = shown.tab.clone().expect("a tab");
+    let target = hub
+        .with_state_mut(|state| {
+            state
+                .resolve_tab("companion", &tab)
+                .map(|r| r.target_id.clone())
+        })
+        .expect("the ledger knows the view");
+    assert!(
+        hub.agent_driving(&target),
+        "the agent's own show drives the page for the grace"
+    );
+    let refused = show(true, true).unwrap_err();
+    assert_eq!(refused.code, "invalid_request");
+    let mut config = hub.config();
+    config.page_api = false;
+    hub.apply_config(&config);
+    let off = show(true, false).expect("show without the bridge");
+    assert!(off.data.get("page_api").is_none());
+    assert!(off.text.contains("page messages are off"), "{}", off.text);
+    assert_eq!(last_show()["page_api"], false);
+    assert!(
+        last_show()["opener"].is_null(),
+        "no opener without the bridge"
+    );
+    config.page_api = true;
+    hub.apply_config(&config);
+    let unknown = hub
+        .run(
+            &pane("w2:pE"),
+            params(BrowserOp::Show {
+                file: file.display().to_string(),
+                allow_network: false,
+                page_api: true,
+                watch: false,
+                focus: false,
+                title: None,
+            }),
+        )
+        .expect("show");
+    assert!(
+        unknown.data.get("page_api").is_none(),
+        "an unknown opener gets no bridge"
+    );
+    let plain = show(false, false).expect("show");
+    assert!(!plain.text.contains("window.herdr"));
+}
+
+/// Audit A1/A8: only an agent op that fires page script or trusted input
+/// (eval, act, navigate, history, dialog) makes a companion page "driven";
+/// an agent's read or wait never does, a user's op never does.
+#[test]
+fn only_an_agents_eval_or_act_drives_a_companion_page() {
+    let (hub, _shared, _stream, home) = hub("agent-driving");
+    hub.host_register(&register_params("a"))
+        .expect("registered");
+    let file = home.join("p.html");
+    std::fs::write(&file, "<p>p</p>").unwrap();
+    let shown = hub
+        .run(
+            &BrowserActor::User,
+            params(BrowserOp::Show {
+                file: file.display().to_string(),
+                allow_network: false,
+                page_api: false,
+                watch: false,
+                focus: false,
+                title: None,
+            }),
+        )
+        .expect("a user's show");
+    let tab = shown.tab.clone().expect("a tab");
+    let target = hub
+        .with_state_mut(|state| {
+            state
+                .resolve_tab("companion", &tab)
+                .map(|r| r.target_id.clone())
+        })
+        .expect("the ledger knows the view");
+    assert!(
+        !hub.agent_driving(&target),
+        "a user's show is not an agent's"
+    );
+    let on_tab = |op: BrowserOp| BrowserRunParams {
+        tab: Some(tab.clone()),
+        ..params(op)
+    };
+    let agent = pane("w2:pD");
+    hub.run(
+        &agent,
+        on_tab(BrowserOp::Read {
+            format: None,
+            selector: None,
+            ref_: None,
+            offset: None,
+            max: None,
+            all: false,
+            interactive: false,
+        }),
+    )
+    .expect("read");
+    hub.run(
+        &agent,
+        on_tab(BrowserOp::Wait {
+            text: None,
+            gone: None,
+            selector: None,
+            url: None,
+            load: Some("load".into()),
+            timeout_s: Some(1),
+        }),
+    )
+    .expect("wait");
+    assert!(
+        !hub.agent_driving(&target),
+        "an agent's read or wait drives nothing"
+    );
+    hub.run(
+        &BrowserActor::User,
+        on_tab(BrowserOp::Eval {
+            expr: "1".into(),
+            max: None,
+        }),
+    )
+    .expect("a user's eval");
+    assert!(!hub.agent_driving(&target), "a user's eval is the user's");
+    hub.run(
+        &agent,
+        on_tab(BrowserOp::Eval {
+            expr: "setTimeout(() => window.herdr.send({text: 'x'}), 1500)".into(),
+            max: None,
+        }),
+    )
+    .expect("an agent's eval");
+    assert!(
+        hub.agent_driving(&target),
+        "an agent's eval drives the page"
+    );
+    std::thread::sleep(Duration::from_millis(1_500));
+    assert!(
+        hub.agent_driving(&target),
+        "its setTimeout(1500) send still lands inside the grace"
+    );
 }
 
 #[test]

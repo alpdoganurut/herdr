@@ -14,6 +14,7 @@
 //! `src/app/browser.rs`) share it.
 
 pub mod activity;
+pub mod agent_ops;
 pub mod brand;
 // Fork (companion launcher): the companion app's install and its launcher.
 pub mod companion_app;

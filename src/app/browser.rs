@@ -465,6 +465,14 @@ impl App {
             .pane_state(raw)
             .and_then(|state| self.terminal_runtimes.get(&state.attached_terminal_id))
             .and_then(|runtime| runtime.child_pid());
+        // Fork (page API): the pane's terminal, for the opener identity a
+        // page it shows with page_api records (agent_ops::Openers).
+        if pane.agent.is_some() {
+            if let Some(state) = ws.pane_state(raw) {
+                crate::browser::hub()
+                    .note_pane_terminal(&pane.pane_id, state.attached_terminal_id.as_str());
+            }
+        }
         Some(BrowserActor::Pane {
             pane_id: pane.pane_id,
             tab_id: pane.tab_id,

@@ -3585,6 +3585,10 @@
                   "const": "show",
                   "type": "string"
                 },
+                "page_api": {
+                  "description": "Fork (page API): the page gets `window.herdr.send`, whose messages\nreach the caller as page content (default false; not with\n`allow_network`).",
+                  "type": "boolean"
+                },
                 "title": {
                   "description": "The view's title in the strip (default: the document's).",
                   "type": [
@@ -3806,6 +3810,17 @@
                 "string",
                 "null"
               ]
+            },
+            "opener": {
+              "description": "Fork (page API): the opener's identity at show (herdr's token; a\npage message is refused once it no longer matches the pane's agent).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "page_api": {
+              "description": "Fork (page API): html_view shown with `page_api` (its page may\nmessage its opener).",
+              "type": "boolean"
             },
             "target": {
               "description": "The CDP target id while the host has the view.",
@@ -4108,6 +4123,54 @@
               ]
             }
           },
+          "type": "object"
+        },
+        "BrowserPageMessageParams": {
+          "description": "Fork (page API): `browser.page_message`: a page an agent showed with\n`page_api` sends that agent a message (`window.herdr.send` in the\ncompanion). Only the live companion lease may call it; the server\nre-checks the entry (html_view, page_api, the file, opened by an agent)\nand delivers to the opener only, as page content, never as the user.",
+          "properties": {
+            "data_json": {
+              "description": "The page's data as JSON text (at most 32 KiB), parsed and\nre-serialized compact by the server.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "entry": {
+              "description": "The entry id (`b<n>`), when the host knows it.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "file": {
+              "description": "The file the sending document is (the host checked the frame's URL).",
+              "type": "string"
+            },
+            "lease_id": {
+              "type": "string"
+            },
+            "tab_id": {
+              "description": "The herdr tab whose browser group holds the view.",
+              "type": "string"
+            },
+            "text": {
+              "default": "",
+              "description": "The page's text (at most 4 000 characters).",
+              "type": "string"
+            },
+            "view_id": {
+              "description": "The host's view id (an entry the host has not learnt the id of yet).",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "lease_id",
+            "tab_id",
+            "file"
+          ],
           "type": "object"
         },
         "BrowserPlacementAction": {
@@ -5110,6 +5173,10 @@
                 "op": {
                   "const": "show",
                   "type": "string"
+                },
+                "page_api": {
+                  "description": "Fork (page API): the page gets `window.herdr.send`, whose messages\nreach the caller as page content (default false; not with\n`allow_network`).",
+                  "type": "boolean"
                 },
                 "title": {
                   "description": "The view's title in the strip (default: the document's).",
@@ -11799,6 +11866,23 @@
           "type": "object"
         },
         {
+          "description": "Fork (page API): a page an agent showed with `page_api` messages\nthat agent (the companion's `window.herdr.send`; App lane, src/app/\nbrowser_page_message.rs). Not client-shell.",
+          "properties": {
+            "method": {
+              "const": "browser.page_message",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/BrowserPageMessageParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
           "properties": {
             "method": {
               "const": "agent.prompt",
@@ -15589,6 +15673,17 @@
                 "string",
                 "null"
               ]
+            },
+            "opener": {
+              "description": "Fork (page API): the opener's identity at show (herdr's token; a\npage message is refused once it no longer matches the pane's agent).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "page_api": {
+              "description": "Fork (page API): html_view shown with `page_api` (its page may\nmessage its opener).",
+              "type": "boolean"
             },
             "target": {
               "description": "The CDP target id while the host has the view.",
@@ -21664,6 +21759,41 @@
                 },
                 "type": {
                   "const": "browser_send_page",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "outcome",
+                "to_pane",
+                "message_id"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Fork (page API): `browser.page_message`: `sent` or `queued` (the\nopener is busy or in do-not-disturb).",
+              "properties": {
+                "message_id": {
+                  "type": "string"
+                },
+                "outcome": {
+                  "type": "string"
+                },
+                "reason": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "to_name": {
+                  "default": "",
+                  "type": "string"
+                },
+                "to_pane": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "browser_page_message",
                   "type": "string"
                 }
               },

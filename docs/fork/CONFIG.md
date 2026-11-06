@@ -165,6 +165,7 @@ The browser herdr runs for agents: the herdr+ companion browser (`herdr browser 
 | Page errors of a tab an agent uses, stored quietly for that Claude agent | `"agent"` | `[browser] page_errors = "off"` | No, config only |
 | Start the companion browser with the server (else on the first page an agent opens) | off | `[browser] companion_autostart = true` | No, config only |
 | The herdr+ Chromium window (off: agents use the companion; a window profile answers `window_disabled`) | off | `[browser] window = true` | No, config only |
+| Page API: a page an agent shows with `page_api` (`herdr browser show --page-api`) may message that agent with `window.herdr.send({text, data})`, as page content (local pages without network only, top frame only, never a wake-up; example: `docs/fork/examples/page-api.html`) | on | `[browser] page_api = false` | No, config only |
 
 The companion browser is the Electron app in `apps/companion`; `apps/companion/scripts/try.sh` tries it against a throwaway herdr in one command (run it in a plain terminal).
 

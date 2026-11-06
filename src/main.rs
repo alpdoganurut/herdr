@@ -586,6 +586,9 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # The herdr+ Chromium window (every profile but the companion). Off: agents use the companion
 # browser and a window profile answers window_disabled; true brings the window back as before.
 # window = false
+# A page an agent shows with page_api (`herdr browser show --page-api`) may message that agent
+# with window.herdr.send (page content, never the user's words). false turns page messages off.
+# page_api = true
 
 [coordinator]
 # Run the coordinator agent (a Claude session that watches your agents) in a

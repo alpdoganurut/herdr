@@ -755,6 +755,16 @@ impl App {
         }
 
         if update.previous_agent_label != update.agent_label || update.agent_released {
+            // Fork (page API): its agent went or changed; pages it showed
+            // stop sending (agent_ops::Openers).
+            if let Some(state) = self
+                .state
+                .workspaces
+                .get(update.ws_idx)
+                .and_then(|ws| ws.pane_state(update.pane_id))
+            {
+                crate::browser::hub().agent_run_changed(state.attached_terminal_id.as_str());
+            }
             self.mark_coordinator_input_dirty();
             self.emit_event(crate::api::schema::EventEnvelope {
                 event: crate::api::schema::EventKind::PaneAgentDetected,
@@ -1401,6 +1411,9 @@ impl App {
             }
             Method::BrowserSendPage(params) => {
                 return self.handle_browser_send_page(request.id, params)
+            }
+            Method::BrowserPageMessage(params) => {
+                return self.handle_browser_page_message(request.id, params)
             }
             Method::BrowserGet(params) => return self.handle_browser_get(request.id, params),
             Method::BrowserStatus(_) => return self.handle_browser_status(request.id),

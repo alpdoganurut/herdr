@@ -25,6 +25,8 @@ mod agents_reorder;
 // fork: typed launches wait for the shell and stay short.
 mod browser;
 mod browser_host;
+// fork (page API): browser.page_message.
+mod browser_page_message;
 mod closed_sessions;
 mod codex_sessions;
 pub(crate) mod coordinator;

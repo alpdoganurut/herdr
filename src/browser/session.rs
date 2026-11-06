@@ -61,6 +61,14 @@ pub struct TabBrowserEntry {
     /// html_view: the page may reach the network.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub allow_network: bool,
+    /// Fork (page API): html_view shown with `page_api`: its page may
+    /// message the agent that opened it (`browser.page_message`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub page_api: bool,
+    /// Fork (page API): the identity of the agent that showed it with
+    /// page_api (`agent_ops::Openers` token), next to `opened_by`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opener: Option<String>,
     /// The CDP target id while a host has the view (runtime only).
     #[serde(skip)]
     pub target: Option<String>,
@@ -78,7 +86,7 @@ pub struct TabBrowserEntry {
 pub struct SyncChange {
     /// Anything at all (title, target): `rev` bumped.
     pub any: bool,
-    /// What persistence cares about: order, url, kind, file, network, active.
+    /// What persistence cares about: order, url, kind, file, network, page API, active.
     pub persisted: bool,
 }
 
@@ -257,6 +265,8 @@ impl TabBrowser {
                 title: entry.title.clone(),
                 file: entry.file.clone(),
                 allow_network: entry.allow_network,
+                page_api: entry.page_api,
+                opener: entry.opener.clone(),
                 opened_by: (!entry.opened_by.is_empty()).then(|| entry.opened_by.clone()),
             })
             .collect()
@@ -355,6 +365,8 @@ fn persisted_differs(new: &TabBrowserEntry, old: &TabBrowserEntry) -> bool {
         || new.url != old.url
         || new.file != old.file
         || new.allow_network != old.allow_network
+        || new.page_api != old.page_api
+        || new.opener != old.opener
 }
 
 fn entry_from_wire(
@@ -378,6 +390,13 @@ fn entry_from_wire(
         title: clip(&wire.title, MAX_TITLE_CHARS),
         file,
         allow_network: kind == TabBrowserKind::HtmlView && wire.allow_network,
+        // a page with network never gets the page API
+        page_api: kind == TabBrowserKind::HtmlView && !wire.allow_network && wire.page_api,
+        opener: wire
+            .opener
+            .clone()
+            .filter(|opener| !opener.is_empty() && opener.len() <= 300)
+            .filter(|_| kind == TabBrowserKind::HtmlView && !wire.allow_network && wire.page_api),
         target: wire.target.clone().filter(|target| !target.is_empty()),
         view_id: wire.view_id.clone().filter(|view| !view.is_empty()),
         opened_by: wire
@@ -412,6 +431,48 @@ mod tests {
             active: active.map(str::to_string),
             entries,
         }
+    }
+
+    #[test]
+    fn page_api_is_kept_for_an_html_view_without_network_only_and_persisted() {
+        let html = |view: &str, allow_network: bool| BrowserHostEntry {
+            kind: TabBrowserKind::HtmlView,
+            file: Some(format!("/r/{view}.html")),
+            allow_network,
+            page_api: true,
+            ..wire(None, view, &format!("file:///r/{view}.html"))
+        };
+        let web = BrowserHostEntry {
+            page_api: true,
+            ..wire(None, "v3", "https://a/")
+        };
+        let mut browser = TabBrowser::new(Some("g-k"));
+        let change = browser.apply_sync(
+            "w1:t1",
+            &group(None, vec![html("v1", false), html("v2", true), web]),
+            &mut BTreeMap::new(),
+        );
+        assert!(change.persisted);
+        let flags: Vec<bool> = browser.entries.iter().map(|e| e.page_api).collect();
+        assert_eq!(flags, [true, false, false]);
+        assert!(
+            browser.wire_entries()[0].page_api,
+            "host_state gives it back"
+        );
+        let saved = serde_json::to_value(&browser).unwrap();
+        assert_eq!(saved["entries"][0]["page_api"], true);
+        assert!(
+            saved["entries"][1].get("page_api").is_none(),
+            "absent when off"
+        );
+        let back: TabBrowser = serde_json::from_value(saved).unwrap();
+        assert!(back.entries[0].page_api);
+        // dropping the flag is a persisted change
+        let mut off = html("v1", false);
+        off.id = Some("b1".into());
+        off.page_api = false;
+        let change = browser.apply_sync("w1:t1", &group(None, vec![off]), &mut BTreeMap::new());
+        assert!(change.persisted);
     }
 
     #[test]

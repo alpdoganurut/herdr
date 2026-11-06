@@ -72,6 +72,9 @@ class GroupStore {
       file: entry.file || null,
       root: entry.root || null,
       allow_network: !!entry.allow_network,
+      // page API: an agent's html view without network only (main also checks the lease feature)
+      page_api: entry.kind === 'html_view' && !entry.allow_network && !!entry.page_api,
+      opener: entry.opener || null,
       opened_by: entry.opened_by || 'user',
       title_fixed: !!entry.title_fixed, // runtime only: a restored view loses it
     };
@@ -173,6 +176,8 @@ class GroupStore {
             file: e.file || null,
             root: e.file ? require('node:path').dirname(e.file) : null,
             allow_network: !!e.allow_network,
+            page_api: e.kind === 'html_view' && !e.allow_network && !!e.page_api,
+            opener: e.opener || null,
             opened_by: e.opened_by || 'user',
             placeholder: true,
           };
@@ -244,6 +249,8 @@ class GroupStore {
         if (e.kind === 'html_view') {
           x.file = e.file;
           x.allow_network = !!e.allow_network;
+          if (e.page_api) x.page_api = true;
+          if (e.page_api && e.opener) x.opener = e.opener;
         }
         if (e.opened_by) x.opened_by = e.opened_by;
         return x;

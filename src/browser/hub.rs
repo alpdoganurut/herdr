@@ -147,6 +147,11 @@ struct Inner {
     launcher: super::companion_app::Launcher,
     /// Fork (companion launcher): tests shorten the routing wait (0 = the default).
     companion_wait_ms: AtomicU64,
+    /// Fork (page API): the companion pages agent ops are driving.
+    agent_ops: Mutex<super::agent_ops::AgentOps>,
+    /// Fork (page API): page openers' identities (runtime; the boot id is
+    /// new with each server process).
+    openers: Mutex<super::agent_ops::Openers>,
 }
 
 /// The new tab page's snapshot goes out at most this often.
@@ -163,6 +168,50 @@ thread_local! {
     /// `run`, `animate` cleared by a batch that asks), attached to every
     /// sidecar request the call makes.
     static ACTIVITY: RefCell<Option<Value>> = const { RefCell::new(None) };
+    /// Fork (page API): the call running on this thread is an agent's
+    /// (set by `run`): its companion requests mark their page driven.
+    static AGENT_OP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Fork (page API): the sidecar ops that fire page script or trusted
+/// input (an agent's of them makes its page "driven").
+const DRIVING_SIDECAR_OPS: [&str; 5] = ["act", "eval", "navigate", "history", "dialog"];
+
+/// Fork (page API): whether `op` fires page script or trusted input, or
+/// makes the page (show, open); a batch when any step does.
+fn op_drives_page(op: &BrowserOp) -> bool {
+    match op {
+        BrowserOp::Batch { ops, .. } => ops.iter().any(|step| op_drives_page(&step.op)),
+        BrowserOp::Show { .. }
+        | BrowserOp::Open { .. }
+        | BrowserOp::Navigate { .. }
+        | BrowserOp::History { .. }
+        | BrowserOp::Eval { .. }
+        | BrowserOp::Dialog { .. }
+        | BrowserOp::Click { .. }
+        | BrowserOp::Type { .. }
+        | BrowserOp::Press { .. }
+        | BrowserOp::Select { .. }
+        | BrowserOp::Fill { .. }
+        | BrowserOp::Hover { .. } => true,
+        _ => false,
+    }
+}
+
+/// Fork (page API): an agent's request on a companion page, in flight
+/// until dropped.
+struct AgentOpGuard<'a> {
+    ops: &'a Mutex<super::agent_ops::AgentOps>,
+    target: String,
+}
+
+impl Drop for AgentOpGuard<'_> {
+    fn drop(&mut self) {
+        self.ops
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .end(&self.target, Instant::now());
+    }
 }
 
 /// One cached extraction: what was asked and the page it came from.
@@ -271,6 +320,10 @@ impl BrowserHub {
                 html_views: Mutex::new(HashSet::new()),
                 launcher: super::companion_app::Launcher::new(),
                 companion_wait_ms: AtomicU64::new(0),
+                agent_ops: Mutex::new(Default::default()),
+                openers: Mutex::new(super::agent_ops::Openers::new(super::session::random_hex(
+                    16,
+                ))),
             }),
         }
     }
@@ -1351,6 +1404,8 @@ impl BrowserHub {
             self.inner.release_backoff.lock().unwrap().remove(pane);
         }
         ACTIVITY.with(|slot| *slot.borrow_mut() = super::activity::directive(actor, &config));
+        let agent = !actor.is_user();
+        AGENT_OP.with(|slot| slot.set(agent));
         let result = self.execute(
             actor,
             &profile,
@@ -1360,7 +1415,20 @@ impl BrowserHub {
             deadline,
             now,
         );
+        AGENT_OP.with(|slot| slot.set(false));
         ACTIVITY.with(|slot| *slot.borrow_mut() = None);
+        // Fork (page API): a page an agent op just created or used counts as
+        // driven for the grace too (its target was not known up front).
+        if let (true, Ok((_, Some(key), _))) = (
+            agent && is_companion(&profile) && op_drives_page(&params.op),
+            &result,
+        ) {
+            self.inner
+                .agent_ops
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .touched(&key.target_id, Instant::now());
+        }
         let ms = started.elapsed().as_millis() as u64;
         self.record_outcome(
             actor,
@@ -1636,6 +1704,7 @@ impl BrowserHub {
             BrowserOp::Show {
                 file,
                 allow_network,
+                page_api,
                 watch,
                 focus,
                 title,
@@ -1646,6 +1715,7 @@ impl BrowserHub {
                 ShowRequest {
                     file,
                     allow_network: *allow_network,
+                    page_api: *page_api,
                     watch: *watch,
                     focus: *focus,
                     title: title.as_deref(),
@@ -3339,6 +3409,84 @@ impl BrowserHub {
         }
     }
 
+    /// Fork (page API): an agent's request on a companion page that fires
+    /// page script or trusted input (act, eval, navigate, history, dialog)
+    /// marks the page driven while it runs (and for the grace after). A
+    /// read, wait, find, snapshot, screenshot, links, console or network
+    /// never does (its residue: a read can still grant transient
+    /// activation; the companion's rate limit bounds it).
+    fn agent_op_guard(
+        &self,
+        op: &str,
+        profile: Option<&str>,
+        target: Option<&str>,
+    ) -> Option<AgentOpGuard<'_>> {
+        let target = target.filter(|t| !t.is_empty())?;
+        if !DRIVING_SIDECAR_OPS.contains(&op)
+            || !profile.is_some_and(is_companion)
+            || !AGENT_OP.with(std::cell::Cell::get)
+        {
+            return None;
+        }
+        self.inner
+            .agent_ops
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .start(target, Instant::now());
+        Some(AgentOpGuard {
+            ops: &self.inner.agent_ops,
+            target: target.to_string(),
+        })
+    }
+
+    /// Fork (page API): whether an agent op is driving companion page
+    /// `target` now (in flight, or ended within the grace).
+    pub fn agent_driving(&self, target: &str) -> bool {
+        self.inner
+            .agent_ops
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .driving(target, Instant::now())
+    }
+
+    fn openers(&self) -> std::sync::MutexGuard<'_, super::agent_ops::Openers> {
+        self.inner
+            .openers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Fork (page API): the opener token of `terminal_id`'s agent now.
+    pub fn opener_token(&self, terminal_id: &str) -> String {
+        self.openers().token(terminal_id)
+    }
+
+    /// Fork (page API): `terminal_id`'s agent went or changed.
+    pub fn agent_run_changed(&self, terminal_id: &str) {
+        self.openers().bump(terminal_id);
+    }
+
+    /// Fork (page API): `pane_id` runs in `terminal_id` (resolved for a
+    /// browser call).
+    pub fn note_pane_terminal(&self, pane_id: &str, terminal_id: &str) {
+        self.openers().note_pane(pane_id, terminal_id);
+    }
+
+    /// Fork (page API): the opener token of the agent in `pane_id` now.
+    pub fn pane_opener(&self, pane_id: &str) -> Option<String> {
+        self.openers().pane_token(pane_id)
+    }
+
+    /// Tests: mark companion page `target` as just driven by an agent.
+    #[cfg(test)]
+    pub(crate) fn test_mark_agent_driven(&self, target: &str) {
+        self.inner
+            .agent_ops
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .touched(target, Instant::now());
+    }
+
     /// Send one request and wait for its reply.
     pub fn request(
         &self,
@@ -3348,6 +3496,7 @@ impl BrowserHub {
         args: Value,
         deadline: Duration,
     ) -> Result<HostReply, BrowserError> {
+        let _driving = self.agent_op_guard(op, profile, target);
         let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = mpsc::channel();
         self.inner.pending.lock().unwrap().insert(id, tx);
