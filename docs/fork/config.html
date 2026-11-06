@@ -409,10 +409,10 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
       <div class="s">none<small>grouping is in the tab menu</small></div>
     </div>
   </div>
-  <p class="note">The notes pane toggle moved to the session header's <code>▤</code>. The sidebar has no Browser row and no detail strip any more: the browser's controls are in <a href="#browser">Settings → Browser</a>, the focused tab's facts in the session header.</p>
+  <p class="note">The notes pane toggle moved to the session header's <code>≡</code>. The sidebar has no Browser row and no detail strip any more: the browser's controls are in <a href="#browser">Settings → Browser</a>, the focused tab's facts in the session header.</p>
 
   <h4 id="session-header">Session header</h4>
-  <p class="lede" style="margin-bottom:.9rem">One row on top of the session area, in the <code>tabs</code> layout only (the <code>spaces</code> layout keeps its tab bar and view strip): <code>● name  82% ⚭3 ✉1 … Terminal  Browser ◧  ▤</code>. Selection and hover change only the text colour: the active view and the open dock are accent, other controls dim (<code>overlay0</code>), a hovered one <code>text</code>.</p>
+  <p class="lede" style="margin-bottom:.9rem">One row on top of the session area, in the <code>tabs</code> layout only (the <code>spaces</code> layout keeps its tab bar and view strip): <code>● name  82% ⚭3 ✉1 … Terminal  Browser ◨  ≡</code>. Selection and hover change only the text colour: the active view and the open dock are accent, other controls dim (<code>overlay0</code>), a hovered one <code>text</code>.</p>
   <div class="rows">
     <div class="row head"><span>Part</span><span>Shown when</span><span>What it shows or does</span><span>Key / setting</span></div>
     <div class="row">
@@ -434,19 +434,19 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
       <div class="s"><code>toggle_browser_view</code> <kbd>prefix</kbd>+<kbd>shift</kbd>+<kbd>z</kbd><small><code>[ui] browser_view_strip = "off"</code> hides them</small></div>
     </div>
     <div class="row">
-      <div class="f"><h3><code>◧</code> browser dock</h3></div>
+      <div class="f"><h3><code>◨</code> browser dock</h3></div>
       <div class="d"><span class="pill val">same as the view tabs</span><small>also on the narrowest row</small></div>
       <div class="k">Docks the browser on the right of the tab; in Browser view it brings the terminal back with the browser docked<small>Lit while docked</small></div>
       <div class="s"><code>toggle_browser_dock</code> <kbd>prefix</kbd>+<kbd>shift</kbd>+<kbd>b</kbd></div>
     </div>
     <div class="row">
-      <div class="f"><h3><code>▤</code> notes dock</h3></div>
+      <div class="f"><h3><code>≡</code> notes dock</h3></div>
       <div class="d"><span class="pill val">always, the far right</span></div>
       <div class="k">Opens or closes the tab's notes pane, never taking the keyboard<small>Lit while open</small></div>
       <div class="s"><code>toggle_info_pane</code><small>unbound</small></div>
     </div>
   </div>
-  <p class="note">One dock slot on the right: the notes pane or the browser, never both. <code>◧</code> and <code>▤</code> swap it, and each keeps its own width (<code>[ui] info_pane_width</code>, <code>[ui] browser_dock_width</code>, or the width you dragged). Each dock has a one-line title bar: notes <code>▤ Notes  ✎  ✕</code> (<code>✎</code> edits or leaves the editor, <code>✕</code> closes), browser <code>◧ &lt;page title&gt;  ⤢  ✕</code> (<code>⤢</code> turns the tab to Browser view and frees the slot). The page's back, forward and reload stay in the companion's own bar. In Browser view the notes pane stays beside the page.</p>
+  <p class="note">One dock slot on the right: the notes pane or the browser, never both. <code>◨</code> and <code>≡</code> swap it, and each keeps its own width (<code>[ui] info_pane_width</code>, <code>[ui] browser_dock_width</code>, or the width you dragged). Each dock has a one-line title bar: notes <code>≡ Notes  ✎  ✕</code> (<code>✎</code> edits or leaves the editor, <code>✕</code> closes), browser <code>◨ &lt;page title&gt;  ⤢  ✕</code> (<code>⤢</code> turns the tab to Browser view and frees the slot). The page's back, forward and reload stay in the companion's own bar. In Browser view the notes pane stays beside the page.</p>
 </section>
 
 <!-- ============ PER-TAB ============ -->
@@ -496,7 +496,7 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
       <div class="f"><h3>Info pane</h3></div>
       <div class="d"><span class="pill off">hidden, every start</span></div>
       <div class="k">Shows or hides the tab's notes pane. Which tabs have it open is client-only: after a restart or in a new client every notes pane starts hidden</div>
-      <div class="s"><span class="badge tab">tab menu</span><small>also key <code>toggle_info_pane</code>, or the session header's <code>▤</code></small></div>
+      <div class="s"><span class="badge tab">tab menu</span><small>also key <code>toggle_info_pane</code>, or the session header's <code>≡</code></small></div>
     </div>
   </div>
 </section>
@@ -759,9 +759,9 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
       <div class="s"><span class="badge cfg">config only</span></div>
     </div>
     <div class="row">
-      <div class="f"><h3><code>◧</code> Dock the browser on the focused tab</h3><p>A band at the window's right edge; the companion covers it and follows the terminal window (hidden while it moves, is minimised, hidden or on another Space).</p></div>
+      <div class="f"><h3><code>◨</code> Dock the browser on the focused tab</h3><p>A band at the window's right edge; the companion covers it and follows the terminal window (hidden while it moves, is minimised, hidden or on another Space).</p></div>
       <div class="d"><span class="pill val">off, per tab</span></div>
-      <div class="k"><code>toggle_browser_dock</code> <kbd>prefix</kbd>+<kbd>shift</kbd>+<kbd>b</kbd><small>also the session header's <code>◧</code> (the <code>◨</code> in the <code>spaces</code> view strip), the tab menu's Dock browser, Settings → Browser</small></div>
+      <div class="k"><code>toggle_browser_dock</code> <kbd>prefix</kbd>+<kbd>shift</kbd>+<kbd>b</kbd><small>also the session header's <code>◨</code> (also in the <code>spaces</code> view strip), the tab menu's Dock browser, Settings → Browser</small></div>
       <div class="s"><span class="badge cfg">config only</span></div>
     </div>
     <div class="row">
@@ -777,7 +777,7 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
       <div class="s"><span class="badge cfg">config only</span></div>
     </div>
     <div class="row">
-      <div class="f"><h3>The view controls</h3><p>The <code>tabs</code> layout: the session header's view tabs and <code>◧</code>. The <code>spaces</code> layout: the view strip, <code>▣ Terminal  ◎ Browser · 3 … ◨</code> at the top of a tab.</p></div>
+      <div class="f"><h3>The view controls</h3><p>The <code>tabs</code> layout: the session header's view tabs and <code>◨</code>. The <code>spaces</code> layout: the view strip, <code>▣ Terminal  ◎ Browser · 3 … ◨</code> at the top of a tab.</p></div>
       <div class="d"><span class="pill val">"auto"</span><small>the header's while the browser docks here; the strip while the tab has pages, the dock or Browser view</small></div>
       <div class="k"><code>[ui] browser_view_strip = "off"</code><small>hides both</small></div>
       <div class="s"><span class="badge cfg">config only</span></div>

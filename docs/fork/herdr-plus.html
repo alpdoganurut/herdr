@@ -24,8 +24,8 @@ kbd{border:1px solid var(--s1);border-bottom-width:2px;border-radius:4px;padding
 
 /* nav */
 nav{position:sticky;top:0;z-index:10;background:rgba(17,17,27,.92);backdrop-filter:blur(8px);border-bottom:1px solid var(--s0)}
-nav .in{max-width:1180px;margin:0 auto;display:flex;align-items:center;gap:1.2rem;padding:.55rem 1.25rem;overflow-x:auto;scrollbar-width:none}
-nav .in::-webkit-scrollbar{display:none}
+nav .in{max-width:1180px;margin:0 auto;display:flex;align-items:center;gap:.85rem;padding:.55rem 1.25rem;overflow-x:auto;scrollbar-width:thin;scrollbar-color:var(--s1) transparent}
+nav .in::-webkit-scrollbar{height:4px} nav .in::-webkit-scrollbar-thumb{background:var(--s1);border-radius:2px}
 nav .brand{font-family:var(--mono);font-weight:700;color:var(--text);white-space:nowrap}
 nav .brand b{color:var(--blue)}
 nav a.l{color:var(--o2);font-size:.83rem;white-space:nowrap;padding:.2rem 0;border-bottom:2px solid transparent}
@@ -46,7 +46,8 @@ h3{font-size:1.02rem;margin:0 0 .3rem;color:var(--text)}
 p{margin:.25rem 0}
 .dim{color:var(--o1)}
 
-.grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fill,minmax(300px,1fr))}
+.grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fill,minmax(min(300px,100%),1fr))}
+.grid>*,.two>*{min-width:0}
 .two{display:grid;gap:22px;grid-template-columns:minmax(0,1fr) minmax(0,1fr);align-items:start}
 @media (max-width:880px){.two{grid-template-columns:1fr}}
 .card{background:var(--mantle);border:1px solid var(--s0);border-radius:10px;padding:1rem 1.1rem}
@@ -78,6 +79,7 @@ td{color:var(--sub0)} td:first-child{color:var(--text);white-space:nowrap}
 .r>span:first-child{overflow:hidden;text-overflow:ellipsis}
 .r.c{background:var(--chrome)}
 .r.f{background:var(--rowbg)}
+.r.f .o0{color:var(--o2)} .r.f .o1{color:var(--sub0)}
 .r.h{color:var(--text)}
 .r.rule{color:var(--s1)} .r.rule>span:first-child{text-overflow:clip}
 .pane{flex:1;min-width:0;padding:.6rem 1.1ch;color:var(--o1);white-space:pre;overflow:hidden;background:var(--sb)}
@@ -91,6 +93,7 @@ td{color:var(--sub0)} td:first-child{color:var(--text);white-space:nowrap}
 .bdg{background:var(--s1);color:var(--text)} .ac{color:var(--blue)} .gr{color:var(--green)} .ye{color:var(--yellow)} .re{color:var(--red)} .te{color:var(--teal)} .pe{color:var(--peach)}
 .cl{color:var(--claude)} .cx{color:var(--codex)} .pu{color:var(--tag)}
 .b{font-weight:700}
+.gl{display:inline-block;width:1ch;text-align:center;overflow:visible}
 .ic{width:1em;height:1em;vertical-align:-.12em;display:inline-block}
 .breath{animation:br 2s ease-in-out infinite}
 @keyframes br{50%{opacity:.35}}
@@ -117,6 +120,7 @@ td{color:var(--sub0)} td:first-child{color:var(--text);white-space:nowrap}
 
 .hero{display:grid;grid-template-columns:minmax(0,.95fr) minmax(0,1.25fr);gap:34px;align-items:center;padding-top:3rem}
 @media (max-width:980px){.hero{grid-template-columns:1fr}}
+@media (max-width:560px){.hero .sess{display:none}.hero .sb{width:100%;border-right:0}}
 .stats{display:flex;flex-wrap:wrap;gap:22px;margin:1.4rem 0 0}
 .stats div{font-size:.8rem;color:var(--o1)}
 .stats b{display:block;font:700 1.35rem var(--mono);color:var(--text)}
@@ -132,7 +136,7 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
   <span class="brand">herdr<b>+</b></span>
   <a class="l" href="#top">Overview</a>
   <a class="l" href="#coordinator">Coordinator</a>
-  <a class="l" href="#control">Agents control herdr</a>
+  <a class="l" href="#control">Control</a>
   <a class="l" href="#teams">Teams</a>
   <a class="l" href="#messaging">Messaging</a>
   <a class="l" href="#sidebar">Sidebar</a>
@@ -152,12 +156,12 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
   <div>
     <p class="eyebrow">a fork of herdr</p>
     <h1>herdr<span class="p">+</span><br>run many coding agents, together.</h1>
-    <p class="lede">herdr is a terminal runtime for coding agents. herdr+ adds what you need when ten or twenty of them run at once: a coordinator, teams, agent-to-agent messages that never type over you, a sidebar that shows who needs you, a notes pane that survives <code>/clear</code>, and notification cards.</p>
+    <p class="lede">herdr is a terminal runtime for coding agents. herdr+ adds what you need when ten or twenty of them run at once: a coordinator, teams, agent-to-agent messages that never type over you, a sidebar that shows who needs you, a shared browser docked beside them, a notes pane that survives <code>/clear</code>, and notification cards.</p>
     <div class="stats">
       <div><b>1</b>coordinator agent</div>
       <div><b>27</b>agent tools</div>
       <div><b>0</b>restarts to update</div>
-      <div><b>0.9.3</b>upstream base</div>
+      <div><b>0.9.5</b>upstream base</div>
     </div>
     <div class="legend">
       <div><span class="m gr">○</span>idle</div>
@@ -175,26 +179,26 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
     <div class="bar"><i></i><i></i><i></i>&nbsp; herdr+ · tabs sidebar</div>
     <div class="body">
       <div class="sb">
-        <div class="r c"><span class="o0">⏶ ‹ ›</span><span class="o0">+</span></div>
+        <div class="r c"><span class="o0"><span class="gl">⏶</span> ‹ ›</span><span class="o0">+</span></div>
         <div class="r"><span>    <span class="gr">○</span> <span class="s0">scratch</span></span><span class="ac">◎</span></div>
         <div class="r"><span>    <span class="re">●</span> <span class="t">deploy-fix</span></span><span><span class="re">★</span> <span class="o0">◷</span></span></div>
         <div class="r"><span> </span><span></span></div>
         <div class="r"><span> <span class="s0">▾</span>   <span class="t b">infra</span></span><span><span class="o0">3</span> <span class="re">●</span></span></div>
-        <div class="r"><span>    <span class="ye breath">⚭</span> <span class="t">migrate-db</span> <span class="ye">⚭2</span></span><span class="re">91%</span></div>
+        <div class="r"><span>    <span class="ye breath gl">⚭</span> <span class="t">migrate-db</span> <span class="ye"><span class="gl">⚭</span>2</span></span><span class="re">91%</span></div>
         <div class="r"><span>    <span class="gr">○</span> <span class="re"><svg class="ic" viewBox="0 0 16 16" aria-label="mic live"><path d="M8 1.5a2.3 2.3 0 0 0-2.3 2.3v3.9a2.3 2.3 0 0 0 4.6 0V3.8A2.3 2.3 0 0 0 8 1.5zM4.2 7.4a3.8 3.8 0 0 0 7.6 0M8 11.3v2.6M5.6 13.9h4.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></span> <span class="s0">voice-chat</span></span><span></span></div>
         <div class="r"><span>  <span class="o0"><svg class="ic" viewBox="0 0 16 16" aria-label="muted"><path d="M4 11.5h8l-1.2-1.6V7a2.8 2.8 0 0 0-5.6 0v2.9zM6.8 13.3a1.3 1.3 0 0 0 2.4 0M2.5 2.5l11 11" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></span> <span class="gr">○</span> <span class="s0">logs-tail</span></span><span class="o0">☼</span></div>
         <div class="r"><span>    <span class="o0">◌ 3 suspended ▸</span></span><span></span></div>
         <div class="r"><span> </span><span></span></div>
         <div class="r"><span> <span class="s0">▾</span> <span class="ac">◆</span> <span class="s0 b">api rewrite</span></span><span><span class="o0">3</span> <span class="ye">●</span></span></div>
-        <div class="r"><span>    <span class="re">●</span> <span class="t">planner</span></span><span class="o0">◷ ◆</span></div>
-        <div class="r f"><span>    <span class="ye breath">●</span> <span class="t b">reviewer</span></span><span><span class="ye">78%</span> <span class="o0">◆</span> <span class="cl breath">⧆</span></span></div>
-        <div class="r"><span>    <span class="te">●</span> <span class="t">builder</span></span><span class="o0">◆</span></div>
+        <div class="r"><span>    <span class="re">●</span> <span class="t">planner</span></span><span class="o0">◷</span></div>
+        <div class="r f"><span>    <span class="ye breath">●</span> <span class="t b">reviewer</span></span><span><span class="ye">78%</span> <span class="cl breath gl">⧆</span></span></div>
+        <div class="r"><span>    <span class="te">●</span> <span class="t">builder</span></span><span></span></div>
         <div class="r"><span> </span><span></span></div>
         <div class="r"><span> <span class="o1">▸</span>   <span class="o1 b">bird sort</span></span><span><span class="o0">2</span> <span class="ye">●</span></span></div>
         <div class="r c rule"><span>───────────────────────────</span><span></span></div>
         <div class="r c"><span><span class="o1">▾</span> <span class="s0 b">Active</span></span><span class="o0">3  </span></div>
         <div class="r c"><span>  <span class="re">●</span> <span class="t">deploy-fix</span> <span class="o1">top</span></span><span class="re">42m</span></div>
-        <div class="r c"><span>  <span class="ye">⚭</span> <span class="t">migrate-db</span> <span class="ye">⚭2</span></span><span class="o1">12m</span></div>
+        <div class="r c"><span>  <span class="ye gl">⚭</span> <span class="t">migrate-db</span> <span class="ye"><span class="gl">⚭</span>2</span></span><span class="o1">12m</span></div>
         <div class="r c"><span>  <span class="ye">●</span> <span class="t">reviewer</span> <span class="o1">◆ api…</span></span><span class="o1">12m</span></div>
         <div class="r c rule"><span>───────────────────────────</span><span></span></div>
         <div class="r c"><span><span class="o1">▸</span> <span class="s0 b">Pinned</span>  <span class="o0">2</span> <span class="ye">●</span> <span class="gr">○</span></span><span></span></div>
@@ -203,19 +207,19 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
         <div class="r c"><span>  <span class="o0">◷</span> <span class="t">planner</span> <span class="o0">30m</span></span><span>in 12m</span></div>
         <div class="r c"><span>  <span class="o0">☼</span> <span class="t">logs-tail</span> <span class="o0">daily</span></span><span>09:30</span></div>
         <div class="r c rule"><span>───────────────────────────</span><span></span></div>
-        <div class="r"><span>  <span class="gr">○</span> <span class="s0">coordinator</span></span><span class="o1">74 watched</span></div>
+        <div class="r"><span>  <span class="o0">○</span> <span class="s0">coordinator</span></span><span class="o1">74 watched</span></div>
         <div class="r c"><span class="o1">cpu 12%  mem 80%  net ok</span><span></span></div>
         <div class="r c"><span></span><span class="o0">menu «</span></div>
       </div>
       <div class="sess">
-      <div class="hdr" aria-label="The session header"><span><span class="ye">●</span> <span class="t b">reviewer</span>  <span class="ye">78%</span> <span class="s0">⚭2</span></span><span><span class="ac">Terminal</span>  Browser ◨  ≡</span></div>
+      <div class="hdr" aria-label="The session header"><span><span class="ye">●</span> <span class="t b">reviewer</span>  <span class="ye">78%</span> <span class="s0"><span class="gl">⚭</span>2</span></span><span><span class="ac">Terminal</span>  Browser ◨  ≡</span></div>
       <div class="pane"><span class="t">&gt; review the auth changes</span>
 
 <span class="t">●</span> Read(src/auth/session.rs)
-  <span class="o0">⎿  Read 412 lines</span>
+  <span class="o0"><span class="gl">⎿</span>  Read 412 lines</span>
 
 <span class="t">●</span> agents_send_message(to="role:lead")
-  <span class="o0">⎿  queued · lead is working</span>
+  <span class="o0"><span class="gl">⎿</span>  queued · lead is working</span>
 
 <span class="ye">✻ Reviewing… (esc to interrupt)</span>
 </div>
@@ -240,11 +244,11 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
       <div class="term solo" style="width:100%;margin-bottom:14px" role="img" aria-label="Coordinator row states">
         <div class="bar">pinned bottom row, its states</div>
         <div class="sb">
-          <div class="r"><span>  <span class="gr">○</span> <span class="s0">coordinator</span></span><span class="o1">12 agents</span></div>
+          <div class="r"><span>  <span class="o0">○</span> <span class="s0">coordinator</span></span><span class="o1">12 watched</span></div>
           <div class="r"><span>  <span class="ye">◐</span> <span class="s0">coordinator</span></span><span class="o1">waking</span></div>
           <div class="r"><span>  <span class="ac">●</span> <span class="s0">coordinator</span></span><span class="o1">3 ideas</span></div>
           <div class="r"><span>  <span class="o0">◌</span> <span class="s0">coordinator</span></span><span class="o1">capped</span></div>
-          <div class="r"><span>  <span class="re">!</span> <span class="s0">coordinator</span></span><span class="o1">locked</span></div>
+          <div class="r"><span>  <span class="ye">!</span> <span class="s0">coordinator</span></span><span class="o1">locked</span></div>
           <div class="r"><span>  <span class="re">×</span> <span class="s0">coordinator</span></span><span class="o1">down</span></div>
         </div>
       </div>
@@ -290,7 +294,7 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
     <div class="grid" style="grid-template-columns:1fr">
       <div class="card"><h3><span class="g">›</span>Your turns are tracked</h3><p>herdr knows whether an agent's turn started from your typing or from a message, a script or a wake-up. Risky actions need a turn you started.</p></div>
       <div class="card"><h3><span class="g">≡</span>Actions log</h3><p>Every agent change, every refusal, and your own tab and team actions are logged. You see them on the dashboard; agents read them with <code>agents_actions</code>.</p></div>
-      <div class="card"><h3><span class="g">≤</span>Loose limits</h3><p>Generous limits stop a runaway agent: 200 messages an hour, 30 between the same two agents in 10 minutes, 20 new tabs an hour, 300 other tab changes (renames, moves, roles, mutes) an hour.</p></div>
+      <div class="card"><h3><span class="g">≤</span>Loose limits</h3><p>Generous limits stop a runaway agent: 200 messages an hour, 30 between the same two agents in 10 minutes, 20 tabs an agent opens on its own an hour (40 live per team), 300 other tab changes (renames, moves, roles, mutes) an hour.</p></div>
     </div>
   </div>
 </section>
@@ -312,12 +316,12 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
         <div class="bar">Team info · group menu</div>
         <div class="sb" style="padding:.4rem 0">
           <div class="r"><span><span class="ac">◆</span> <span class="t b">api rewrite</span></span><span class="o0">✎</span></div>
-          <div class="r"><span class="o1">purpose: ship the v2 auth API</span><span></span></div>
+          <div class="r"><span class="o1">purpose: api rewrite</span><span></span></div>
           <div class="r"><span> </span><span></span></div>
           <div class="r"><span><span class="ye">●</span> <span class="t">lead</span>      <span class="o1">lead</span></span><span class="o1">8m  ✎ ×</span></div>
           <div class="r"><span><span class="re">●</span> <span class="t">planner</span>   <span class="o1">planner</span></span><span class="re">3m  <span class="o1">✎ ×</span></span></div>
           <div class="r f"><span><span class="ye">●</span> <span class="t">reviewer</span>  <span class="o1">reviewer</span></span><span class="o1">12m ✎ ×</span></div>
-          <div class="r"><span><span class="te">●</span> <span class="t">builder</span>   <span class="o1">fixer</span></span><span class="o1">1m  ✎ ×</span></div>
+          <div class="r"><span><span class="te">●</span> <span class="t">builder</span>   <span class="o1">builder</span></span><span class="o1">1m  ✎ ×</span></div>
           <div class="r"><span class="ac">+ join</span><span class="o1">disband</span></div>
         </div>
       </div>
@@ -334,23 +338,20 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
 
   <div class="term" style="margin-bottom:16px" role="img" aria-label="Message line example">
     <div class="bar">what the receiving agent sees</div>
-    <div class="pane" style="padding:.7rem 1.4ch;color:var(--sub0)"><span class="t">&gt;</span> herdr+ message <span class="ac">m_7f3a</span> from <span class="t">reviewer</span> (teammate, w3:p2): read it with agents_messages id=<span class="ac">m_7f3a</span>
+    <div class="pane" style="padding:.7rem 1.4ch;color:var(--sub0);overflow-x:auto"><span class="t">&gt;</span> herdr+ message <span class="ac">m7f3a</span> from <span class="t">reviewer</span> (teammate, w3:p2): read it with agents_messages id=<span class="ac">m7f3a</span>
 
-<span class="t">●</span> agents_messages(id="m_7f3a")
-  <span class="o0">⎿  from reviewer · "auth review done, 2 issues in session.rs, details in review.md"</span></div>
+<span class="t">●</span> agents_messages(id="m7f3a")
+  <span class="o0"><span class="gl">⎿</span>  from reviewer · "auth review done, 2 issues in session.rs, details in review.md"</span></div>
   </div>
 
   <div class="grid">
     <div class="card"><h3><span class="g">⇶</span>A queue per agent</h3><p>Each agent gets its own queue, oldest first, kept across restarts. Messages expire after 2 h (24 h if the agent is waiting for you) or when the agent's tab is gone.</p></div>
-    <div class="card"><h3><span class="g">‖</span>Typing guard</h3><p>Nothing is typed while you have typed in that pane in the last 10 s or left an unsent draft. If Claude Code or Codex shows no input box (a question, a permission prompt, a menu), the message waits.</p></div>
+    <div class="card"><h3><span class="g">‖</span>Typing guard</h3><p>Nothing is typed while you have typed in that pane in the last 10 s or left an unsent draft. If Claude Code or Codex shows no input box (a question, a permission prompt, a menu), the message waits. Enter is pressed only once the text is in the box; herdr never resends on its own.</p></div>
     <div class="card"><h3><span class="g">❝</span>One short line, not a paste</h3><p>The agent gets one short line naming the sender and a message id, then reads the full message itself, so Claude never mistakes it for something you pasted.</p></div>
-    <div class="card"><h3><span class="g">⧉</span>Together, once, on time</h3><p>Waiting messages go in together, as one line, once the agent has been idle for 3 s. One the agent picks up while waiting is never also typed in or handed out twice, and a wait ends at 100 s with a normal result, before Claude Code's 120 s tool limit.</p></div>
+    <div class="card"><h3><span class="g">⧉</span>Delivered once, when it's free</h3><p>Waiting messages go in together, as one line, once the agent has been idle for 3 s, and never twice. Claude Code tells herdr when each turn ends, so background subagents don't hold them back.</p></div>
     <div class="card"><h3><span class="g">⏱</span>Stuck-message notice</h3><p>If a message has waited 10 min on an agent whose screen hasn't moved, the sender gets one notice saying why, for example that the agent is still running a subagent.</p></div>
-    <div class="card"><h3><span class="g">↵</span>Enter only when it landed</h3><p>herdr presses Enter only once the text shows in the agent's input box and you haven't typed since; otherwise the sender is told why. herdr never resends a message on its own.</p></div>
     <div class="card"><h3><span class="g">?</span>Waiting on you</h3><p>When an agent is waiting for your answer, messages to it wait too. After 10 min the senders are told, and you get one card. Held messages last up to 24 h; senders hear when one expires.</p></div>
     <div class="card"><h3><span class="g">!</span>Urgent interrupt, safely</h3><p><code>urgent=true</code> presses Esc once on a working agent and puts the message first. Only when you asked for it or from the coordinator, at most once every 5 min between the same two agents, and never into a dialog, voice mode or while you type.</p></div>
-    <div class="card"><h3><span class="g">↯</span>No false "busy"</h3><p>Claude Code tells herdr when each turn starts and ends, so messages aren't held back by background agents that keep its spinner going.</p></div>
-    <div class="card"><h3><span class="g">⇣</span>Backlog first</h3><p>An agent waiting with <code>agents_wait_for_message</code> gets the messages already queued for it first; <code>agents_messages inbox=true</code> lists them without taking them.</p></div>
     <div class="card"><h3><span class="g">✉</span>Quiet messages</h3><p>For an FYI that shouldn't interrupt: <code>quiet=true</code> holds the message, and the Claude agent sees it, with sender and time, at its next prompt. Nothing is lost if delivery fails. The tab row shows <code>✉3</code>.</p></div>
     <div class="card"><h3><span class="g">☾</span>Do not disturb</h3><p>Keeps an agent focused: every message to it becomes a quiet one, urgent ones are refused, and herdr types nothing in. Your own typing is unaffected; the coordinator gets through only if an agent turned it on, not you. Tab menu, <code>herdr tab dnd on</code>, or a teammate's <code>agents_dnd</code>; shows a <code>☾</code> in the row.</p></div>
     <div class="card"><h3><span class="g">❯</span>Suggestions are not approvals</h3><p>When an agent reads another agent's screen, herdr marks the prompt box as either a dim suggestion from the agent or an unsent draft you typed, so a suggestion is never taken as your answer.</p></div>
@@ -366,42 +367,41 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
 
   <div class="two">
     <div class="grid" style="grid-template-columns:1fr">
-      <div class="card"><h3><span class="g">●</span>Session header</h3><p>One row on top of the session area: the tab's status as an icon (<code>●</code> working, <code>○</code> idle, <code>◉</code> blocked, <code>◌</code> suspended, <code>↻</code> restarting), its group in dim when it is in one, then its name, the context use from 75% and <code>⚭</code> subagents / <code>✉</code> waiting messages when there are any. On the right the <code>Terminal</code> / <code>Browser</code> view tabs with the browser dock toggle <code>◨</code>, and the notes toggle <code>≡</code> at the far edge. The active view and the open dock are accent, the rest dim: colour only, no boxes.</p>
+      <div class="card"><h3><span class="g">●</span>Session header</h3><p>One row over the session: the tab's status icon (here blocked is <code>◉</code>), its group, name, context use from 75%, <code>⚭</code> subagents and <code>✉</code> messages. On the right the <code>Terminal</code> / <code>Browser</code> views, the browser dock <code>◨</code> and notes <code>≡</code>; the active ones are accent.</p>
         <div class="term solo" style="width:100%;margin:.6rem 0 .5rem;box-shadow:none" role="img" aria-label="The session header, wide and narrow">
-          <div class="hdr"><span><span class="ye">●</span> <span class="o1">Search It · </span><span class="t b">header-design</span>  <span class="ye">82%</span> <span class="s0">⚭3</span> <span class="o1">✉1</span></span><span><span class="ac">Terminal</span>  Browser <span class="bdg"> 3 </span> ◨  ≡</span></div>
+          <div class="hdr"><span><span class="ye">●</span> <span class="o1">Search It · </span><span class="t b">header-design</span>  <span class="ye">82%</span> <span class="s0"><span class="gl">⚭</span>3</span> <span class="o1">✉1</span></span><span><span class="ac">Terminal</span>  Browser <span class="bdg"> 3 </span> ◨  ≡</span></div>
           <div class="hdr"><span><span class="re">◉</span> <span class="t b">endpoint-compat…</span></span><span><span class="ac">T</span>  B <span class="ac">◨</span>  ≡</span></div>
         </div>
-        <p>The small block after <code>Browser</code> counts the tab's open browser pages (accent while Browser view is on; none at 0 or while the companion is stopped; <code>99+</code> from 100). On a narrow window the group gives way first (shortens, then drops), then the name, then the view tabs shrink to <code>T</code> <code>B</code> (<code>B3</code> with pages), then to the dock toggle alone; the dock toggles always stay.</p></div>
-      <div class="card"><h3><span class="g">◨</span>One dock slot</h3><p>The right edge holds one dock: your notes or the browser, never both. <code>≡</code> and <code>◨</code> swap it and each keeps its own width; drag the divider to resize. Each dock has a title bar: <code>≡ Notes  ✎  ✕</code> and <code>◨ &lt;page title&gt;  ⤢  ✕</code>, where <code>⤢</code> turns the tab to Browser view. In Browser view the notes stay beside the page.</p></div>
+        <p>The block after <code>Browser</code> counts the tab's open pages. On a narrow window the row shortens instead of wrapping: the group goes first, then the name, then the view tabs shrink to <code>T</code> <code>B</code>.</p></div>
+      <div class="card"><h3><span class="g">◨</span>One dock slot</h3><p>The right edge holds one dock: your notes or the browser, never both. <code>≡</code> and <code>◨</code> swap it and each keeps its own width; drag the divider to resize. The notes have a title bar, <code>≡ Notes  ✎  ✕</code>; the browser's own bar (it hides until you hover its top) has <code>⤢</code> for Browser view and <code>✕</code>. In Browser view the notes stay beside the page.</p></div>
       <div class="card"><h3><span class="g">◎</span>One key for the browser</h3><p><code>ctrl+shift+b</code>, no prefix, steps the focused tab's browser: docked beside the panes, then Browser view over the whole tab, then gone again. Works in Ghostty and in iTerm2 with CSI u; kitty needs <code>map kitty_mod+b no_op</code> and WezTerm <code>enable_kitty_keyboard = true</code>.</p></div>
-      <div class="card"><h3><span class="g">▾</span>Active · Pinned · Scheduled</h3><p><b>Active</b>: every busy tab, the ones that need you first. <b>Pinned</b>: tabs you pin from the menu. <b>Scheduled</b>: tabs with a reminder and the time to the next one. Folded blocks still show their count.</p></div>
+      <div class="card"><h3><span class="g">▾</span>Active · Pinned · Scheduled</h3><p><b>Active</b>: blocked, working, subagent-running and just-finished tabs, the ones that need you first. <b>Pinned</b>: tabs you pin from the menu. <b>Scheduled</b>: tabs with a reminder and the time to the next one. Folded blocks still show their count.</p></div>
       <div class="card"><h3><span class="g">◌</span>Suspended runs fold</h3><p>Three or more suspended tabs in a row become one <code>◌ N suspended ▸</code> row. Hover lists them. Off in Settings → Indicators (<code>fold suspended runs</code>).</p></div>
-      <div class="card"><h3><span class="g">%</span>Context use</h3><p>Shows when an agent is running out of room: a percentage on the row and in the session header from 75% (yellow, red from 90%). Read from the agent's own session file, never on every frame.</p></div>
+      <div class="card"><h3><span class="g">%</span>Context use</h3><p>Shows when an agent is running out of room: a percentage on the row and in the session header from 75% (yellow, red from 90%).</p></div>
       <div class="card"><h3><span class="g">▦</span>Context menus with sections</h3><p>Every right-click menu has the same layout: titled sections, one icon per item, your own key bindings shown on the right, and destructive items in red at the bottom.</p></div>
       <div class="card"><h3><span class="g">⏶</span>The toolbar</h3><p>The top row of the sidebar keeps the everyday moves one click away. At rest it shows only the buttons; hover it and the search field and recency chip appear (they stay while a filter is on).</p>
         <div class="term solo" style="width:100%;margin:.6rem 0 .5rem;box-shadow:none" role="img" aria-label="The sidebar toolbar at rest and on hover">
           <div class="sb">
-            <div class="r c"><span class="o0">⏶ ‹ ›</span><span class="o0">+</span></div>
+            <div class="r c"><span class="o0"><span class="gl">⏶</span> ‹ ›</span><span class="o0">+</span></div>
             <div class="r c"><span><span class="o0">⏶</span> <span class="ac">‹</span> <span class="o0">›</span> <span class="o0">⌕ search</span>        <span class="ac">◷ 1h</span> <span class="o0">+</span></span><span></span></div>
           </div>
         </div>
         <ul>
           <li><code>⏶</code> folds every group, <code>⏷</code> opens them all again.</li>
           <li><code>‹</code> <code>›</code> go back and forward through the tabs you focused, like a browser; lit when there is somewhere to go. Keys <code>cmd+[</code> / <code>cmd+]</code> where your terminal passes Cmd, else <code>alt+,</code> / <code>alt+.</code>.</li>
-          <li><code>⌕</code> filters the tabs as you type (<code>prefix+f</code>); <code>◷</code> keeps only recently active tabs (click forward, right-click back).</li>
+          <li><code>⌕</code> filters the tabs as you type (<code>prefix+f</code>): every word must match, Enter jumps to the first match, Esc clears. <code>◷</code> keeps only tabs active in the last 15m to 1d (click forward, right-click back). Busy and pinned tabs always show, and previous/next tab keys cycle only the tabs shown.</li>
           <li><code>+</code> opens a new shell tab, loose at the top of the list, and focuses it. To group a tab, right-click it and pick <b>Move to group…</b> (or <b>Remove from group</b>); <code>move_tab_to_group</code> and dragging work too.</li>
         </ul>
         <p>On a narrow sidebar the history buttons drop out first, then the search controls. Other keys and widths: <a href="config.html#sidebar-toolbar">configuration page</a>.</p></div>
-      <div class="card"><h3><span class="g">⌕</span>Search and recency filters</h3><p>Find a tab fast: <code>prefix+f</code> or the toolbar's <code>⌕</code> keeps tabs whose label, group or agent matches every word; Enter jumps to the first match, Esc clears. <code>◷</code> shows only tabs active in the last 15m to 1d; busy and pinned tabs always show. Previous/next tab keys skip hidden tabs.</p></div>
     </div>
     <div>
       <div class="tbl" style="margin-bottom:14px"><table>
         <tr><th>Mark</th><th>Meaning</th></tr>
         <tr><td class="m re">★</td><td>Important: reminds you while the agent waits on you</td></tr>
         <tr><td class="m o0">◷ ◑ ☼</td><td>Scheduled reminder: minutes, hours, daily</td></tr>
-        <tr><td class="m ac">◎</td><td>This tab's agent used the browser in the last 2 min</td></tr>
-        <tr><td class="m ac">◆</td><td>Team member (header shows the purpose)</td></tr>
-        <tr><td class="m"><span class="cl">⧆</span> <span class="cx">⧇</span></td><td>Agent icon (Claude Code / Codex), on the focused row, pulsing while it works</td></tr>
+        <tr><td class="m"><span class="o0">◎</span> <span class="ac">◎</span> <span class="ye">◉</span></td><td>Browser pages: dim, the tab has pages; lit, its agent used the browser in the last 2 min; <span class="m ye">◉</span> a page needs you</td></tr>
+        <tr><td class="m ac">◆</td><td>Team: on the group header, with its purpose (Active entries and agent cards name it too)</td></tr>
+        <tr><td class="m"><span class="cl gl">⧆</span> <span class="cx gl">⧇</span></td><td>Agent icon (Claude Code / Codex), on the focused row, pulsing while it works</td></tr>
         <tr><td class="m re"><svg class="ic" viewBox="0 0 16 16"><path d="M8 1.5a2.3 2.3 0 0 0-2.3 2.3v3.9a2.3 2.3 0 0 0 4.6 0V3.8A2.3 2.3 0 0 0 8 1.5zM4.2 7.4a3.8 3.8 0 0 0 7.6 0M8 11.3v2.6M5.6 13.9h4.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></td><td>Voice mode: red mic live, dim mic muted (Codex)</td></tr>
         <tr><td class="m o0"><svg class="ic" viewBox="0 0 16 16"><path d="M6 2h4l-.6 4 2.1 2.2H4.5L6.6 6zM8 8.2V14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></td><td>Pinned tab, in the left gutter</td></tr>
         <tr><td class="m o0"><svg class="ic" viewBox="0 0 16 16"><path d="M4 11.5h8l-1.2-1.6V7a2.8 2.8 0 0 0-5.6 0v2.9zM6.8 13.3a1.3 1.3 0 0 0 2.4 0M2.5 2.5l11 11" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></td><td>Muted tab, in the left gutter</td></tr>
@@ -429,7 +429,7 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
   <h2>Your notes beside every agent</h2>
   <p class="lede">A notes pane on the right of each agent: your page for the session, not the agent's log. Agents write to it only when you ask.</p>
   <div class="two">
-    <div class="dock" role="img" aria-label="Notes pane"><span class="o1">──</span> <span class="ac"> ✦ </span><span class="t b">Notes</span><span class="ac"> ✦ </span><span class="o1">──────────────────────────────</span>
+    <div class="dock" role="img" aria-label="Notes pane"><span class="ac">≡</span> <span class="t b">Notes</span>                              <span class="o1">✎  ✕</span>
 <span class="ac">❦</span> <span class="t b">B a c k u p   S 3   w a t c h</span>
 
 <span class="o0" style="font-style:italic">Owner:</span> infra monitor, daily since 10-31.
@@ -494,21 +494,21 @@ Flags go to the owner in <span class="t b">Turkish</span>, see <span class="pu" 
   <p class="eyebrow">08 · more</p>
   <h2>Smaller things that add up</h2>
   <div class="grid">
-    <div class="card"><h3><span class="g">◫</span>Agent wrap &amp; Settings → Agents</h3><p><code>herdr agent wrap claude|codex</code> gives your agents the <code>herdr_agents</code> tools and herdr+ instructions. It's off by default: Settings → Agents turns it on and shows the <code>.zshrc</code> line before changing anything. The same page sets auto handoff, autosuspend and Claude's status reports.</p></div>
-    <div class="card"><h3><span class="g">⏎</span>Launches never get cut off</h3><p>herdr waits until a new tab's shell is ready before starting the agent, and runs long commands from a script so nothing is cut off.</p></div>
+    <div class="card"><h3><span class="g">⎔</span>Agent wrap &amp; Settings → Agents</h3><p><code>herdr agent wrap claude|codex</code> gives your agents the <code>herdr_agents</code> tools and herdr+ instructions. It's off by default: Settings → Agents turns it on and shows the <code>.zshrc</code> line before changing anything. The same page sets auto handoff, autosuspend and Claude's status reports.</p></div>
     <div class="card"><h3><span class="g">◈</span>Better detection</h3><p>Codex voice mode shows on the tab. A Claude whose turn ended while background agents run reads idle, not working.</p></div>
     <div class="card"><h3><span class="g">⌁</span>Claude's own status</h3><p>Claude Code reports its own status to herdr: working, blocked on a question, done, and each background subagent. Screen detection still decides; <code>herdr agent explain</code> shows both side by side. Turn it off with <code>[agents] program_status = false</code>.</p></div>
     <div class="card"><h3><span class="g">⎘</span>Copy session ID</h3><p>Tab and pane menus copy the Claude Code session ID or Codex thread ID, for <code>--resume</code> elsewhere.</p></div>
-    <div class="card"><h3><span class="g">⇆</span><kbd>cmd</kbd>+<kbd>[</kbd> / <kbd>cmd</kbd>+<kbd>]</kbd> tab history</h3><p>Back and forward through the tabs you focused, like a browser. Closed tabs are skipped. <kbd>alt</kbd>+<kbd>,</kbd> / <kbd>alt</kbd>+<kbd>.</kbd> work too, and so do the <code>‹</code> <code>›</code> buttons at the start of the tabs toolbar.</p></div>
     <div class="card"><h3><span class="g">≋</span>Steady scrolling</h3><p>Streaming output lands on a fixed 60 fps grid, in step with the display, instead of drifting at ~55 fps. On a 120 Hz display, <code>[ui] render_fps = 120</code>. A fast wheel scroll in an agent UI or pager no longer freezes and then jumps: each redraw reaches the screen whole. Scrolling herdr's own scrollback moves the pane region on the terminal and draws only the new lines, so a fast wheel scroll does not hitch.</p></div>
-    <div class="card"><h3><span class="g">⤧</span>Drag &amp; drop and resize fixes</h3><p>Drops land where the marker shows. Resizing the window is smoother and the sidebar no longer flickers.</p></div>
-    <div class="card"><h3><span class="g">◎</span>Built-in browser</h3><p>herdr runs a browser for agents (<code>herdr-browser</code> MCP): the herdr+ companion, one group of pages per herdr tab that follows the tab you focus, a glow and cursor while an agent acts, password fields protected, never takes your keyboard; a page's alert, confirm and prompt show in its own card (a prompt's text selected, ready to copy), and agents answer them with <code>herdr browser dialog</code>. <code>herdr browser setup --companion</code> installs it; herdr starts it on an agent's first page, restarts it after a crash and quits it with the server. Start, stop, restart and focus it from the Browser row's menu, the Browser overlay or <code>herdr browser companion</code>. Wrapped Claude agents that reach for WebFetch, <code>open</code> or another browser are sent to it, unless you asked for that.</p></div>
+    <div class="card"><h3><span class="g">⤧</span>Smaller fixes</h3><p>Launches wait for the shell, so nothing is cut off; drops land where the marker shows; resizing is smooth and the sidebar no longer flickers.</p></div>
+    <div class="card"><h3><span class="g">◎</span>Built-in browser</h3><p>Agents browse in the herdr+ companion (<code>herdr-browser</code> MCP), the same browser you watch and sign in to: one group of pages per tab, following the tab you focus, a glow and cursor while an agent acts, and it never takes your keyboard. <code>herdr browser setup --companion</code> installs it; herdr starts it on an agent's first page, restarts it after a crash and quits it with the server. Start, stop, restart and focus it from Settings → Browser, the Browser overlay or <code>herdr browser companion</code>.</p></div>
+    <div class="card"><h3><span class="g">◉</span>Dialogs, and agents stay on it</h3><p>A page's alert, confirm and prompt show in its own card, and agents answer them with <code>herdr browser dialog</code>. Wrapped Claude agents that reach for WebFetch, <code>open</code> or another browser are sent to the companion once, unless you asked for that.</p></div>
     <div class="card"><h3><span class="g">⇡</span>Pages that talk back</h3><p>An agent can show you a page with a button that answers it: <code>browser_show</code> with <code>page_api</code> (or <code>herdr browser show --page-api</code>) gives the page <code>window.herdr.send({text, data})</code>. A click reaches only the agent that showed the page, labelled as page content, never as your words, and the companion's bar says who got it. Only local pages without network get it, never iframes or web tabs; the agent's own clicks send nothing, a parked agent is never woken, and a flood is cut. Turn it off with <code>[browser] page_api = false</code>.</p></div>
-    <div class="card"><h3><span class="g">⏸</span>Suspend, activate, restart</h3><p>Suspend an idle agent to free resources and bring it back later in the same pane and session. If it's still busy (working, a subagent, a background shell, a <code>/loop</code>), suspend is refused and the notice offers <b>Force suspend</b> or <b>Force restart</b>. Only you can force it, not agents. While it restarts or wakes, the pane reads <code>↻ restarting</code> or <code>↻ waking</code>; if that gives up, the suspended card says so. If the agent never starts (the shell is back at its prompt), the pane unlocks within a few seconds and a toast says so.</p></div>
+    <div class="card"><h3><span class="g">⏸</span>Suspend, activate, restart</h3><p>Suspend an idle agent to free resources and bring it back later in the same pane and session. If it's still busy (working, a subagent, a background shell, a <code>/loop</code>), suspend is refused and the notice offers <b>Force suspend</b> or <b>Force restart</b>. Only you can force it, not agents. While it comes back the pane reads <code>↻ restarting</code> or <code>↻ waking</code>, and says so if it doesn't.</p></div>
     <div class="card"><h3><span class="g">⏲</span>Autosuspend</h3><p>Suspends a Claude agent you've seen and left idle for a set time (<code>[agents.autosuspend] after = "1d"</code>, off by default). It never touches one that needs you, is on screen, is busy in the background or has messages waiting. A message to it wakes it up.</p></div>
     <div class="card"><h3><span class="g">⌂</span>Removed worktree, session back</h3><p>If a pane's folder was deleted (say, a removed worktree), herdr recreates it empty after a restart so <code>--resume</code> still finds the session. You get one card, and the agent is told so it can warn you.</p></div>
-    <div class="card"><h3><span class="g">⇢</span>Backgrounded Claude sessions</h3><p>When you background a Claude session it continues under a new ID. herdr follows it, so resume, restart and restore pick up the newest session and its tools still work as that pane.</p></div>
-    <div class="card"><h3><span class="g">↺</span>Recently closed sessions</h3><p>Reopen a closed agent tab with its label, colour, group and reminders: <code>herdr tab closed</code> lists them, <code>herdr tab reopen</code> brings one back, or use Settings → Closed sessions.</p></div>
+    <div class="card"><h3><span class="g">⇢</span>Backgrounded Claude sessions</h3><p>Send a Claude session to the background (it continues as a new session) and herdr keeps following it: resume, restart and restore pick up the newest one.</p></div>
+    <div class="card"><h3><span class="g">↺</span>Recently closed sessions</h3><p>Reopen a closed agent tab with its label, colour, group and reminders: <code>herdr tab closed</code> lists them, <code>herdr tab reopen</code> brings one back, or use Settings → Closed.</p></div>
+    <div class="card"><h3><span class="g">/</span>Claude skills</h3><p><code>/plus:status</code> sums up who is working, blocked or done and what waits on you; <code>/plus:team-build</code> runs a multi-agent build as a team; <code>/plus:notes</code> and <code>/plus:notify</code> as above. Install them with <code>scripts/install-plus-skills.sh</code>.</p></div>
     <div class="card"><h3><span class="g">■</span>Tab colours &amp; groups</h3><p>Colour tags, foldable groups, drag tabs and groups, move a tab to a group from its menu.</p></div>
   </div>
 </section>
@@ -524,7 +524,7 @@ Flags go to the owner in <span class="t b">Turkish</span>, see <span class="pu" 
   <div class="grid" style="margin-top:1rem">
     <div class="card"><h3><span class="g">◔</span>Two ways to start</h3><p>Automatically when context reaches <code>[agents.handoff] at_percent</code> (80 by default, 0 turns it off), once each time and only while the agent is idle. Or by hand: the tab menu's “Handoff &amp; compact”, a key, or <code>herdr agent handoff &lt;target&gt;</code>.</p></div>
     <div class="card"><h3><span class="g">⚙</span>Your handoff skill, or herdr's</h3><p>Set <code>command</code> to your own skill with a <code>{path}</code> placeholder, or leave it empty to use herdr's prompt. If the agent writes nothing, herdr writes a basic handoff from the notes, git state and recent prompts.</p></div>
-    <div class="card"><h3><span class="g">⌸</span>Known place, nothing lost</h3><p>Each run keeps the transcript and the handoff in a folder per session and time, and the newest one is always easy to find. The sidebar shows “handoff 12m ago”.</p></div>
+    <div class="card"><h3><span class="g">⌸</span>Known place, nothing lost</h3><p>Each run keeps the transcript and the handoff in a folder per session and time, and the newest one is always easy to find.</p></div>
     <div class="card"><h3><span class="g">▶</span>Back to work</h3><p>After <code>/compact</code> the agent's new context names the handoff and transcript, and a short line asks it to continue, or to pause if nothing was in flight.</p></div>
     <div class="card"><h3><span class="g">⛨</span>Safety net</h3><p>When Claude compacts on its own or you type <code>/compact</code>, herdr still saves the transcript and a handoff first. Messages wait until it's done. A <code>/clear</code> cancels it.</p></div>
   </div>
@@ -536,9 +536,10 @@ Flags go to the owner in <span class="t b">Turkish</span>, see <span class="pu" 
   <h2>How the fork stays healthy</h2>
   <div class="grid">
     <div class="card"><h3><span class="g">⇄</span>Updates without restarts</h3><p>herdr+ only adds to herdr's protocol, never changes it, so installing an update hands over live: sessions keep running.</p></div>
+    <div class="card"><h3><span class="g">⚑</span>Its own defaults</h3><p>herdr+ starts in the tabs sidebar and turns upstream's update checks off; <code>[ui] sidebar_layout = "spaces"</code> brings the old sidebar back.</p></div>
     <div class="card"><h3><span class="g">§</span>FORK.md merge contract</h3><p><code>FORK.md</code> lists everything the fork owns and how to merge upstream; the <code>fork-sync</code> tool reads it and refuses a sync that would collide.</p></div>
     <div class="card"><h3><span class="g">⚖</span>Audited</h3><p>Big features are reviewed by three independent audits and a second model, then smoke-tested live on a throwaway server.</p></div>
-    <div class="card"><h3><span class="g">↑</span>Synced with upstream</h3><p>Based on upstream herdr 0.9.3.</p></div>
+    <div class="card"><h3><span class="g">↑</span>Synced with upstream</h3><p>Based on upstream herdr 0.9.5.</p></div>
   </div>
 </section>
 
