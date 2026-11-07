@@ -1266,3 +1266,107 @@ async fn fork_smoke_quiet_messages_follow_a_claude_session_chain() {
     app.follow_queued_session(SESSION_A, SESSION_B);
     assert_eq!(app.quiet.entries[0].session.as_deref(), Some(SESSION_B));
 }
+
+#[tokio::test]
+async fn fork_smoke_an_agent_exit_then_another_session_detaches_its_messages() {
+    let (mut app, lead, fixer, _rx) = fixture();
+    record_session(&mut app, SESSION_A);
+    send(&mut app, &lead, &fixer, "for session a", true, false);
+    // A session-less one stays with the terminal.
+    let mut plain = message("mplain", "lead", "plain", crate::coordinator::now_unix());
+    plain.terminal_id = app.quiet.entries[0].terminal_id.clone();
+    app.quiet.entries.push(plain);
+    app.sync_quiet_pending();
+    assert_eq!(pending_count(&app, &fixer), Some(2));
+    // The agent exits (the pane knows no session), then another starts.
+    let fixer_pane = pane(&app, 1, 1);
+    terminal_mut(&mut app, fixer_pane).persisted_agent_session = None;
+    report_session(&mut app, &fixer, SESSION_B, 1, "startup");
+    let detached = app
+        .quiet
+        .entries
+        .iter()
+        .find(|entry| entry.message.text == "for session a")
+        .unwrap();
+    assert_eq!(detached.terminal_id, "");
+    assert_eq!(pending_count(&app, &fixer), Some(1), "the session-less one");
+    let taken = take(&mut app, &fixer);
+    assert_eq!(
+        taken["result"]["ids"],
+        serde_json::json!(["mplain"]),
+        "{taken}"
+    );
+}
+
+#[tokio::test]
+async fn fork_smoke_a_restore_does_not_move_a_message_onto_a_terminal_without_its_session() {
+    let (mut app, lead, fixer, _rx) = fixture();
+    record_session(&mut app, SESSION_A);
+    send(&mut app, &lead, &fixer, "bound", true, false);
+    // The restore: the bound pane's new terminal knows no session, while
+    // another pane runs it.
+    new_fixer_terminal(&mut app);
+    let lead_pane = pane(&app, 1, 0);
+    terminal_mut(&mut app, lead_pane).set_persisted_agent_session(
+        crate::agent_resume::PersistedAgentSession {
+            source: "herdr:claude".into(),
+            agent: "claude".into(),
+            session_ref: crate::agent_resume::AgentSessionRef::id(SESSION_A).unwrap(),
+            transcript_path: None,
+        },
+    );
+    app.note_restored_quiet();
+    assert!(app.quiet.is_empty(), "{:?}", app.quiet.entries);
+    assert_eq!(pending_count(&app, &fixer), None);
+    assert_eq!(pending_count(&app, &lead), None);
+}
+
+#[test]
+fn fork_smoke_a_handoff_replacement_start_finishes_no_stored_message() {
+    let _guard = crate::config::test_config_env_lock().lock().unwrap();
+    let root = std::env::temp_dir().join(format!(
+        "herdr-quiet-handoff-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let previous = std::env::var_os("XDG_CONFIG_HOME");
+    std::env::set_var("XDG_CONFIG_HOME", &root);
+    let data_dir = crate::session::data_dir();
+    std::fs::create_dir_all(&data_dir).unwrap();
+    let mut entry = message("mkept", "lead", "kept", crate::coordinator::now_unix());
+    entry.terminal_id = "term_before_the_handoff".into();
+    entry.bound_pane = Some("w1:p2".into());
+    let file = serde_json::json!({ "version": 1, "messages": [entry] });
+    std::fs::write(
+        data_dir.join("quiet_messages.json"),
+        serde_json::to_vec(&file).unwrap(),
+    )
+    .unwrap();
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    // A handoff replacement's restore and persist policy; new_from_handoff
+    // rebinds once its terminals are there.
+    let app = App::new(
+        &crate::config::Config::default(),
+        crate::app::AppPolicy {
+            restore_session: false,
+            persist_session: true,
+            ..crate::app::AppPolicy::TEST
+        },
+        None,
+        rx,
+        crate::api::EventHub::default(),
+    );
+    let kept = app.quiet.entries.len();
+    let written = app.quiet.written.len();
+    drop(app);
+    match previous {
+        Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+        None => std::env::remove_var("XDG_CONFIG_HOME"),
+    }
+    let _ = std::fs::remove_dir_all(&root);
+    assert_eq!(kept, 1, "nothing finished before the handoff's terminals");
+    assert_eq!(written, 0, "no expired line");
+}

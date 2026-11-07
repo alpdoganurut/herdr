@@ -879,8 +879,12 @@ impl App {
         app.note_recreated_cwds();
         // Fork: queued messages follow sessions restore advanced.
         app.follow_restored_sessions();
-        // Fork: quiet messages and do-not-disturb tabs reach clients.
-        app.note_restored_quiet();
+        // Fork: quiet messages and do-not-disturb tabs reach clients (a
+        // handoff does it in new_from_handoff, once its terminals are there:
+        // here its workspaces are still empty).
+        if app.policy.restore_session {
+            app.note_restored_quiet();
+        }
         app.refresh_restored_workspace_git_metadata();
         Ok(app)
     }

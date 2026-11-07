@@ -26,8 +26,9 @@
 //! now in its bound pane when that runs the same session, and drops the
 //! rest (a message whose terminal was gone is not found again by its
 //! session). A pane whose agent reports another session does not inherit
-//! the old session's messages; one that reports their session takes the
-//! ones whose terminal is gone (an agent back in a new terminal).
+//! the old session's messages (they wait, unbound, until the next restore
+//! or their expiry); one that reports their session takes the ones whose
+//! terminal is gone (an agent back in a new terminal).
 //!
 //! Whenever what a pane has pending changes, herdr writes
 //! `<data dir>/pending/<pane id, ':' as '_'>.json` (`{pane_id, count,
@@ -1176,15 +1177,16 @@ impl App {
         }
     }
 
-    /// A pane's agent reported its session (`pane.report_agent_session`);
-    /// `before` is what its terminal `terminal_id` reported until now.
-    /// Another session in the pane (not a continuation) does not inherit
-    /// the messages stored for the one before: they leave the terminal and
-    /// wait, unbound, for that session or their expiry. Messages for the
+    /// The agent of terminal `terminal_id` reported its session
+    /// (`pane.report_agent_session`, a Codex session file; after the state
+    /// took it). Messages stored for another session (not a continuation:
+    /// a chain moves them first) do not stay with it: they leave the
+    /// terminal and wait, unbound, for that session until the next restore
+    /// or their expiry; messages without a session stay. Messages for the
     /// reported session whose terminal is gone (the agent came back in a
     /// new one) move to this terminal, with their pending file.
     /// O(stored entries); nothing while none are stored.
-    pub(crate) fn note_quiet_session_report(&mut self, terminal_id: &str, before: Option<String>) {
+    pub(crate) fn note_quiet_session_report(&mut self, terminal_id: &str) {
         if self.quiet.is_empty() {
             return;
         }
@@ -1197,30 +1199,51 @@ impl App {
             return;
         };
         let mut changed = false;
-        if let Some(before) = before.filter(|before| *before != after) {
-            let mut unbound = 0usize;
-            for entry in &mut self.quiet.entries {
-                if entry.terminal_id == terminal_id && entry.session.as_deref() == Some(&before) {
-                    entry.terminal_id.clear();
-                    entry.bound_pane = None;
-                    unbound += 1;
-                }
+        let mut detached = 0usize;
+        for entry in &mut self.quiet.entries {
+            if entry.terminal_id == terminal_id
+                && entry
+                    .session
+                    .as_deref()
+                    .is_some_and(|session| session != after)
+            {
+                entry.terminal_id.clear();
+                entry.bound_pane = None;
+                detached += 1;
             }
-            if unbound > 0 {
-                tracing::info!(
-                    event = "quiet.session_changed",
-                    terminal_id,
-                    count = unbound,
-                    "quiet messages: the pane runs another agent session; its stored messages stay with the old one"
-                );
-                self.quiet.save();
+        }
+        if detached > 0 {
+            tracing::info!(
+                event = "quiet.session_changed",
+                terminal_id,
+                count = detached,
+                "quiet messages: the pane runs another agent session; its stored messages stay with the old one"
+            );
+            changed = true;
+        }
+        // Messages for this session whose terminal is gone come here.
+        let gone: Vec<usize> = self
+            .quiet
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| {
+                entry.session.as_deref() == Some(after.as_str())
+                    && entry.terminal_id != terminal_id
+                    && !self
+                        .resolve_terminal_target(&entry.terminal_id)
+                        .is_ok_and(|target| target.terminal_id == entry.terminal_id)
+            })
+            .map(|(idx, _)| idx)
+            .collect();
+        for idx in gone {
+            if let Some(entry) = self.quiet.entries.get_mut(idx) {
+                entry.terminal_id = terminal_id.to_string();
                 changed = true;
             }
         }
-        changed |= self.quiet.entries.iter().any(|entry| {
-            entry.session.as_deref() == Some(after.as_str()) && entry.terminal_id != terminal_id
-        });
         if changed {
+            self.quiet.save();
             self.sync_quiet_pending();
         }
     }
@@ -1228,8 +1251,9 @@ impl App {
     /// After a restore or a live handoff every terminal has a new id: each
     /// stored message moves to the terminal now in the pane it was bound to
     /// ([`QuietMessage::bound_pane`]) when that terminal runs the same agent
-    /// session (or either is unknown). The rest had no live agent when they
-    /// were saved, or the pane runs another session now: they are dropped
+    /// session (a message without a session: whatever it runs). The rest had
+    /// no live agent when they were saved, or the pane runs another session
+    /// or none it knows now: they are dropped
     /// (`expired` in the log), not found again by their session.
     fn rebind_restored_quiet(&mut self, now_unix: u64) {
         let mut moves: Vec<(usize, String)> = Vec::new();
@@ -1270,14 +1294,17 @@ impl App {
     }
 
     /// The terminal now in the pane with public id `pane` (or one of its
-    /// aliases), when it runs agent session `session` or either is unknown.
+    /// aliases), when it runs agent session `session` (any, for `None`).
     fn restored_quiet_terminal(&self, pane: &str, session: Option<&str>) -> Option<String> {
         let (ws_idx, pane_id) = self.parse_pane_id(pane)?;
         let current = self.public_pane_id(ws_idx, pane_id)?;
         let target = self.resolve_terminal_target(&current).ok()?;
         let terminal = self.state.terminals.get(target.terminal_id.as_str())?;
+        // A message for a known session moves only onto a terminal that
+        // runs it.
         match (session, super::coordinator::terminal_session(terminal)) {
             (Some(wanted), Some(running)) if wanted != running => None,
+            (Some(_), None) => None,
             _ => Some(target.terminal_id),
         }
     }

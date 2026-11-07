@@ -388,8 +388,20 @@ impl App {
             _ => None,
         }
         .map(|(pane_id, voice)| (pane_id, self.pane_voice(pane_id), voice));
+        // Fork (quiet messages): the pane whose agent reported its session
+        // (the hook or a Codex session file).
+        let session_reported_pane = match &ev {
+            AppEvent::AgentSessionReported { pane_id, .. } => Some(*pane_id),
+            _ => None,
+        };
         let previous_toast = self.state.toast.clone();
         let mut pane_updates = self.state.handle_app_event(ev);
+        if let Some(terminal_id) = session_reported_pane.and_then(|pane_id| {
+            self.find_pane(pane_id)
+                .map(|(_, pane)| pane.attached_terminal_id.to_string())
+        }) {
+            self.note_quiet_session_report(&terminal_id);
+        }
         if let Some((pane_id, before, voice)) = voice_report {
             self.apply_agent_voice(pane_id, before, voice);
         }
