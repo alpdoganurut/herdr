@@ -1719,6 +1719,13 @@ impl App {
             session_ref.as_ref(),
             params.agent_session_path.as_deref(),
         );
+        // Fork (quiet messages): the session the pane reported until now.
+        let quiet_before = self.pane_terminal(ws_idx, pane_id).map(|terminal| {
+            (
+                terminal.id.to_string(),
+                crate::app::coordinator::terminal_session(terminal),
+            )
+        });
         self.handle_internal_event(crate::events::AppEvent::AgentSessionReported {
             pane_id,
             session_ref: session_ref.clone(),
@@ -1730,6 +1737,9 @@ impl App {
                 params.session_start_source,
             ),
         });
+        if let Some((terminal_id, before)) = quiet_before {
+            self.note_quiet_session_report(&terminal_id, before);
+        }
         let applied =
             report_is_newer && self.session_report_applied(ws_idx, pane_id, session_ref.as_ref());
         self.report_agent_resume(

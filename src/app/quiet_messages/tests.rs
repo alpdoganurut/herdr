@@ -23,6 +23,7 @@ fn message(id: &str, from: &str, text: &str, unix: u64) -> QuietMessage {
         },
         terminal_id: "term".into(),
         session: None,
+        bound_pane: None,
         expires_unix: unix + QUIET_TTL_S,
         dnd: false,
         offered_unix: None,
@@ -1060,4 +1061,208 @@ async fn the_coordinators_pass_survives_the_queue_file_and_the_quiet_store() {
     }
     assert!(typed(&mut rx).contains("run the tests"));
     let _ = std::fs::remove_dir_all(&app.coordinator.dir);
+}
+
+const SESSION_A: &str = "0f0e2c7a-1b2c-4d5e-8f90-a1b2c3d4e5f6";
+const SESSION_B: &str = "1a2b3c4d-1b2c-4d5e-8f90-a1b2c3d4e5f6";
+
+/// The fixer pane's agent session as a restore records it.
+fn record_session(app: &mut App, id: &str) {
+    let fixer_pane = pane(app, 1, 1);
+    terminal_mut(app, fixer_pane).set_persisted_agent_session(
+        crate::agent_resume::PersistedAgentSession {
+            source: "herdr:claude".into(),
+            agent: "claude".into(),
+            session_ref: crate::agent_resume::AgentSessionRef::id(id).unwrap(),
+            transcript_path: None,
+        },
+    );
+}
+
+/// The fixer pane's agent reports `session` (its SessionStart hook).
+fn report_session(app: &mut App, fixer: &str, session: &str, seq: u64, start: &str) {
+    let reply = call(
+        app,
+        Method::PaneReportAgentSession(crate::api::schema::PaneReportAgentSessionParams {
+            pane_id: fixer.into(),
+            source: "herdr:claude".into(),
+            agent: "claude".into(),
+            seq: Some(seq),
+            agent_session_id: Some(session.into()),
+            agent_session_path: None,
+            session_start_source: Some(start.into()),
+            resume_argv: None,
+        }),
+    );
+    assert!(reply.get("error").is_none(), "{reply}");
+}
+
+/// The fixer pane gets a new terminal (its old one is gone), a Claude
+/// agent detected in it: what a relaunch in a new terminal, a restore or a
+/// live handoff leaves. Returns the new terminal's id.
+fn new_fixer_terminal(app: &mut App) -> String {
+    let fixer_pane = pane(app, 1, 1);
+    let old = app.state.workspaces[1].tabs[1].panes[&fixer_pane]
+        .attached_terminal_id
+        .clone();
+    let id = crate::terminal::TerminalId::alloc();
+    let mut terminal = crate::terminal::TerminalState::new(id.clone(), std::env::temp_dir());
+    terminal.set_detected_state(Some(Agent::Claude), AgentState::Idle);
+    app.state.terminals.remove(&old);
+    app.state.terminals.insert(id.clone(), terminal);
+    app.state.workspaces[1].tabs[1]
+        .panes
+        .get_mut(&fixer_pane)
+        .unwrap()
+        .attached_terminal_id = id.clone();
+    id.to_string()
+}
+
+fn pending_count(app: &App, pane_id: &str) -> Option<u32> {
+    app.quiet
+        .pending_view
+        .iter()
+        .find(|pending| pending.pane_id == pane_id)
+        .map(|pending| pending.count)
+}
+
+#[tokio::test]
+async fn fork_smoke_quiet_messages_follow_their_agent_to_a_new_terminal_in_the_same_pane() {
+    let dir = std::env::temp_dir().join(format!("herdr-quiet-follow-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (mut app, lead, fixer, _rx) = fixture();
+    app.quiet
+        .persist_for_test(dir.join("quiet_messages.json"), dir.join(PENDING_DIR));
+    record_session(&mut app, SESSION_A);
+    send(&mut app, &lead, &fixer, "one", true, false);
+    app.agents_model.limiter = Default::default();
+    send(&mut app, &lead, &fixer, "two", true, false);
+    assert_eq!(app.quiet.entries[0].session.as_deref(), Some(SESSION_A));
+    assert_eq!(
+        app.quiet.entries[0].bound_pane.as_deref(),
+        Some(fixer.as_str())
+    );
+    assert_eq!(pending_count(&app, &fixer), Some(2));
+    let name = pending_file_name(&fixer);
+
+    // The agent comes back in a new terminal; until it reports its session
+    // nothing ties the messages to it.
+    let new_id = new_fixer_terminal(&mut app);
+    app.sync_quiet_pending();
+    assert_eq!(pending_count(&app, &fixer), None);
+    assert!(!app
+        .quiet
+        .files_for_test
+        .as_ref()
+        .unwrap()
+        .contains_key(&name));
+
+    // Its SessionStart reports the same session: the messages move to the
+    // new terminal with their count and pending file.
+    report_session(&mut app, &fixer, SESSION_A, 1, "resume");
+    assert!(
+        app.quiet
+            .entries
+            .iter()
+            .all(|entry| entry.terminal_id == new_id
+                && entry.bound_pane.as_deref() == Some(fixer.as_str())),
+        "{:?}",
+        app.quiet.entries
+    );
+    assert_eq!(pending_count(&app, &fixer), Some(2));
+    let files = app.quiet.files_for_test.clone().unwrap();
+    let file: PendingFile = serde_json::from_slice(&files[&name]).unwrap();
+    assert_eq!(file.count, 2);
+    // Counted for the new terminal (the per-target cap) and offered to it.
+    assert_eq!(app.quiet.count_for(&new_id), 2);
+    let taken = take(&mut app, &fixer);
+    assert_eq!(taken["result"]["taken"], 2, "{taken}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn fork_smoke_a_different_agent_session_in_the_pane_does_not_inherit_its_messages() {
+    // In the same terminal (`/clear`, another agent started there).
+    let (mut app, lead, fixer, _rx) = fixture();
+    record_session(&mut app, SESSION_A);
+    send(&mut app, &lead, &fixer, "for session a", true, false);
+    assert_eq!(pending_count(&app, &fixer), Some(1));
+    report_session(&mut app, &fixer, SESSION_B, 1, "clear");
+    assert_eq!(app.quiet.entries.len(), 1, "kept until it expires");
+    assert_eq!(app.quiet.entries[0].terminal_id, "");
+    assert_eq!(pending_count(&app, &fixer), None);
+    let taken = take(&mut app, &fixer);
+    assert!(taken["result"].get("context").is_none(), "{taken}");
+
+    // In a new terminal.
+    let (mut app, lead, fixer, _rx) = fixture();
+    record_session(&mut app, SESSION_A);
+    send(&mut app, &lead, &fixer, "for session a", true, false);
+    let old_id = app.quiet.entries[0].terminal_id.clone();
+    new_fixer_terminal(&mut app);
+    // The old terminal's exit syncs (PaneExited, note_quiet_event).
+    app.sync_quiet_pending();
+    report_session(&mut app, &fixer, SESSION_B, 1, "startup");
+    assert_eq!(app.quiet.entries[0].terminal_id, old_id);
+    assert_eq!(pending_count(&app, &fixer), None);
+    let taken = take(&mut app, &fixer);
+    assert!(taken["result"].get("context").is_none(), "{taken}");
+}
+
+#[tokio::test]
+async fn fork_smoke_a_restore_drops_messages_whose_terminal_was_gone() {
+    let (mut app, lead, fixer, _rx) = fixture();
+    record_session(&mut app, SESSION_A);
+    send(&mut app, &lead, &fixer, "bound", true, false);
+    assert_eq!(
+        app.quiet.entries[0].bound_pane.as_deref(),
+        Some(fixer.as_str())
+    );
+    // Stranded before the restore: its terminal was gone (no bound pane),
+    // though its agent session is the pane's.
+    let mut stranded = message(
+        "mstranded",
+        "lead",
+        "stranded",
+        crate::coordinator::now_unix(),
+    );
+    stranded.terminal_id = "term_gone".into();
+    stranded.session = Some(SESSION_A.into());
+    app.quiet.entries.push(stranded);
+    // Bound to the pane, but for another session than it runs now.
+    let mut other = message("mother", "lead", "other", crate::coordinator::now_unix());
+    other.terminal_id = "term_gone_too".into();
+    other.session = Some(SESSION_B.into());
+    other.bound_pane = Some(fixer.clone());
+    app.quiet.entries.push(other);
+
+    // The restore gives every pane a new terminal; the pane's session comes
+    // back from the session file.
+    let new_id = new_fixer_terminal(&mut app);
+    record_session(&mut app, SESSION_A);
+    app.note_restored_quiet();
+    assert_eq!(app.quiet.entries.len(), 1, "{:?}", app.quiet.entries);
+    assert_eq!(app.quiet.entries[0].message.text, "bound");
+    assert_eq!(app.quiet.entries[0].terminal_id, new_id);
+    assert_eq!(pending_count(&app, &fixer), Some(1));
+    let expired: Vec<&str> = app
+        .quiet
+        .written
+        .iter()
+        .filter(|line| line.is_update() && line.outcome == OUTCOME_EXPIRED)
+        .filter_map(|line| line.id.as_deref())
+        .collect();
+    assert_eq!(expired, ["mstranded", "mother"]);
+    let taken = take(&mut app, &fixer);
+    assert_eq!(taken["result"]["taken"], 1, "{taken}");
+}
+
+#[tokio::test]
+async fn fork_smoke_quiet_messages_follow_a_claude_session_chain() {
+    let (mut app, lead, fixer, _rx) = fixture();
+    record_session(&mut app, SESSION_A);
+    send(&mut app, &lead, &fixer, "chained", true, false);
+    app.follow_queued_session(SESSION_A, SESSION_B);
+    assert_eq!(app.quiet.entries[0].session.as_deref(), Some(SESSION_B));
 }

@@ -19,6 +19,16 @@
 //! line `delivered` or `expired`. The store is saved as
 //! `quiet_messages.json` next to `session.json` (restarts, live handoffs).
 //!
+//! A stored message follows its agent, not the terminal: each sync binds
+//! it to its live terminal (by id, else by its agent's session) and records
+//! that terminal's pane (`bound_pane`). Every restore and live handoff gives
+//! each pane a new terminal id; the restore moves a message to the terminal
+//! now in its bound pane when that runs the same session, and drops the
+//! rest (a message whose terminal was gone is not found again by its
+//! session). A pane whose agent reports another session does not inherit
+//! the old session's messages; one that reports their session takes the
+//! ones whose terminal is gone (an agent back in a new terminal).
+//!
 //! Whenever what a pane has pending changes, herdr writes
 //! `<data dir>/pending/<pane id, ':' as '_'>.json` (`{pane_id, count,
 //! senders, oldest_unix}`, atomic) and removes it once nothing is pending,
@@ -98,6 +108,12 @@ pub(crate) struct QuietMessage {
     /// The target agent's native session, to find it again after a restart.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) session: Option<String>,
+    /// The public pane id of the entry's live terminal as last synced
+    /// ([`App::sync_quiet_pending`]); `None` while it has none. Terminal ids
+    /// are new after every restore and live handoff: the restore finds the
+    /// entry's terminal again by this pane ([`App::note_restored_quiet`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) bound_pane: Option<String>,
     pub(crate) expires_unix: u64,
     /// Stored because the target's tab was in do-not-disturb (else the
     /// sender asked for quiet).
@@ -677,6 +693,7 @@ impl App {
                 message,
                 terminal_id: target.terminal_id.clone(),
                 session,
+                bound_pane: None,
                 expires_unix: now_unix + QUIET_TTL_S,
                 dnd,
                 offered_unix: None,
@@ -1038,6 +1055,7 @@ impl App {
                     message: entry.message,
                     terminal_id: entry.terminal_id,
                     session: entry.session,
+                    bound_pane: None,
                     expires_unix: now_unix + QUIET_TTL_S,
                     dnd: true,
                     offered_unix: None,
@@ -1114,18 +1132,178 @@ impl App {
         self.sync_quiet_pending();
     }
 
+    /// Write back what [`Self::sync_quiet_pending`] found for each entry
+    /// (by index): the live terminal it follows (by id, else by its agent's
+    /// session) and that terminal's public pane, or none. Saves on a change.
+    fn bind_quiet_entries(&mut self, bindings: Vec<(usize, Option<(String, String)>)>) {
+        let mut changed = false;
+        for (idx, binding) in bindings {
+            let Some(entry) = self.quiet.entries.get_mut(idx) else {
+                continue;
+            };
+            match binding {
+                Some((terminal_id, pane_id)) => {
+                    if entry.terminal_id != terminal_id {
+                        entry.terminal_id = terminal_id;
+                        changed = true;
+                    }
+                    if entry.bound_pane.as_deref() != Some(pane_id.as_str()) {
+                        entry.bound_pane = Some(pane_id);
+                        changed = true;
+                    }
+                }
+                None => changed |= entry.bound_pane.take().is_some(),
+            }
+        }
+        if changed {
+            self.quiet.save();
+        }
+    }
+
+    /// Fork (session chains): the stored messages for Claude session `from`
+    /// are for `to` now, the newest session of its chain
+    /// ([`Self::follow_queued_session`] calls it).
+    pub(crate) fn follow_quiet_session(&mut self, from: &str, to: &str) {
+        let mut moved = false;
+        for entry in &mut self.quiet.entries {
+            if entry.session.as_deref() == Some(from) {
+                entry.session = Some(to.to_string());
+                moved = true;
+            }
+        }
+        if moved {
+            self.quiet.save();
+        }
+    }
+
+    /// A pane's agent reported its session (`pane.report_agent_session`);
+    /// `before` is what its terminal `terminal_id` reported until now.
+    /// Another session in the pane (not a continuation) does not inherit
+    /// the messages stored for the one before: they leave the terminal and
+    /// wait, unbound, for that session or their expiry. Messages for the
+    /// reported session whose terminal is gone (the agent came back in a
+    /// new one) move to this terminal, with their pending file.
+    /// O(stored entries); nothing while none are stored.
+    pub(crate) fn note_quiet_session_report(&mut self, terminal_id: &str, before: Option<String>) {
+        if self.quiet.is_empty() {
+            return;
+        }
+        let Some(after) = self
+            .state
+            .terminals
+            .get(terminal_id)
+            .and_then(super::coordinator::terminal_session)
+        else {
+            return;
+        };
+        let mut changed = false;
+        if let Some(before) = before.filter(|before| *before != after) {
+            let mut unbound = 0usize;
+            for entry in &mut self.quiet.entries {
+                if entry.terminal_id == terminal_id && entry.session.as_deref() == Some(&before) {
+                    entry.terminal_id.clear();
+                    entry.bound_pane = None;
+                    unbound += 1;
+                }
+            }
+            if unbound > 0 {
+                tracing::info!(
+                    event = "quiet.session_changed",
+                    terminal_id,
+                    count = unbound,
+                    "quiet messages: the pane runs another agent session; its stored messages stay with the old one"
+                );
+                self.quiet.save();
+                changed = true;
+            }
+        }
+        changed |= self.quiet.entries.iter().any(|entry| {
+            entry.session.as_deref() == Some(after.as_str()) && entry.terminal_id != terminal_id
+        });
+        if changed {
+            self.sync_quiet_pending();
+        }
+    }
+
+    /// After a restore or a live handoff every terminal has a new id: each
+    /// stored message moves to the terminal now in the pane it was bound to
+    /// ([`QuietMessage::bound_pane`]) when that terminal runs the same agent
+    /// session (or either is unknown). The rest had no live agent when they
+    /// were saved, or the pane runs another session now: they are dropped
+    /// (`expired` in the log), not found again by their session.
+    fn rebind_restored_quiet(&mut self, now_unix: u64) {
+        let mut moves: Vec<(usize, String)> = Vec::new();
+        let mut stranded: Vec<String> = Vec::new();
+        for (idx, entry) in self.quiet.entries.iter().enumerate() {
+            if self
+                .resolve_terminal_target(&entry.terminal_id)
+                .is_ok_and(|target| target.terminal_id == entry.terminal_id)
+            {
+                continue;
+            }
+            match entry
+                .bound_pane
+                .as_deref()
+                .and_then(|pane| self.restored_quiet_terminal(pane, entry.session.as_deref()))
+            {
+                Some(terminal_id) => moves.push((idx, terminal_id)),
+                None => stranded.push(entry.id().to_string()),
+            }
+        }
+        let moved = !moves.is_empty();
+        for (idx, terminal_id) in moves {
+            if let Some(entry) = self.quiet.entries.get_mut(idx) {
+                entry.terminal_id = terminal_id;
+            }
+        }
+        if !stranded.is_empty() {
+            tracing::info!(
+                event = "quiet.restore_pruned",
+                count = stranded.len(),
+                "quiet messages: dropped stored messages whose agent is gone after the restore"
+            );
+            // Saves.
+            self.quiet.finish(&stranded, OUTCOME_EXPIRED, now_unix);
+        } else if moved {
+            self.quiet.save();
+        }
+    }
+
+    /// The terminal now in the pane with public id `pane` (or one of its
+    /// aliases), when it runs agent session `session` or either is unknown.
+    fn restored_quiet_terminal(&self, pane: &str, session: Option<&str>) -> Option<String> {
+        let (ws_idx, pane_id) = self.parse_pane_id(pane)?;
+        let current = self.public_pane_id(ws_idx, pane_id)?;
+        let target = self.resolve_terminal_target(&current).ok()?;
+        let terminal = self.state.terminals.get(target.terminal_id.as_str())?;
+        match (session, super::coordinator::terminal_session(terminal)) {
+            (Some(wanted), Some(running)) if wanted != running => None,
+            _ => Some(target.terminal_id),
+        }
+    }
+
     /// Rewrite the pending files and the push's counts from the store:
     /// one file per pane with something pending, none for the others.
     /// Bumps the push revision when a count changed.
     pub(crate) fn sync_quiet_pending(&mut self) {
         let mut panes: BTreeMap<String, (PendingFile, String, Vec<String>)> = BTreeMap::new();
-        let mut order: Vec<&QuietMessage> = self.quiet.entries.iter().collect();
-        order.sort_by_key(|entry| entry.message.unix);
-        for entry in order {
-            let Some(target) = self.quiet_target(entry) else {
-                continue;
-            };
-            let Some(pane_id) = self.public_pane_id(target.ws_idx, target.pane_id) else {
+        let mut order: Vec<(usize, &QuietMessage)> =
+            self.quiet.entries.iter().enumerate().collect();
+        order.sort_by_key(|(_, entry)| entry.message.unix);
+        // Each entry's live terminal and pane, written back below.
+        let mut bindings: Vec<(usize, Option<(String, String)>)> = Vec::with_capacity(order.len());
+        for (idx, entry) in order {
+            let found = self.quiet_target(entry).and_then(|target| {
+                let pane_id = self.public_pane_id(target.ws_idx, target.pane_id)?;
+                Some((target, pane_id))
+            });
+            bindings.push((
+                idx,
+                found
+                    .as_ref()
+                    .map(|(target, pane_id)| (target.terminal_id.clone(), pane_id.clone())),
+            ));
+            let Some((target, pane_id)) = found else {
                 continue;
             };
             let tab_id = self
@@ -1164,6 +1342,7 @@ impl App {
                 file.senders.push(sender);
             }
         }
+        self.bind_quiet_entries(bindings);
         let view: Vec<PendingPane> = panes
             .values()
             .map(|(file, tab_id, _)| PendingPane {
@@ -1250,7 +1429,9 @@ impl App {
     /// files are rewritten, and stored messages or do-not-disturb tabs
     /// reach clients on the first pass.
     pub(crate) fn note_restored_quiet(&mut self) {
-        self.quiet.prune_expired(crate::coordinator::now_unix());
+        let now_unix = crate::coordinator::now_unix();
+        self.quiet.prune_expired(now_unix);
+        self.rebind_restored_quiet(now_unix);
         self.sync_quiet_pending();
         let any_dnd = self
             .state
