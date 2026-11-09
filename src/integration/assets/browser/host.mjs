@@ -14,7 +14,7 @@ import { createRequire } from 'node:module';
 import readline from 'node:readline';
 import fs from 'node:fs';
 import { EXTRACT_SOURCE, LINKS_SOURCE } from './extract.mjs';
-import { Overlay, Companion, NUDGE_URL, dismissPanes, captureWithQuietRetry, CaptureLane, laneShot, shotParams, SELECT_BUDGET_MS, describe, probePages, ControlPage, ViewWatches, isFurnitureUrl, VIEW_MARKER, CompanionDialog, reconcileDialogs, pruneAnswered, DIALOG_BINDING } from './activity.mjs';
+import { Overlay, Companion, NUDGE_URL, dismissPanes, captureWithQuietRetry, CaptureLane, laneShot, shotParams, firstShot, SELECT_BUDGET_MS, describe, probePages, ControlPage, ViewWatches, isFurnitureUrl, VIEW_MARKER, CompanionDialog, reconcileDialogs, pruneAnswered, DIALOG_BINDING } from './activity.mjs';
 import { pathToFileURL } from 'node:url';
 import nodePath from 'node:path';
 // the act's change probe and timeout message (on a line of their own)
@@ -830,25 +830,18 @@ const ops = {
     };
     let element = null;
     try {
-      if (scope) element = await elementBox();
-      let clip = element;
-      if (!clip && args.full) {
-        const metrics = await state.session.send('Page.getLayoutMetrics');
-        const content = metrics.cssContentSize || metrics.contentSize;
-        clip = { x: 0, y: 0, width: content.width, height: content.height };
-      }
-      const shot = capture(shotParams({ type, quality, clip, beyond: Boolean(clip) }));
-      shots.push(shot);
-      // A background tab whose renderer stalled: select it quietly and wait
-      // once more for the same capture, inside the op's deadline; an element
-      // capture is not retried.
-      const answer = await captureWithQuietRetry({
-        capture: (timeout) => shot.wait(timeout),
+      const answer = await firstShot({
+        send: (method, params) => state.session.send(method, params),
+        lane: state.captures,
+        type,
+        quality,
+        element: scope ? async () => (element = await elementBox()) : null,
+        full: Boolean(args.full),
         select: () => quietSelect(state),
         log: (text) => log('debug', text),
         deadlineAt,
         stallMs: SCREENSHOT_STALL_MS,
-        scoped: Boolean(scope),
+        shots,
       });
       buffer = Buffer.from(answer.data, 'base64');
     } catch (err) {

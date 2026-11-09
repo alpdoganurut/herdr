@@ -371,6 +371,34 @@ export function shotParams({ type, quality, clip = null, beyond = false }) {
   return params;
 }
 
+/** A screenshot op's first capture, through the page's lane: the element's box
+ *  (`element()`, measured first), the whole document (`full`, measured with
+ *  Page.getLayoutMetrics) or the viewport (neither: no clip), then
+ *  captureWithQuietRetry. `send` is the host's CDP session, `select` the quiet
+ *  select; every laneShot made goes into `shots` (the op abandons them when it
+ *  is over). Answers Chromium's `{ data }`. */
+export async function firstShot({ send, lane, type, quality, element = null, full = false, select, log = () => {}, deadlineAt, stallMs, shots }) {
+  let clip = element ? await element() : null;
+  if (!clip && full) {
+    const metrics = await send('Page.getLayoutMetrics');
+    const content = metrics.cssContentSize || metrics.contentSize;
+    clip = { x: 0, y: 0, width: content.width, height: content.height };
+  }
+  const shot = laneShot(lane, () => send('Page.captureScreenshot', shotParams({ type, quality, clip, beyond: Boolean(clip) })), deadlineAt);
+  shots.push(shot);
+  // A background tab whose renderer stalled: select it quietly and wait
+  // once more for the same capture, inside the op's deadline; an element
+  // capture is not retried.
+  return captureWithQuietRetry({
+    capture: (timeout) => shot.wait(timeout),
+    select,
+    log,
+    deadlineAt,
+    stallMs,
+    scoped: Boolean(element),
+  });
+}
+
 /** Panes that are gone: the overlay of every page a pane's directive touched
  *  (`state.paneKey`, recorded by the host when the directive arrived) goes
  *  now — whatever the companion's state, grouped or not. Answers how many. */

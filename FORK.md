@@ -73,6 +73,7 @@ apps/companion/src/views.js
 apps/companion/test/context-menu.test.js
 apps/companion/test/dialogs.test.js
 apps/companion/test/dock.test.js
+apps/companion/test/e2e-capture-race.mjs
 apps/companion/test/e2e-launcher.mjs
 apps/companion/test/e2e-launcher.sh
 apps/companion/test/e2e-placements.mjs
