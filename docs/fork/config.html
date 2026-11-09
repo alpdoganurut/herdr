@@ -816,7 +816,7 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
       <div class="s"><span class="badge cfg">config only</span></div>
     </div>
     <div class="row">
-      <div class="f"><h3>Perf readout</h3><p>A small corner readout, e.g. <code>58 fps · 4.1 ms · srv 3.2 ms</code>: this client's frames per second and slowest frame in the last second, the server's average render time and its stall count once a loop stalls. It polls <code>server.perf_summary</code> once a second and does nothing while off; a reload applies it. <code>herdr server perf</code> prints the server's counters either way.</p></div>
+      <div class="f"><h3>Perf readout</h3><p>A small corner readout, e.g. <code>58 fps · 4.1 ms · srv 3.2 ms</code>: this client's frames per second and slowest frame in the last second, the server's average render time and its stall count once a loop stalls. It polls <code>server.perf_summary</code> once a second and does nothing while off; a reload applies it. While it is on, pane updates that touch its bottom-right corner fall back to a full redraw (a prompt or input box on the bottom row does this often) and its own repaint adds about 1 frame/s to the fps figure: leave it off when you are not looking. <code>herdr server perf</code> prints the server's counters either way.</p></div>
       <div class="d"><span class="pill off">off</span></div>
       <div class="k"><code>[ui] perf_readout = true</code></div>
       <div class="s"><span class="badge cfg">config only</span></div>

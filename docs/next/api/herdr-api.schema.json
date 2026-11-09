@@ -22883,7 +22883,7 @@
           "type": "object"
         },
         "ServerPerfClientInfo": {
-          "description": "Frames queued to one attached client.",
+          "description": "Frames queued to one attached client. Rows cover the clients attached\nnow: a client that left keeps its frames only in `frames_sent` /\n`frame_bytes`, and a client that overflowed into the shared row and later\ngot its own slot has its earlier frames in the shared row.",
           "properties": {
             "bytes": {
               "format": "uint64",
@@ -22954,6 +22954,7 @@
         "ServerPerfSummaryInfo": {
           "properties": {
             "clients": {
+              "description": "The currently attached clients (see [`ServerPerfClientInfo`]).",
               "items": {
                 "$ref": "#/schemas/success_response/$defs/ServerPerfClientInfo"
               },

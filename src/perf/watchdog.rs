@@ -106,7 +106,15 @@ impl<'a> Watchdog<'a> {
                 continue;
             }
             if busy_since == watch.handled_since {
-                if watch.reported && !jumped {
+                if watch.reported && jumped {
+                    // A reported stall still open across a jump: close it at
+                    // the length seen before the pause, which never counts.
+                    report(StallEvent::Ended {
+                        loop_name: heartbeat.name(),
+                        stalled_ms: watch.longest_ms,
+                    });
+                    watch.reported = false;
+                } else if watch.reported {
                     watch.longest_ms = watch.longest_ms.max(busy_ms);
                     heartbeat.longest_stall_ms.record(watch.longest_ms);
                 }
@@ -179,6 +187,10 @@ pub(crate) fn start(role: Role) {
     });
     if let Err(error) = spawned {
         STARTED.store(false, Ordering::Relaxed);
-        tracing::warn!(%error, "perf watchdog thread could not start; stalls go unreported");
+        tracing::warn!(
+            event = "perf.watchdog_start_failed",
+            %error,
+            "perf watchdog thread could not start; stalls go unreported"
+        );
     }
 }

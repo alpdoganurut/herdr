@@ -489,6 +489,9 @@ impl HeadlessServer {
 
             // If shutdown has been initiated, complete it and exit.
             if self.shutting_down {
+                // Fork (perf watch): shutdown, the session save and browser
+                // stop are not a stalled loop.
+                crate::perf::server::LOOP.end();
                 self.complete_shutdown().await?;
                 break;
             }
@@ -711,6 +714,7 @@ impl HeadlessServer {
                     _ = self.app.render_notify.notified() => LoopEvent::RenderRequested,
                 }
             };
+            crate::perf::server::LOOP.begin(); // fork (perf watch): dispatching the event is busy
 
             if self.should_quit.load(Ordering::Acquire) || self.host_shutdown_requested() {
                 match event {
@@ -3064,7 +3068,10 @@ impl HeadlessServer {
 
         let metadata_expired = self.app.expire_due_metadata(Instant::now());
         if let api::schema::Method::ServerLiveHandoff(params) = &msg.request.method {
+            // Fork (perf watch): handing the panes over is not a stalled loop.
+            crate::perf::server::LOOP.end();
             let handoff_result = self.perform_live_handoff(params.clone());
+            crate::perf::server::LOOP.begin();
             let handoff_succeeded = handoff_result.is_ok();
             let response = match handoff_result {
                 Ok(()) => serde_json::to_string(&api::schema::SuccessResponse {

@@ -2850,6 +2850,38 @@ async fn fork_smoke_perf_summary_answers_a_client_shell_without_the_command_lane
     );
 }
 
+/// Fork (perf watch): the real server loop leaves its busy period before it
+/// shuts down, so the shutdown, session save and browser stop that follow a
+/// stop are never logged as a stall.
+#[tokio::test]
+async fn fork_smoke_perf_the_server_loop_is_not_busy_through_shutdown() {
+    let mut server = test_headless_server();
+    let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+    server.app.api_rx = receiver;
+    let (respond_to, responses) = std::sync::mpsc::channel();
+    sender
+        .send(api::ApiRequestMessage {
+            request: Request {
+                id: "stop".into(),
+                method: Method::ServerStop(api::schema::EmptyParams::default()),
+            },
+            respond_to,
+            response_write_complete: None,
+            peer_pid: None,
+        })
+        .expect("queue the stop");
+    tokio::time::timeout(std::time::Duration::from_secs(5), server.run())
+        .await
+        .expect("a queued stop ends the loop")
+        .expect("the loop shuts down cleanly");
+    assert!(responses.try_recv().is_ok(), "the stop was answered");
+    assert_eq!(
+        crate::perf::server::LOOP.busy_since_ns(),
+        0,
+        "the loop ended its busy period before shutting down"
+    );
+}
+
 #[path = "fork_smoke/coordinator.rs"]
 mod coordinator;
 

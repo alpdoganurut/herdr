@@ -192,3 +192,54 @@ fn fork_smoke_perf_readout_a_failed_poll_raises_no_notice() {
         1
     );
 }
+
+#[test]
+fn fork_smoke_perf_readout_polls_again_after_the_projection_resets() {
+    let mut state = state_with(true, advertised());
+    let start = Instant::now();
+    let first = perf_polls(&tick(&mut state, start));
+    assert_eq!(first.len(), 1, "a poll is in flight");
+    let (_, _) = state.handle_endpoint_result(
+        "boot-1",
+        &first[0],
+        Ok(ResponseResult::ServerPerfSummary {
+            perf: perf(10, 30_000, 2),
+        }),
+    );
+    let second = perf_polls(&tick(&mut state, start + Duration::from_secs(1)));
+    assert_eq!(second.len(), 1);
+    assert!(bottom_row(&mut state).contains("2 stalls"));
+
+    // A reconnect drops the request in flight (it never answers) and the old
+    // server's numbers; the readout polls the new one at the next second.
+    state.reset_endpoint_projection();
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+    state.set_endpoint_methods(advertised());
+    let third = perf_polls(&tick(&mut state, start + Duration::from_secs(2)));
+    assert_eq!(third.len(), 1, "polls again after the reset");
+    assert!(!bottom_row(&mut state).contains("stall"), "no old numbers");
+}
+
+#[test]
+fn fork_smoke_perf_a_patch_that_writes_nothing_is_not_a_presented_frame() {
+    let mut state = state_with(false, advertised());
+    let mut client = crate::client::state::ClientState::test_new();
+    let frame = state.compose(COLS, ROWS).expect("composed frame");
+    let cursor = frame.frame.cursor.clone();
+    let mut output = Vec::new();
+    assert!(client.try_present_frame_to(&mut output, frame));
+    let presented = crate::perf::client::FRAMES_PRESENTED.get();
+
+    // A metadata-only patch (no rows, same cursor) encodes to no bytes.
+    let patch = crate::client::shell::ClientComposedSurfacePatch {
+        rows: Vec::new(),
+        cursor,
+    };
+    assert!(client.present_surface_patch(patch).expect("presented"));
+    assert_eq!(
+        crate::perf::client::FRAMES_PRESENTED.get(),
+        presented,
+        "nothing was written, so no frame is counted"
+    );
+}

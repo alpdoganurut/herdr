@@ -138,6 +138,26 @@ def find_per_byte_perf_calls(paths) -> list[str]:
     return violations
 
 
+def perf_heartbeat_order_violations(server: str, client: str) -> list[str]:
+    violations: list[str] = []
+    select = server.find("tokio::select!")
+    after = server.find("};", select)
+    following = server[after + 2 :].lstrip().splitlines()[0] if select != -1 and after != -1 else ""
+    if "perf::server::LOOP.begin()" not in following:
+        violations.append("server: LOOP.begin() must directly follow the event wait")
+    for call in ("self.complete_shutdown().await", "self.perform_live_handoff("):
+        index = server.find(call)
+        # The call's own line and the one above it.
+        lines = server[:index].splitlines()[-2:] if index != -1 else []
+        if not any("perf::server::LOOP.end()" in line for line in lines):
+            violations.append(f"server: LOOP.end() must directly precede {call}")
+    last_select = client.rfind("tokio::select!")
+    popup = client.find("tick_popup_pending", last_select)
+    if last_select == -1 or "perf::client::LOOP.begin()" not in client[last_select:popup]:
+        violations.append("client: LOOP.begin() must follow the event wait, before tick_popup_pending")
+    return violations
+
+
 def blank_non_newlines(chars: list[str], start: int, end: int) -> None:
     for index in range(start, end):
         if chars[index] != "\n":
@@ -362,6 +382,41 @@ pub(crate) fn snapshot() -> Vec<u64> { vec![1] }
         self.assertEqual(
             [m.group(0) for m in PERF_CALL.finditer(production_code(allowed))],
             ["perf::server::SYNC_HOLDS.inc()"],
+        )
+
+    def test_loop_heartbeats_mark_dispatch_busy_and_skip_shutdown_and_handoff(self) -> None:
+        # Fork (perf watch): each loop is busy from the moment its wait returns
+        # (dispatching the event counts), and the server's shutdown and live
+        # handoff are not watched as a stall.
+        server = production_code((PROJECT_ROOT / "src" / "server" / "headless.rs").read_text(encoding="utf-8"))
+        client = production_code((PROJECT_ROOT / "src" / "client" / "mod.rs").read_text(encoding="utf-8"))
+        self.assertEqual(perf_heartbeat_order_violations(server, client), [])
+
+    def test_loop_heartbeat_order_scanner_catches_a_missing_mark(self) -> None:
+        server = """
+loop {
+    crate::perf::server::LOOP.begin();
+    if self.shutting_down {
+        self.complete_shutdown().await?;
+    }
+    crate::perf::server::LOOP.end();
+    let event = {
+        tokio::select! {
+            _ = a => 1,
+        }
+    };
+    handle(event);
+}
+let handoff_result = self.perform_live_handoff(params.clone());
+"""
+        client = """
+let event = tokio::select! { _ = a => 1, };
+let now = Instant::now();
+shell.tick_popup_pending(now);
+"""
+        self.assertEqual(
+            len(perf_heartbeat_order_violations(server, client)),
+            4,
         )
 
 

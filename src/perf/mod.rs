@@ -34,6 +34,7 @@ pub(crate) const CLIENT_SLOTS: usize = 8;
 
 static EPOCH: OnceLock<Instant> = OnceLock::new();
 static STARTED_UNIX_MS: AtomicU64 = AtomicU64::new(0);
+/// Reset seqlock: odd while a reset zeroes the counters; generation = value / 2.
 static GENERATION: AtomicU64 = AtomicU64::new(0);
 static RESET_AT_NS: AtomicU64 = AtomicU64::new(0);
 
@@ -412,6 +413,23 @@ pub(crate) struct Snapshot {
 /// Reads the server counters (allocates; only for the API, never per frame).
 pub(crate) fn snapshot() -> Snapshot {
     mark_process_start();
+    // A reset between two reads would mix old and zeroed counters: read
+    // again until no reset ran meanwhile (seqlock on GENERATION).
+    loop {
+        let before = GENERATION.load(Ordering::Acquire);
+        if !before.is_multiple_of(2) {
+            std::thread::yield_now();
+            continue;
+        }
+        let snapshot = read_snapshot(before / 2);
+        std::sync::atomic::fence(Ordering::Acquire);
+        if GENERATION.load(Ordering::Relaxed) == before {
+            return snapshot;
+        }
+    }
+}
+
+fn read_snapshot(generation: u64) -> Snapshot {
     let now = now_ns();
     let full = &server::FULL_RENDERS;
     let mut clients: Vec<ClientFanout> = server::CLIENTS
@@ -437,7 +455,7 @@ pub(crate) fn snapshot() -> Snapshot {
     Snapshot {
         pid: std::process::id(),
         started_unix_ms: STARTED_UNIX_MS.load(Ordering::Relaxed),
-        generation: GENERATION.load(Ordering::Relaxed),
+        generation,
         window_ms: now.saturating_sub(RESET_AT_NS.load(Ordering::Relaxed)) / 1_000_000,
         frames_sent: server::FRAMES_SENT.get(),
         frame_bytes: server::FRAME_BYTES.get(),
@@ -457,6 +475,7 @@ pub(crate) fn snapshot() -> Snapshot {
 /// Zeroes the server counters and starts a new generation. Heartbeats keep
 /// their busy state; only their stall counts reset.
 pub(crate) fn reset() {
+    let token = begin_reset();
     server::FRAMES_SENT.reset();
     server::FRAME_BYTES.reset();
     server::FRAMES_DEFERRED.reset();
@@ -474,5 +493,34 @@ pub(crate) fn reset() {
     }
     server::LOOP.reset_counts();
     RESET_AT_NS.store(now_ns(), Ordering::Relaxed);
-    GENERATION.fetch_add(1, Ordering::Relaxed);
+    finish_reset(token);
+}
+
+/// Marks a reset in progress (odd generation); one reset at a time.
+fn begin_reset() -> u64 {
+    loop {
+        let current = GENERATION.load(Ordering::Relaxed);
+        if current.is_multiple_of(2)
+            && GENERATION
+                .compare_exchange_weak(current, current + 1, Ordering::Acquire, Ordering::Relaxed)
+                .is_ok()
+        {
+            return current;
+        }
+        std::thread::yield_now();
+    }
+}
+
+fn finish_reset(token: u64) {
+    GENERATION.store(token + 2, Ordering::Release);
+}
+
+#[cfg(test)]
+pub(crate) fn begin_reset_for_test() -> u64 {
+    begin_reset()
+}
+
+#[cfg(test)]
+pub(crate) fn finish_reset_for_test(token: u64) {
+    finish_reset(token);
 }

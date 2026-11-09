@@ -843,6 +843,7 @@ async fn run_client_loop(
                 ev = event_rx.recv() => ev.unwrap_or(ClientLoopEvent::Timer),
             }
         };
+        crate::perf::client::LOOP.begin(); // fork (perf watch): handling the event is busy
         let now = std::time::Instant::now();
         if let Some(shell) = state.shell.as_mut() {
             shell.tick_popup_pending(now);

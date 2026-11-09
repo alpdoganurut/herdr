@@ -363,8 +363,9 @@ impl ClientState {
             let mut stdout = io::stdout();
             stdout.write_all(&encoded.bytes)?;
             stdout.flush()?;
+            // Fork (perf watch): only a patch that wrote something is a frame.
+            crate::perf::record_client_frame(crate::perf::now_ns().saturating_sub(perf_started));
         }
-        crate::perf::record_client_frame(crate::perf::now_ns().saturating_sub(perf_started)); // fork (perf watch)
         crate::render_prof::duration_since("client_surface_patch.write", write_started);
         let committed = self.blit_encoder.commit_patch(&rows, patch.cursor, encoded);
         crate::render_prof::event(if committed {

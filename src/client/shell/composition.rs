@@ -1234,11 +1234,8 @@ impl ClientShellState {
         // Fork (perf watch): the `[ui] perf_readout` corner, last on top.
         // Off: no work.
         if self.config.perf_readout {
-            let cursor = frame.cursor.clone();
-            let mut composed = frame.to_ratatui_buffer()?;
-            if let Some(rect) = self.render_perf_readout(&mut composed) {
+            if let Some(rect) = self.paint_perf_readout(&mut frame) {
                 occlusion.cover(rect);
-                frame.replace_from_ratatui_buffer_preserving_effects(&composed, cursor);
             }
         } else {
             self.perf_readout.drawn = None;

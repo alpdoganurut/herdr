@@ -1916,6 +1916,8 @@ impl ClientShellState {
         self.last_composed_at = None;
         self.selection_repaint_deadline = None;
         self.pending_requests.clear();
+        // Fork (perf watch): the readout's poll in flight went with them.
+        self.perf_readout.forget_server();
         self.pane_scroll_in_flight.clear();
         self.pane_scroll_queued.clear();
         self.pane_scroll_targets.clear();

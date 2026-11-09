@@ -16,7 +16,6 @@
 
 use std::time::{Duration, Instant};
 
-use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 
@@ -65,6 +64,11 @@ pub(crate) struct PerfReadoutState {
     /// ` · srv N ms` / ` · N stalls`, rebuilt on each answer.
     server_text: String,
     server_sample: Option<ServerSample>,
+    /// ` client_text server_text `, rebuilt only when either changes, so
+    /// compose formats nothing.
+    padded: String,
+    /// `padded`'s width in cells.
+    padded_width: u16,
     loading: bool,
     /// Polls sent (tests read it).
     pub(super) polls: u64,
@@ -73,8 +77,24 @@ pub(crate) struct PerfReadoutState {
 }
 
 impl PerfReadoutState {
-    fn text(&self) -> Option<String> {
-        (!self.client_text.is_empty()).then(|| format!("{}{}", self.client_text, self.server_text))
+    fn rebuild_padded(&mut self) {
+        self.padded.clear();
+        if !self.client_text.is_empty() {
+            self.padded.push(' ');
+            self.padded.push_str(&self.client_text);
+            self.padded.push_str(&self.server_text);
+            self.padded.push(' ');
+        }
+        self.padded_width = u16::try_from(self.padded.chars().count()).unwrap_or(u16::MAX);
+    }
+
+    /// A new connection (or a reset projection): the poll in flight never
+    /// answers and the old server's numbers do not apply.
+    pub(super) fn forget_server(&mut self) {
+        self.loading = false;
+        self.server_sample = None;
+        self.server_text.clear();
+        self.rebuild_padded();
     }
 }
 
@@ -150,6 +170,7 @@ impl ClientShellState {
         self.perf_readout.last_frames = frames;
         if text != self.perf_readout.client_text {
             self.perf_readout.client_text = text;
+            self.perf_readout.rebuild_padded();
             outcome.repaint = true;
         }
         self.queue_perf_summary(outcome);
@@ -195,38 +216,46 @@ impl ClientShellState {
         self.perf_readout.server_sample = Some(ServerSample::of(&perf));
         let changed = text != self.perf_readout.server_text;
         self.perf_readout.server_text = text;
+        self.perf_readout.rebuild_padded();
         (
             changed && !self.perf_readout.client_text.is_empty(),
             Vec::new(),
         )
     }
 
-    /// Draws the readout into the bottom-right corner of `buffer`; returns
-    /// where (None while off or before the first second).
-    pub(super) fn render_perf_readout(&mut self, buffer: &mut Buffer) -> Option<Rect> {
+    /// Writes the readout straight into the bottom-right cells of `frame`;
+    /// returns where (None while off or before the first second). No buffer
+    /// round trip and no formatting: the text is built in the tick.
+    pub(super) fn paint_perf_readout(
+        &mut self,
+        frame: &mut crate::protocol::FrameData,
+    ) -> Option<Rect> {
         self.perf_readout.drawn = None;
-        if !self.config.perf_readout {
+        let state = &self.perf_readout;
+        let width = state.padded_width;
+        if !self.config.perf_readout
+            || state.padded.is_empty()
+            || frame.width < width
+            || frame.height == 0
+        {
             return None;
         }
-        let text = format!(" {} ", self.perf_readout.text()?);
-        let area = buffer.area;
-        let width = u16::try_from(text.chars().count()).unwrap_or(u16::MAX);
-        if area.width < width || area.height == 0 {
-            return None;
-        }
-        let rect = Rect::new(
-            area.right() - width,
-            area.bottom().saturating_sub(1),
-            width,
-            1,
-        );
+        let rect = Rect::new(frame.width - width, frame.height - 1, width, 1);
         let palette = &self.config.palette;
-        buffer.set_string(
-            rect.x,
-            rect.y,
-            &text,
-            Style::default().fg(palette.overlay0).bg(palette.panel_bg),
-        );
+        let mut styled = ratatui::buffer::Cell::default();
+        styled.set_style(Style::default().fg(palette.overlay0).bg(palette.panel_bg));
+        let style = crate::protocol::CellData::from_ratatui_cell(&styled);
+        let row = usize::from(rect.y) * usize::from(frame.width);
+        for (offset, ch) in state.padded.chars().enumerate() {
+            let cell = frame.cells.get_mut(row + usize::from(rect.x) + offset)?;
+            cell.symbol.clear();
+            cell.symbol.push(ch);
+            cell.fg = style.fg;
+            cell.bg = style.bg;
+            cell.modifier = style.modifier;
+            cell.skip = false;
+            cell.hyperlink = None;
+        }
         self.perf_readout.drawn = Some(rect);
         Some(rect)
     }

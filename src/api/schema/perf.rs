@@ -39,7 +39,10 @@ pub struct ServerPerfLoopInfo {
     pub busy_ms: u64,
 }
 
-/// Frames queued to one attached client.
+/// Frames queued to one attached client. Rows cover the clients attached
+/// now: a client that left keeps its frames only in `frames_sent` /
+/// `frame_bytes`, and a client that overflowed into the shared row and later
+/// got its own slot has its earlier frames in the shared row.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ServerPerfClientInfo {
     /// The server's connection id; absent for the shared bucket of clients
@@ -76,6 +79,7 @@ pub struct ServerPerfSummaryInfo {
     /// Holds released by their deadline rather than the frame's end.
     pub sync_hold_timeouts: u64,
     pub loops: Vec<ServerPerfLoopInfo>,
+    /// The currently attached clients (see [`ServerPerfClientInfo`]).
     pub clients: Vec<ServerPerfClientInfo>,
 }
 

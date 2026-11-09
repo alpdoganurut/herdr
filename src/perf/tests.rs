@@ -163,6 +163,45 @@ fn fork_smoke_perf_a_wall_clock_jump_drops_the_open_busy_period() {
 }
 
 #[test]
+fn fork_smoke_perf_a_reported_stall_open_across_a_jump_ends_at_its_pre_jump_length() {
+    let heartbeat = Heartbeat::new("test_loop", 250);
+    let heartbeats = [&heartbeat];
+    let mut watchdog = Watchdog::new(&heartbeats);
+
+    heartbeat.begin_at(1_000 * MS);
+    let events = poll(&mut watchdog, 1_000, 1_400);
+    assert_eq!(stalled(&events), vec![300]);
+
+    // Still busy when the machine sleeps for an hour (wall clock only).
+    let hour = 3_600_000;
+    let mut events = Vec::new();
+    watchdog.check(1_500 * MS, WALL0 + (hour + 1_500) * MS, |event| {
+        events.push(event)
+    });
+    assert_eq!(
+        events,
+        vec![StallEvent::Ended {
+            loop_name: "test_loop",
+            stalled_ms: 400
+        }]
+    );
+    // The same period is neither reported again nor lengthened by the pause,
+    // and its real end reports nothing more.
+    for at in (1_600..=5_000).step_by(100) {
+        watchdog.check(at * MS, WALL0 + (hour + at) * MS, |event| {
+            events.push(event)
+        });
+    }
+    heartbeat.end();
+    watchdog.check(5_100 * MS, WALL0 + (hour + 5_100) * MS, |event| {
+        events.push(event)
+    });
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(heartbeat.stalls.get(), 1);
+    assert_eq!(heartbeat.longest_stall_ms.get(), 400);
+}
+
+#[test]
 fn fork_smoke_perf_a_paused_watchdog_drops_the_open_busy_period() {
     // Suspend on a clock that keeps counting in sleep: both clocks jump by
     // the same hour, but the watchdog itself did not run in between.
@@ -257,6 +296,34 @@ fn fork_smoke_perf_frames_are_counted_per_client_and_a_reset_starts_a_generation
     assert_eq!(after.generation, before.generation + 1);
     assert_eq!(after.pid, before.pid);
     assert_eq!(after.started_unix_ms, before.started_unix_ms);
+    assert_eq!((after.frames_sent, after.frame_bytes), (0, 0));
+}
+
+#[test]
+fn fork_smoke_perf_a_snapshot_never_reads_a_half_done_reset() {
+    use super::{begin_reset_for_test, finish_reset_for_test, record_frame_sent, server, snapshot};
+
+    record_frame_sent(3, 100);
+    let before = snapshot().generation;
+    // A reset is part way through: one counter zeroed, the next not yet.
+    let token = begin_reset_for_test();
+    server::FRAMES_SENT.reset();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let _ = tx.send(snapshot());
+    });
+    assert!(
+        rx.recv_timeout(std::time::Duration::from_millis(100))
+            .is_err(),
+        "a snapshot waits for the reset to finish"
+    );
+    server::FRAME_BYTES.reset();
+    finish_reset_for_test(token);
+    let after = rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("the snapshot finishes once the reset does");
+    reader.join().expect("reader thread");
+    assert_eq!(after.generation, before + 1);
     assert_eq!((after.frames_sent, after.frame_bytes), (0, 0));
 }
 
