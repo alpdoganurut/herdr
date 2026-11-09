@@ -259,3 +259,63 @@ fn fork_smoke_perf_frames_are_counted_per_client_and_a_reset_starts_a_generation
     assert_eq!(after.started_unix_ms, before.started_unix_ms);
     assert_eq!((after.frames_sent, after.frame_bytes), (0, 0));
 }
+
+/// Manual: what each hot-path touch costs (`cargo test --release --bin herdr
+/// perf_hot_path_cost_profile -- --ignored --nocapture`).
+#[test]
+#[ignore = "manual perf counter cost profile"]
+fn perf_hot_path_cost_profile() {
+    use std::hint::black_box;
+    use std::time::Instant;
+    const N: u64 = 2_000_000;
+    let heartbeat = Heartbeat::new("bench", 250);
+    let time = |label: &str, mut op: Box<dyn FnMut(u64)>| {
+        for i in 0..N / 10 {
+            op(i);
+        }
+        let started = Instant::now();
+        for i in 0..N {
+            op(i);
+        }
+        let ns = started.elapsed().as_nanos() as f64 / N as f64;
+        println!("{label}: {ns:.1} ns/op");
+    };
+    time(
+        "loop heartbeat begin+end (one server/client loop iteration)",
+        Box::new(|_| {
+            heartbeat.begin();
+            heartbeat.end();
+        }),
+    );
+    time(
+        "loop heartbeat begin while already busy (a `continue`)",
+        Box::new(|_| {
+            heartbeat.begin();
+        }),
+    );
+    time(
+        "full render timing guard (one full render pass)",
+        Box::new(|_| {
+            drop(black_box(super::server::FULL_RENDERS.start()));
+        }),
+    );
+    time(
+        "record_frame_sent, 2 clients (one sent frame)",
+        Box::new(|i| super::record_frame_sent(black_box(i & 1), 2048)),
+    );
+    time(
+        "record_frame_sent, 8 clients (one sent frame)",
+        Box::new(|i| super::record_frame_sent(black_box(i & 7), 2048)),
+    );
+    time(
+        "client frame: now_ns + record_client_frame (one presented frame)",
+        Box::new(|_| {
+            let started = super::now_ns();
+            super::record_client_frame(super::now_ns().saturating_sub(started));
+        }),
+    );
+    time(
+        "counter inc (retained render / fallback / sync hold)",
+        Box::new(|_| super::server::RETAINED_RENDERS.inc()),
+    );
+}
