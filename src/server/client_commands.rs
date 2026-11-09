@@ -393,6 +393,11 @@ mod tests {
             actual.remove("browser.placement.set").as_deref(),
             Some("1c26ddec75fa72dead38119465c337fb90fdc2893280f7422536d20feabde82d")
         );
+        // Fork (perf watch): ServerPerfSummaryParams { reset? }.
+        assert_eq!(
+            actual.remove("server.perf_summary").as_deref(),
+            Some("1788c37770b755373d6ede08bb0f190723cdade7108852cedf9bf6d633ce7cc0")
+        );
         assert_eq!(
             actual.remove("coordinator.get").as_deref(),
             Some("d6ec446e6d7ee38199feb4f9c48198613e9f339a534012bde7160fb07a63eaa8")
@@ -549,8 +554,9 @@ mod tests {
             crate::api::schema::team::method::CONTEXT
         ));
         // Fork (companion launcher): browser.companion is the 101st,
-        // browser.placement.set the 102nd.
-        assert_eq!(supported_client_shell_method_names().len(), 102);
+        // browser.placement.set the 102nd; perf watch: server.perf_summary
+        // the 103rd.
+        assert_eq!(supported_client_shell_method_names().len(), 103);
     }
 
     #[test]

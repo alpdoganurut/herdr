@@ -38,6 +38,7 @@ pub(crate) mod projection;
 mod protocol_guard;
 mod server;
 mod server_not_running;
+mod server_perf;
 mod spec;
 mod status;
 pub(crate) mod tab;

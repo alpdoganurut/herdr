@@ -2792,6 +2792,64 @@ async fn fork_smoke_a_dnd_tab_stores_messages_quietly_and_the_claude_hook_inject
     let _ = fs::remove_dir_all(&dir);
 }
 
+/// Fork (perf watch): a client shell's `server.perf_summary` poll is
+/// answered at once from the process counters, even while the client's
+/// command lane is busy: no response thread, no foreground promotion and no
+/// render, so the readout's 1 s poll does not perturb what it measures.
+#[tokio::test]
+async fn fork_smoke_perf_summary_answers_a_client_shell_without_the_command_lane() {
+    let mut server = test_headless_server();
+    let (first, _first_render) = connect_test_shell(&mut server, 9091, 80, 23);
+    let (_second, _second_render) = connect_test_shell(&mut server, 9092, 80, 23);
+    server.promote_client_to_foreground(9092);
+    server
+        .clients
+        .get_mut(&9091)
+        .expect("client")
+        .shell_endpoint_command_in_flight = true;
+    crate::perf::record_frame_sent(9091, 64);
+
+    let boot_id = server.client_shell_boot_id.clone();
+    let render = server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
+        client_id: 9091,
+        boot_id,
+        request: Box::new(Request {
+            id: "client-shell:perf".into(),
+            method: Method::ServerPerfSummary(api::schema::ServerPerfSummaryParams::default()),
+        }),
+    });
+    assert!(!render, "a perf poll never asks for a render");
+    // The writer queue drains on its own thread; skip the attach messages.
+    let (request_id, data) = loop {
+        let bytes = first
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("answered");
+        if let ServerMessage::ClientShellEndpointResponseChunk {
+            request_id, data, ..
+        } = read_server_message(bytes)
+        {
+            break (request_id, data);
+        }
+    };
+    assert_eq!(request_id, "client-shell:perf");
+    let success: api::schema::SuccessResponse =
+        serde_json::from_slice(&data).expect("answered Ok, not endpoint_busy");
+    let api::schema::ResponseResult::ServerPerfSummary { perf } = success.result else {
+        panic!("expected a perf summary");
+    };
+    assert_eq!(perf.pid, std::process::id());
+    assert!(perf
+        .clients
+        .iter()
+        .any(|client| client.client_id == Some(9091) && client.bytes >= 64));
+    assert_eq!(perf.loops[0].name, "server_loop");
+    assert_eq!(server.foreground_client_id, Some(9092), "never promoted");
+    assert!(
+        server.clients[&9091].shell_endpoint_command_in_flight,
+        "the busy lane is untouched"
+    );
+}
+
 #[path = "fork_smoke/coordinator.rs"]
 mod coordinator;
 

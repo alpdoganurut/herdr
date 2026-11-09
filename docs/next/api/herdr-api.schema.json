@@ -8154,6 +8154,15 @@
           },
           "type": "object"
         },
+        "ServerPerfSummaryParams": {
+          "properties": {
+            "reset": {
+              "description": "Zero the counters after reading them (the answer carries the values\nbefore the reset; the next answer has the new generation).",
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
         "ServerSshAgentRegisterParams": {
           "properties": {
             "socket_path": {
@@ -9406,6 +9415,23 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/EmptyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Fork (perf watch): the server's frame, render and stall counters\n(src/perf); advertised so a client shell can poll it, answered from\nprocess atomics on the API connection lane too.",
+          "properties": {
+            "method": {
+              "const": "server.perf_summary",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/ServerPerfSummaryParams"
             }
           },
           "required": [
@@ -22470,6 +22496,23 @@
               "type": "object"
             },
             {
+              "description": "Fork (perf watch): `server.perf_summary`.",
+              "properties": {
+                "perf": {
+                  "$ref": "#/schemas/success_response/$defs/ServerPerfSummaryInfo"
+                },
+                "type": {
+                  "const": "server_perf_summary",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "perf"
+              ],
+              "type": "object"
+            },
+            {
               "properties": {
                 "last_check_unix": {
                   "format": "uint64",
@@ -22836,6 +22879,189 @@
           },
           "required": [
             "live_handoff"
+          ],
+          "type": "object"
+        },
+        "ServerPerfClientInfo": {
+          "description": "Frames queued to one attached client.",
+          "properties": {
+            "bytes": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "client_id": {
+              "description": "The server's connection id; absent for the shared bucket of clients\npast the first eight.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "frames": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "frames",
+            "bytes"
+          ],
+          "type": "object"
+        },
+        "ServerPerfLoopInfo": {
+          "description": "One watched loop.",
+          "properties": {
+            "busy_ms": {
+              "description": "How long the loop has been busy at this moment (0 while it waits).",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "longest_stall_ms": {
+              "description": "The longest busy period seen in a reported stall.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "name": {
+              "type": "string"
+            },
+            "stalls": {
+              "description": "Stall episodes reported (each logged once as `perf.stall`).",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "threshold_ms": {
+              "description": "Busy time that counts as a stall.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "name",
+            "threshold_ms",
+            "stalls",
+            "longest_stall_ms",
+            "busy_ms"
+          ],
+          "type": "object"
+        },
+        "ServerPerfSummaryInfo": {
+          "properties": {
+            "clients": {
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/ServerPerfClientInfo"
+              },
+              "type": "array"
+            },
+            "frame_bytes": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "frames_deferred": {
+              "description": "Frames a full client channel turned away (backpressure).",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "frames_sent": {
+              "description": "Frames accepted by client render channels (full and retained).",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "full_render_max_us": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "full_render_total_us": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "full_renders": {
+              "description": "Complete render passes.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "generation": {
+              "description": "Resets so far in this process.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "loops": {
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/ServerPerfLoopInfo"
+              },
+              "type": "array"
+            },
+            "pid": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "retained_fallbacks": {
+              "description": "Retained attempts that fell back to a full render.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "retained_renders": {
+              "description": "Retained pane-surface passes that skipped a full render.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "started_unix_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "sync_hold_timeouts": {
+              "description": "Holds released by their deadline rather than the frame's end.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "sync_holds": {
+              "description": "Synchronized-output frames held for whole parsing.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "window_ms": {
+              "description": "Milliseconds the counters cover (since start or the last reset).",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "pid",
+            "started_unix_ms",
+            "generation",
+            "window_ms",
+            "frames_sent",
+            "frame_bytes",
+            "frames_deferred",
+            "full_renders",
+            "full_render_total_us",
+            "full_render_max_us",
+            "retained_renders",
+            "retained_fallbacks",
+            "sync_holds",
+            "sync_hold_timeouts",
+            "loops",
+            "clients"
           ],
           "type": "object"
         },

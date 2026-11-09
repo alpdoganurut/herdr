@@ -517,6 +517,10 @@ pub enum ResponseResult {
     AgentManifestReload {
         manifests: Vec<AgentManifestInfo>,
     },
+    /// Fork (perf watch): `server.perf_summary`.
+    ServerPerfSummary {
+        perf: super::perf::ServerPerfSummaryInfo,
+    },
     AgentManifestStatus {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         last_check_unix: Option<u64>,

@@ -179,6 +179,13 @@ fn server_command() -> Command {
         .subcommand(
             Command::new("reload-agent-manifests")
                 .about("Reload local agent detection manifest overrides"),
+        )
+        // Fork (perf watch).
+        .subcommand(
+            Command::new("perf")
+                .about("Show the running server's frame, render and stall counters")
+                .arg(json_flag())
+                .arg(flag("reset").help("Zero the counters after reading them")),
         );
     #[cfg(windows)]
     let command = command.arg(
