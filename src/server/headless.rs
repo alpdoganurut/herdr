@@ -460,6 +460,7 @@ impl HeadlessServer {
     /// - Renders virtually and streams frames to clients
     pub async fn run(&mut self) -> io::Result<()> {
         crate::logging::startup("server");
+        crate::perf::watchdog::start(crate::perf::watchdog::Role::Server); // fork (perf watch)
 
         let server_stop = self.server_stop.clone();
         let quit_notify = self.server_event_tx.clone();
@@ -481,6 +482,7 @@ impl HeadlessServer {
         let mut needs_graphics_render = false;
 
         loop {
+            crate::perf::server::LOOP.begin(); // fork (perf watch): busy until the wait below
             crate::render_prof::event("loop.tick");
             crate::render_prof::flush_if_due();
             self.app.reap_finished_detached_processes();
@@ -690,6 +692,7 @@ impl HeadlessServer {
                 .fold(next_deadline, |deadline, pending| {
                     Some(deadline.map_or(pending, |current| current.min(pending)))
                 });
+            crate::perf::server::LOOP.end(); // fork (perf watch)
             let event = {
                 tokio::select! {
                     maybe_api = self.app.api_rx.recv() => match maybe_api {
@@ -1016,6 +1019,7 @@ impl HeadlessServer {
     }
 
     fn remove_client(&mut self, client_id: u64) -> bool {
+        crate::perf::forget_client(client_id); // fork (perf watch)
         self.disconnect_native_graphics(client_id);
         // Fork (companion launcher): its browser placement leaves with it.
         self.drop_browser_placement(client_id);

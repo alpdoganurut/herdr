@@ -92,6 +92,7 @@ impl SyncFrameHold {
         if !was_holding {
             return match open_start {
                 Some(start) if self.open && !self.released => {
+                    crate::perf::server::SYNC_HOLDS.inc(); // fork (perf watch)
                     self.held.extend_from_slice(&chunk[start..]);
                     self.deadline = Some(now + SYNC_FRAME_HOLD_TIMEOUT);
                     SyncRelease::Prefix(start)
@@ -107,6 +108,7 @@ impl SyncFrameHold {
         }
         if let Some(start) = open_start {
             // The held frame closed in this chunk and a new one opened.
+            crate::perf::server::SYNC_HOLDS.inc(); // fork (perf watch)
             self.deadline = Some(now + SYNC_FRAME_HOLD_TIMEOUT);
             return SyncRelease::Held(base + start);
         }
@@ -119,7 +121,10 @@ impl SyncFrameHold {
     /// Releases the held bytes once their deadline has passed.
     pub(crate) fn expire(&mut self, now: Instant) -> SyncRelease {
         match self.deadline {
-            Some(deadline) if now >= deadline => self.release_open_block(),
+            Some(deadline) if now >= deadline => {
+                crate::perf::server::SYNC_HOLD_TIMEOUTS.inc(); // fork (perf watch)
+                self.release_open_block()
+            }
             _ => SyncRelease::None,
         }
     }
@@ -302,6 +307,24 @@ mod tests {
         let bytes = [frame(b"a"), frame(b"b"), b"tail".to_vec()].concat();
         let release = reader.hold.push(&bytes, now);
         assert_eq!(release, SyncRelease::Chunk);
+    }
+
+    #[test]
+    fn fork_smoke_perf_holds_and_deadline_releases_are_counted() {
+        let holds = || crate::perf::server::SYNC_HOLDS.get();
+        let timeouts = || crate::perf::server::SYNC_HOLD_TIMEOUTS.get();
+        let (holds0, timeouts0) = (holds(), timeouts());
+        let start = Instant::now();
+        let mut reader = Reader::new();
+        // A frame that closes on time: one hold, no timeout.
+        reader.push(&frame(b"whole"), start);
+        reader.push(b"\x1b[?2026hopen", start);
+        reader.push(CLOSE, start);
+        assert_eq!((holds() - holds0, timeouts() - timeouts0), (1, 0));
+        // A frame left open past its deadline: one more hold and a timeout.
+        reader.push(b"\x1b[?2026hstuck", start);
+        reader.expire(start + SYNC_FRAME_HOLD_TIMEOUT);
+        assert_eq!((holds() - holds0, timeouts() - timeouts0), (2, 1));
     }
 
     #[test]

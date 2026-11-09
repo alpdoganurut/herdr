@@ -462,6 +462,7 @@ impl HeadlessServer {
     }
 
     fn render_and_stream_with_graphics_limit(&mut self, graphics_frame_limit: usize) {
+        let _perf = crate::perf::server::FULL_RENDERS.start(); // fork (perf watch)
         let full_started = crate::render_prof::timer();
         let render_targets = render_targets(&self.clients, self.foreground_client_id);
 
@@ -1095,6 +1096,7 @@ impl HeadlessServer {
                 };
                 serialized.extend_from_slice(&file_frame);
             }
+            let frame_len = serialized.len(); // fork (perf watch)
             let send = if native_upload.is_some() || self.native_graphics.is_pending(client_id) {
                 writer.render.send_ordered(serialized)
             } else {
@@ -1102,6 +1104,7 @@ impl HeadlessServer {
             };
             match send {
                 Ok(()) => {
+                    crate::perf::record_frame_sent(client_id, frame_len);
                     if let Some((graphics, inline_assets)) = prepared.queued_surface_graphics() {
                         self.native_graphics
                             .commit_scene(client_id, graphics, inline_assets);
@@ -1121,6 +1124,7 @@ impl HeadlessServer {
                     crate::render_prof::event("full_render.sent");
                 }
                 Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                    crate::perf::server::FRAMES_DEFERRED.inc();
                     client.defer_full_render();
                 }
                 Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {

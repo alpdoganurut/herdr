@@ -683,7 +683,9 @@ async fn run_client_loop(
     );
     #[cfg(windows)]
     let mut stdin_open = true;
+    crate::perf::watchdog::start(crate::perf::watchdog::Role::Client); // fork (perf watch)
     while !should_quit.load(Ordering::Acquire) {
+        crate::perf::client::LOOP.begin(); // fork (perf watch): busy until the wait below
         if pending_activation.is_none() {
             if let Some(reload) = pending_catalog.take() {
                 match reload {
@@ -810,6 +812,7 @@ async fn run_client_loop(
             });
         let timer_deadline = client_timer.deadline(std::time::Instant::now(), timer_delay);
         let immediate_event = scheduled_activation.take();
+        crate::perf::client::LOOP.end(); // fork (perf watch)
         #[cfg(windows)]
         let event = if let Some(event) = immediate_event {
             event

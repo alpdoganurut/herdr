@@ -216,3 +216,46 @@ fn fork_smoke_perf_counters_and_gauges_are_plain_atomics() {
     assert_eq!(gauge.take(), 7);
     assert_eq!(gauge.get(), 0);
 }
+
+#[test]
+fn fork_smoke_perf_frames_are_counted_per_client_and_a_reset_starts_a_generation() {
+    use super::{forget_client, record_frame_sent, reset, snapshot, CLIENT_SLOTS};
+
+    record_frame_sent(7, 100);
+    record_frame_sent(7, 50);
+    record_frame_sent(9, 10);
+    let before = snapshot();
+    assert_eq!(before.pid, std::process::id());
+    assert!(before.started_unix_ms > 0);
+    let seven = before
+        .clients
+        .iter()
+        .find(|client| client.client_id == Some(7))
+        .copied();
+    assert_eq!(
+        seven.map(|client| (client.frames, client.bytes)),
+        Some((2, 150))
+    );
+    assert!(before.frames_sent >= 3 && before.frame_bytes >= 160);
+
+    // Clients past the slots share one bucket; a leaving client frees its slot.
+    for client_id in 100..100 + CLIENT_SLOTS as u64 {
+        record_frame_sent(client_id, 1);
+    }
+    assert!(snapshot()
+        .clients
+        .iter()
+        .any(|client| client.client_id.is_none()));
+    forget_client(7);
+    assert!(!snapshot()
+        .clients
+        .iter()
+        .any(|client| client.client_id == Some(7)));
+
+    reset();
+    let after = snapshot();
+    assert_eq!(after.generation, before.generation + 1);
+    assert_eq!(after.pid, before.pid);
+    assert_eq!(after.started_unix_ms, before.started_unix_ms);
+    assert_eq!((after.frames_sent, after.frame_bytes), (0, 0));
+}
