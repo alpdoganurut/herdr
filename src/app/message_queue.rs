@@ -770,13 +770,20 @@ impl App {
             }
         }
         let session = session?;
-        let terminal = self.state.terminals.values().find(|terminal| {
-            super::coordinator::terminal_session(terminal).as_deref() == Some(session)
-        })?;
-        let id = terminal.id.to_string();
-        self.resolve_terminal_target(&id)
-            .ok()
-            .filter(|target| target.terminal_id == id)
+        // The first terminal with the session that sits in a pane: a
+        // detached one with the same session must not hide it.
+        self.state
+            .terminals
+            .values()
+            .filter(|terminal| {
+                super::coordinator::terminal_session(terminal).as_deref() == Some(session)
+            })
+            .find_map(|terminal| {
+                let id = terminal.id.to_string();
+                self.resolve_terminal_target(&id)
+                    .ok()
+                    .filter(|target| target.terminal_id == id)
+            })
     }
 
     /// Whether the agent in this pane can take a message now.
@@ -1941,6 +1948,8 @@ impl App {
     /// now wait for `to`, the newest session of its chain
     /// (src/agent_session_chain.rs), so a restart still finds their target.
     pub(crate) fn follow_queued_session(&mut self, from: &str, to: &str) {
+        // Fork (quiet messages): the stored ones follow the chain too.
+        self.follow_quiet_session(from, to);
         let mut moved = false;
         for entry in &mut self.message_queue.entries {
             if entry.session.as_deref() == Some(from) {
