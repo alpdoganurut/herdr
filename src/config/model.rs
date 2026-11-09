@@ -1224,6 +1224,10 @@ pub struct UiConfig {
     /// to your display's refresh rate (e.g. 120 on a ProMotion display). 30 through 240.
     /// Default: 60.
     pub render_fps: u16,
+    /// Fork (perf watch): a small live readout in the bottom-right corner: this
+    /// client's frames per second and slowest frame, plus the server's render time and
+    /// stalls when it reports them. Default: false.
+    pub perf_readout: bool,
     /// Show the Active block (blocked, voice, working, running-subagent and finished agents)
     /// under the tab list in the "tabs" sidebar layout. The block hides itself while nothing is active.
     /// Default: true.
@@ -1526,6 +1530,7 @@ impl Default for UiConfig {
             browser_dock_width: DEFAULT_BROWSER_DOCK_WIDTH,
             browser_view_strip: "auto".into(),
             render_fps: DEFAULT_RENDER_FPS,
+            perf_readout: false,
             sidebar_active_agents: true,
             sidebar_pinned_agents: true,
             sidebar_scheduled_agents: true,

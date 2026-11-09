@@ -512,6 +512,7 @@ Flags go to the owner in <span class="t b">Turkish</span>, see <span class="pu" 
     <div class="card"><h3><span class="g">⚑</span>Its own defaults</h3><p>herdr+ starts in the tabs sidebar and turns upstream's update checks off; <code>[ui] sidebar_layout = "spaces"</code> brings the old sidebar back.</p></div>
     <div class="card"><h3><span class="g">§</span>FORK.md merge contract</h3><p><code>FORK.md</code> lists everything the fork owns and how to merge upstream; the <code>fork-sync</code> tool reads it and refuses a sync that would collide.</p></div>
     <div class="card"><h3><span class="g">⚖</span>Audited</h3><p>Big features are reviewed by three independent audits and a second model, then smoke-tested live on a throwaway server.</p></div>
+    <div class="card"><h3><span class="g">⏱</span>Perf watch</h3><p>A watchdog logs any hitch where the server loop stays busy past 250 ms (a client's past 500 ms), and <code>herdr server perf</code> prints the server's frame, render, fallback and stall counts. <code>[ui] perf_readout = true</code> adds a corner readout: <code>58 fps · 4.1 ms · srv 3.2 ms</code>.</p></div>
     <div class="card"><h3><span class="g">↑</span>Synced with upstream</h3><p>Based on upstream herdr 0.9.5.</p></div>
   </div>
 </section>

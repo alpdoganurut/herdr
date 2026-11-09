@@ -415,6 +415,8 @@ src/perf/watchdog.rs
 src/perf/tests.rs
 src/api/schema/perf.rs
 src/cli/server_perf.rs
+src/client/shell/perf_readout.rs
+src/client/shell/tests/perf_readout.rs
 
 
 ## 2. Owned fields on upstream structs (E0063 in upstream-authored literals: insert the default)
@@ -819,6 +821,9 @@ src/cli/server_perf.rs
 | App | render_pacer | frame_pacing::FramePacer::new(frame_pacing::render_interval(config.ui.effective_render_fps())) |
 | App | presentation_pacer | frame_pacing::FramePacer::new(frame_pacing::render_interval(config.ui.effective_render_fps())) |
 | UiConfig | render_fps | DEFAULT_RENDER_FPS |
+| UiConfig | perf_readout | false |
+| ClientShellConfig | perf_readout | false |
+| ClientShellState | perf_readout | super::perf_readout::PerfReadoutState::default() |
 | PtyIoActorRunner (src/pty/actor/unix.rs) | sync_hold | crate::pty::sync_hold::SyncFrameHold::new() |
 | HeadlessServer | render_sync_deferred | false |
 | HeadlessServer | sync_retry_pending | false |
@@ -1150,6 +1155,7 @@ ClientContextMenuAction::BrowserToggleDock, ClientContextMenuAction::BrowserTogg
 KeybindAction::ToggleBrowserDock, KeybindAction::ToggleBrowserView, KeybindAction::FocusBrowser, KeybindAction::CycleBrowser   [src/input/keybindings.rs, directly after ToggleInfoPane in that order; client-only actions; internal]
 BrowserDockTarget {ViewTerminal, ViewBrowser, ToggleDock, Start, Restart, Nudge, Promote, Close}, PlaceholderTone {Title, Body, Dim, Error}   [src/client/shell/browser_dock.rs, fork-owned, internal]
 BrowserOverlayRow::Companion, CompanionNote   [src/client/shell/browser.rs, fork-owned enum, after Empty; the Browser overlay's companion line and detail lines; internal]
+PendingEndpointKind::PerfSummary   [src/client/shell/state.rs, last after ToolbarNewTabMove; perf watch: the readout's server.perf_summary poll, never a notice; internal]
 
 ## 5. Owned API methods and digests
 Since the ee5bfb50 sync, an entry's "api_method_name arm", "request_changes_ui" and "CLIENT_SHELL_METHODS" mean the method's row in the `operations::define_operations!` table in src/api/schema.rs: its wire name, changes_ui flag and client_shell flag (upstream 241b99cd folded the three lists into that table).
@@ -1321,6 +1327,7 @@ ui.browser_dock_width, ui.browser_view_strip (companion launcher, phase B: perce
 keys.toggle_browser_dock, keys.toggle_browser_view, keys.focus_browser (companion launcher, phase B: defaults "prefix+shift+b", "prefix+shift+z", unset; KeysConfig / KeysConfigOverlay / Keybinds directly after toggle_info_pane in every list; config-reference.json directly after keys.toggle_info_pane, before keys.tab_history_back; DEFAULT_CONFIG comment lines directly after `toggle_info_pane`; not in configuration.mdx).
 keys.cycle_browser (browser cycle: default "ctrl+shift+b", a direct binding (no prefix) that fires only on a real ctrl+shift+b report (kitty CSI u or modifyOtherKeys; herdr pushes the kitty disambiguate flags on the host), never on ctrl+b, the default prefix; KeysConfig / KeysConfigOverlay / Keybinds / KeybindAction::CycleBrowser directly after focus_browser in every list; config-reference.json directly after keys.focus_browser; DEFAULT_CONFIG comment lines directly after `# focus_browser`; not in configuration.mdx). The cycle (ClientShellState::cycle_browser_for_focused_tab in src/client/shell/browser_dock.rs): Browser view open (docked or not) → both closed; docked → Browser view opened (the dock stays listed), or the dock closed while browser_companion_off_reason() is set; neither → dock opened. A Repeat event of the binding is dropped in route_key_press's Terminal arm (src/client/shell/input.rs) before record_binding. Terminals: works in Ghostty and in iTerm2 with CSI u; kitty needs `map kitty_mod+b no_op` (its default ctrl+shift+b moves the window backward) and WezTerm needs `enable_kitty_keyboard = true`; elsewhere ctrl+shift+b arrives as ctrl+b, the prefix, and the cycle never fires.
 ui.render_fps (frame pacing: u16 frames per second, default 60 (DEFAULT_RENDER_FPS), 30..=240, out of range a diagnostic and clamped (UiConfig::render_fps_diagnostic, chained directly after browser_dock_diagnostics in Config::collect_diagnostics); UiConfig.render_fps directly after browser_view_strip (struct and Default), DEFAULT/MIN/MAX_RENDER_FPS directly after MAX_BROWSER_DOCK_WIDTH; applied at App construction and live in apply_live_config's `ui` block through App::set_render_fps; config-reference.json directly after ui.browser_view_strip; DEFAULT_CONFIG directly after `# browser_view_strip = "auto"` (with its comment); not in configuration.mdx).
+ui.perf_readout (perf watch: bool, default false; UiConfig.perf_readout directly after render_fps (struct and Default); config-reference.json directly after ui.render_fps; DEFAULT_CONFIG `# perf_readout = false` (with its comment) directly after `# render_fps = 60`; ClientShellConfig.perf_readout from from_config and apply_live_config (applies live); not in configuration.mdx). Client presentation only: the corner readout of src/client/shell/perf_readout.rs; off it polls and draws nothing.
 ## 7. Per-file merge rules
 docs/next/CHANGELOG.md  take-theirs: fork entries live in section 11
 docs/next/api/herdr-api.schema.json  take-theirs: after every .rs conflict is resolved, regenerate with HERDR_UPDATE_API_SCHEMA=1 cargo nextest run generated_protocol_schema_artifact_is_current, rerun it clean, require git diff --exit-code docs/next/api/
@@ -1810,6 +1817,18 @@ src/cli/server.rs  additive: perf watch: the `"perf"` arm (super::server_perf::s
 src/cli/spec.rs  additive: perf watch: the `server perf` subcommand (--json, --reset) last in server_command()
 src/cli/target.rs  additive: perf watch: `"perf"` last in the `server` subcommands --machine accepts
 src/server/headless/tests/fork_smoke.rs  additive: perf watch: fork_smoke_perf_summary_answers_a_client_shell_without_the_command_lane directly before the coordinator mod lines
+src/config/model.rs  additive: perf watch: UiConfig.perf_readout (with its doc lines) directly after render_fps, `perf_readout: false` directly after render_fps in Default
+src/main.rs  additive: perf watch: DEFAULT_CONFIG `# perf_readout = false` (with its two comment lines and a blank line before) directly after `# render_fps = 60`
+docs/next/website/src/data/config-reference.json  additive: perf watch: the ui.perf_readout entry directly after ui.render_fps
+src/client/shell.rs  additive: perf watch: `mod perf_readout;` (with its doc line) directly after `mod overlay_input;`
+src/client/shell/state.rs  additive: perf watch: ClientShellConfig.perf_readout directly after sidebar_context_usage; ClientShellState.perf_readout the last field (and last in new()); PendingEndpointKind::PerfSummary last after ToolbarNewTabMove
+src/client/shell/config.rs  additive: perf watch: perf_readout directly after sidebar_context_usage in from_config and apply_live_config
+src/client/shell/actions.rs  additive: perf watch: handle_endpoint_result returns complete_perf_readout for PendingEndpointKind::PerfSummary directly before the info dock check (never a notice); PerfSummary joins the no-op ToolbarNewTabMove group in its final match
+src/client/shell/worktrees.rs  additive: perf watch: PerfSummary last in handle_worktree_endpoint_result's final Err arm
+src/client/shell/surface_patch.rs  additive: perf watch: the perf_readout_blocks_patch branch (client_surface_patch.fallback.perf_readout) directly after the agent cards branch in fast_path_blocker
+src/client/shell/composition.rs  additive: perf watch: the `if self.config.perf_readout` render_perf_readout block (else clears perf_readout.drawn) directly before `let graphics = self.compose_graphics(layout, &occlusion);`
+src/client/mod.rs  additive: perf watch: `shell.tick_perf_readout(now, &mut outcome);` directly after shell.tick_news in the Timer arm
+src/client/shell/tests/mod.rs  additive: perf watch: `mod perf_readout;` (with its doc line) directly after `mod notification_format;`
 ## 8. Extended surfaces (upstream touch forces human review in the report, even when green)
 src/client/shell/notifications.rs  mid-logic: render_notification_card (and the fork's fold line) narrows `area` through toast_area_beside_dock directly after its content width, so a right-anchored toast that fits ends one column left of an open info dock; render_visible_notification and render_mobile_notification_banner swap the drawn `●` for notification_glyph (reminder marker, `✓` finished, `×` needs attention) via put_notification_glyph after the upstream render; render_notification_card and render_mobile_notice_banner are unchanged; Finished uses palette.green (was blue)
 src/terminal/state.rs  mid-logic: set_detected_state_with_screen_signals_at (suspend reconcile, hook-clear durable session, name kept on exit), clear_full_lifecycle_hook_suppression_for_detected_agent (replacement sessions), set_agent_session_ref_for_session_start (launch-session identity), release_agent_with_mutation, managed_agent_launch_pending, managed_agent_interactive_ready, managed_agent_kind, reconcile_managed_agent_at, clear_agent_name, clear_agent_runtime_identity_after_respawn; active_subagents (with subagent_snapshot_seen) is forgotten in recompute_effective_state on an agent label change (before the early return; before the first snapshot an Idle state also clears the set, the older Claude rule; a session other than subagent_session clears it too), release_agent_with_mutation, begin_agent_suspend and clear_agent_runtime_identity_after_respawn; a turn end and an Unknown with the same label keep it; the set never changes the status (recompute_effective_state uses the detected state as upstream does; background subagents are not a turn); report_subagents_with_mutation (start / stop / snapshot through the effective state) is the only path the API uses; active_subagent_count is len() in any state, 0 while suspended Agents v2: TerminalState carries agent_meta (persisted through PaneSnapshot.agent_meta), turn (runtime only; mark_restored makes a restored or handed-off terminal start Unknown) and created_unix; SuspendedAgent.suspended_by.
@@ -3164,6 +3183,7 @@ pageApiOn
 onPageMessage
 server.perf_summary
 ServerPerfSummary
+perf_readout
 ## 10. Fork smoke tests (run by name in the gate)
 server::headless::tests::tab_geometry_tests::fork_smoke_single_client_resize_reflows_only_the_shown_tab
 server::headless::tests::tab_geometry_tests::fork_smoke_switching_dock_and_plain_tabs_reflows_one_tab_at_most
@@ -3341,10 +3361,15 @@ server::headless::tests::fork_smoke::fork_smoke_perf_summary_answers_a_client_sh
 cli::server_perf::tests::fork_smoke_perf_an_old_server_without_the_method_reads_as_not_supported
 cli::server_perf::tests::fork_smoke_perf_the_request_omits_reset_unless_asked
 cli::server_perf::tests::fork_smoke_perf_the_summary_reads_as_lines
+client::shell::tests::perf_readout::fork_smoke_perf_readout_off_polls_and_draws_nothing
+client::shell::tests::perf_readout::fork_smoke_perf_readout_shows_fps_and_polls_at_most_once_a_second
+client::shell::tests::perf_readout::fork_smoke_perf_readout_never_polls_a_server_without_the_method
+client::shell::tests::perf_readout::fork_smoke_perf_readout_a_failed_poll_raises_no_notice
 ## 11. Fork changelog (moved out of docs/next/CHANGELOG.md)
 A user-facing feature or fix that changes what herdr+ offers also updates the showcase page `docs/fork/herdr-plus.html` (self-contained, no network resources, no personal data; mockups follow the current code), in the same change.
 ### Added
 - Perf watch: herdr watches itself for hitches. A watchdog thread logs `perf.stall` (loop name and how long) once whenever the server's main loop stays busy past 250 ms without going back to waiting, or a client's frame loop past 500 ms, and `perf.stall_end` when it recovers; an idle loop never counts, and a busy period open across a sleep or a clock change is dropped. `herdr server perf [--json] [--reset]` (new method `server.perf_summary`) prints the server's frames sent and their bytes per client, frames a slow client turned away, full renders with average and longest time, retained renders and their fallbacks to a full render, synchronized-output holds and timeouts, and stalls; it answers even while the main loop is stuck. An older server says it does not report perf counters. Always on, lock-free and allocation-free on the hot paths.
+- `[ui] perf_readout = true` adds a small readout in the bottom-right corner, for example `58 fps · 4.1 ms · srv 3.2 ms · 1 stall`: this client's frames per second and slowest frame in the last second, then the server's average render time and its stall count. It polls once a second and only a server that offers `server.perf_summary`; off (the default), it polls and draws nothing.
 - One key cycles the focused tab's companion browser: `ctrl+shift+b` (`keys.cycle_browser`, no prefix) docks it, then turns the tab to Browser view, then closes both (from Browser view, docked or not, it always ends with neither). `prefix+shift+b` and `prefix+shift+z` keep working. The key needs a terminal that reports ctrl+shift+b apart from ctrl+b: it works in Ghostty and in iTerm2 with CSI u; kitty needs `map kitty_mod+b no_op` (its default ctrl+shift+b moves the window backward) and WezTerm needs `enable_kitty_keyboard = true`; elsewhere ctrl+shift+b arrives as ctrl+b, the prefix, and the cycle never fires. A held key steps once (autorepeat is ignored), and while the companion is off a docked tab's dock closes instead of asking for a view. herdr takes the key before the pane, so set `cycle_browser = ""` to give ctrl+shift+b back to programs in panes.
 - Session header (the `tabs` layout): a tab in a group shows the group's name before its own, dim, with ` · ` (`○ Search It · local clean up`), named as the sidebar's group header names it (the team's purpose, else the group label). The group uses only the room the whole tab name leaves: it shortens with `…`, then drops, before the name, the facts or the controls give way. A tab in the first space shows its name alone. Client presentation only.
 - The session header's browser button shows the tab's open page count: `Browser` is followed by the number of this herdr tab's companion pages in a small filled block (`Browser  7  ◨`; `surface1` grey with `text`, accent with the chrome colour while Browser view is on), none at 0 pages or while the companion is stopped, not installed or failed (the dock strip's `◎ Browser · N` rule). 10+ widens the block by a cell, 100+ shows `99+`. The narrow forms keep it as the bare count after `B` (`T  B7 ◨`); once only `◨` is left the count goes. The block is part of the Browser button (a click on it opens Browser view); `◨` moves right by its width.

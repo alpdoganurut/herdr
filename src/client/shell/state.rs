@@ -38,6 +38,8 @@ pub(crate) struct ClientShellConfig {
     pub(super) sidebar_collapse_suspended: bool,
     /// Fork: `ui.sidebar_context_usage`, tabs show their agents' context use.
     pub(super) sidebar_context_usage: bool,
+    /// Fork (perf watch): `ui.perf_readout`, the corner frame/stall readout.
+    pub(super) perf_readout: bool,
     pub(super) tab_agent_glyphs: std::collections::BTreeMap<String, String>,
     pub(super) tab_agent_glyph_colors:
         std::collections::BTreeMap<String, Option<ratatui::style::Color>>,
@@ -1156,6 +1158,9 @@ pub(super) enum PendingEndpointKind {
     ToolbarNewTab,
     /// Fork (toolbar new tab): that follow-up `tab.move`; never a notice.
     ToolbarNewTabMove,
+    /// Fork (perf watch): the readout's `server.perf_summary` poll; never a
+    /// notice (`perf_readout.rs`).
+    PerfSummary,
 }
 
 pub(super) struct PendingEndpointRequest {
@@ -1549,6 +1554,9 @@ pub(crate) struct ClientShellState {
     /// `endpoint.agent-context.v1` push listed it (`agent_context.rs`).
     pub(super) agent_context:
         HashMap<ClientEndpointId, super::agent_context::ClientAgentContextState>,
+    /// Fork (perf watch): the `[ui] perf_readout` corner readout
+    /// (`perf_readout.rs`; client-only).
+    pub(super) perf_readout: super::perf_readout::PerfReadoutState,
 }
 
 pub(super) fn product_announcement_state(
@@ -1770,6 +1778,7 @@ impl ClientShellState {
             scheduled_expanded: false,
             tab_history: super::tab_history::TabHistory::default(),
             agent_context: HashMap::new(),
+            perf_readout: super::perf_readout::PerfReadoutState::default(),
         }
     }
 

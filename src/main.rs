@@ -323,6 +323,10 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # (e.g. 120 on a ProMotion display). 30 through 240.
 # render_fps = 60
 
+# A small live readout in the bottom-right corner: frames per second, the slowest
+# frame and the server's render time and stalls.
+# perf_readout = false
+
 # Show the Active block (blocked, voice, working, running-subagent and finished
 # agents) under the tab list in the "tabs" sidebar layout; it hides while nothing is active.
 # sidebar_active_agents = true

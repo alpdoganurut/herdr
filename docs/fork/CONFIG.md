@@ -195,6 +195,7 @@ A server-run Claude agent in a pinned `coordinator` tab that watches other agent
 | Feature | Default | Where to change | In Settings? |
 |---|---|---|---|
 | Frame rate (frame pacing: herdr's screen updates land on a fixed grid at this rate instead of drifting; set it to your display's refresh rate; out of range is clamped with a config warning; a reload applies it, no restart) | 60 fps | `[ui] render_fps = 30..240`, e.g. 120 on a ProMotion display | No, config only |
+| Perf readout (a small corner readout, e.g. `58 fps · 4.1 ms · srv 3.2 ms`: this client's frames per second and slowest frame in the last second, the server's average render time and its stall count once a loop stalls; polls `server.perf_summary` once a second, nothing while off; a reload applies it). `herdr server perf` prints the server's counters either way | off | `[ui] perf_readout = true` | No, config only |
 
 ## Updates (`[update]`, upstream)
 

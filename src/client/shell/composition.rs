@@ -1231,6 +1231,18 @@ impl ClientShellState {
             self.hits.pane_splits.clear();
             self.hits.popup = None;
         }
+        // Fork (perf watch): the `[ui] perf_readout` corner, last on top.
+        // Off: no work.
+        if self.config.perf_readout {
+            let cursor = frame.cursor.clone();
+            let mut composed = frame.to_ratatui_buffer()?;
+            if let Some(rect) = self.render_perf_readout(&mut composed) {
+                occlusion.cover(rect);
+                frame.replace_from_ratatui_buffer_preserving_effects(&composed, cursor);
+            }
+        } else {
+            self.perf_readout.drawn = None;
+        }
         let graphics = self.compose_graphics(layout, &occlusion);
         // Fork (scrollback scroll): the panes' content the blit may scroll on
         // the host, unless a host image is placed (images do not follow).

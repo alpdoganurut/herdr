@@ -50,6 +50,8 @@ mod notification_format;
 mod notification_policy;
 mod notifications;
 mod overlay_input;
+/// Fork (perf watch): the opt-in `[ui] perf_readout` corner readout.
+mod perf_readout;
 mod preferences;
 /// Fork: quiet messages and do-not-disturb tabs (`endpoint.quiet.v1`).
 mod quiet;

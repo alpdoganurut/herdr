@@ -2529,6 +2529,7 @@ async fn run_client_loop(
                         }
                         let (effects, notification_repaint) = shell.tick_notifications(now);
                         shell.tick_news(now, &mut outcome);
+                        shell.tick_perf_readout(now, &mut outcome);
                         shell.tick_coordinator(now, &mut outcome);
                         shell.tick_teams(now, &mut outcome);
                         shell.tick_browser(now, &mut outcome);
