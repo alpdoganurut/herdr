@@ -385,7 +385,8 @@ const CLIP_PROBE = `({ width: innerWidth, height: innerHeight, loaded: document.
  *  first waits here for its tab to have a size and its document to be
  *  loaded, inside `waitMs` and the op's deadline: without a size by halfway
  *  it selects the tab quietly once (a companion view that was never shown
- *  has none), still none at the end is `tab_not_rendered` and no capture is
+ *  has none; skipped when the deadline leaves no room for it, as in
+ *  captureWithQuietRetry), still none at the end is `tab_not_rendered` and no capture is
  *  sent; a document still loading by then (a page that never finishes, a
  *  blank tab still on its marker) goes ahead. Answers the last probe. */
 export async function clipReady({ send, select = null, deadlineAt = Infinity, log = () => {}, waitMs = CLIP_READY_MS, pollMs = 100 }) {
@@ -402,6 +403,11 @@ export async function clipReady({ send, select = null, deadlineAt = Infinity, lo
     if (Date.now() >= until) break;
     if (!selected && select && last && !sized(last) && Date.now() - start >= waitMs / 2) {
       selected = true;
+      // as captureWithQuietRetry: no select when what is left cannot cover it and a capture
+      if (deadlineAt - Date.now() < SELECT_BUDGET_MS + CAPTURE_MIN_MS) {
+        log('screenshot: the tab has no size yet and the deadline leaves no room for a quiet select');
+        continue;
+      }
       const ok = await Promise.resolve().then(select).catch(() => false);
       log(`screenshot: the tab has no size yet; ${ok ? 'selected it quietly' : 'it could not be selected'}`);
       continue;
@@ -418,21 +424,25 @@ export async function clipReady({ send, select = null, deadlineAt = Infinity, lo
 /** Takes back the device metrics a clipped capture left on the host's
  *  session (see clipReady). A no-op when there are none: the host never sets
  *  device metrics of its own on that session. */
-export function clearClipEmulation(send) {
+export function clearClipEmulation(send, log = () => {}) {
   // the renderer answers it (a busy one may not soon): never more than 1 s
-  return captureTimeout(Promise.resolve().then(() => send('Emulation.clearDeviceMetricsOverride')), 1000).then(() => true, () => false);
+  return captureTimeout(Promise.resolve().then(() => send('Emulation.clearDeviceMetricsOverride')), 1000).then(() => true, () => false)
+    .then((ok) => {
+      if (!ok) log('screenshot: device metrics clear not confirmed within 1 s');
+      return ok;
+    });
 }
 
 /** A capture's request for the lane: the capture, then the device metrics a
  *  clipped one may have left cleared before the next capture of the page
  *  starts (after a viewport shot too: that heals a tab an older sidecar left
  *  offset on this session). */
-export function cleanCapture(send, params) {
+export function cleanCapture(send, params, log = () => {}) {
   return async () => {
     try {
       return await send('Page.captureScreenshot', params);
     } finally {
-      await clearClipEmulation(send);
+      await clearClipEmulation(send, log);
     }
   };
 }
@@ -467,7 +477,7 @@ export async function firstShot({ send, lane, type, quality, element = null, ful
     clip = { x: 0, y: 0, width: content.width, height: content.height };
   }
   const params = shotParams({ type, quality, clip, beyond: Boolean(clip) });
-  const shot = laneShot(lane, cleanCapture(send, params), deadlineAt);
+  const shot = laneShot(lane, cleanCapture(send, params, log), deadlineAt);
   shots.push(shot);
   // A background tab whose renderer stalled: select it quietly and wait
   // once more for the same capture, inside the op's deadline; an element
@@ -482,7 +492,10 @@ export async function firstShot({ send, lane, type, quality, element = null, ful
       scoped: Boolean(element),
     });
   } catch (err) {
-    if (clip && shot.pending()) await clearClipEmulation(send);
+    if (clip && shot.pending()) {
+      log('screenshot: gave up on a clipped capture Chromium still holds; clearing its device metrics');
+      await clearClipEmulation(send, log);
+    }
     throw err;
   }
 }

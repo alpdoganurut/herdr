@@ -315,6 +315,13 @@ check((() => { const o = new Overlay({ session }); o.linger('x'); const ok = o.u
   try { await clipReady({ send: f.send, pollMs: 5, waitMs: 200, select: () => { selects.push(Date.now() - t0); return true; } }); } catch (e) { err = e; }
   check(err && err.code === 'tab_not_rendered' && /not been shown/.test(err.message), `a tab that never gets a size is tab_not_rendered: ${err && err.message}`);
   check(selects.length === 1 && selects[0] >= 100, `selected quietly once, halfway: ${selects}`);
+  // no room left in the op's deadline for a quiet select: none, still tab_not_rendered
+  f = fake([{ width: 0, height: 0, loaded: true }]);
+  const late = [];
+  const logged = [];
+  err = null;
+  try { await clipReady({ send: f.send, pollMs: 5, waitMs: 200, deadlineAt: Date.now() + 1000, select: () => { late.push(1); return true; }, log: (t) => logged.push(t) }); } catch (e) { err = e; }
+  check(err && err.code === 'tab_not_rendered' && late.length === 0 && logged.some((t) => /no room/.test(t)), `no quiet select without room in the deadline: ${late} ${logged}`);
   // the same through firstShot: the full-page capture is never sent
   f = fake([{ width: 0, height: 0, loaded: true }]);
   err = null;
@@ -347,6 +354,10 @@ check((() => { const o = new Overlay({ session }); o.linger('x'); const ok = o.u
   } catch (e) { err = e; }
   check(err && err.code === 'tab_not_rendered' && shots[0].pending(), `a lost capture: ${err && err.message}`);
   check(f.sent.slice(-2).join() === 'Page.captureScreenshot,Emulation.clearDeviceMetricsOverride', `its metrics are cleared when the op gives up: ${f.sent}`);
+  // a clear the renderer does not confirm in 1 s is logged; the capture's own answer stays
+  f = fake([sized], { 'Page.captureScreenshot': () => ({ data: 'kept' }), 'Emulation.clearDeviceMetricsOverride': () => new Promise(() => {}) });
+  const clearLog = [];
+  check((await cleanCapture(f.send, {}, (t) => clearLog.push(t))()).data === 'kept' && clearLog.some((t) => /device metrics clear not confirmed within 1 s/.test(t)), `an unconfirmed clear is logged: ${clearLog}`);
   const done = laneShot(new CaptureLane(), async () => 'x');
   check(!done.pending(), 'a shot not sent is not pending');
   await done.wait(100);

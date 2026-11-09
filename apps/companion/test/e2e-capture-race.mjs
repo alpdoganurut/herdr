@@ -202,13 +202,19 @@ try {
     const v = await newView(() => call('show', { tab_id: 'w1:t1', file: pageFile(), focus: true }));
     const shown = await v.answer;
     await loaded(v.s);
-    const shotting = hostFullShot(v.s, null);
-    await waitFor(() => v.s.evaluate('1'), 1000, 1); // the capture is on its way
-    v.s.send('Page.reload').catch(() => {});
+    // the reload goes out right after the capture itself does (not before: then nothing overlaps)
+    let captureSent;
+    const sent = new Promise((resolve) => { captureSent = resolve; });
+    const watched = { ...v.s, send: (method, params) => { const p = v.s.send(method, params); if (method === 'Page.captureScreenshot') captureSent(); return p; } };
+    const shotting = hostFullShot(watched, null);
+    const overlapped = await Promise.race([sent.then(() => true), sleep(8000).then(() => false)]);
+    if (overlapped) v.s.send('Page.reload').catch(() => {});
     const shot = await shotting;
     await loaded(v.s);
     const r = await presented(v.s, shown.view_id, 1000);
-    check('a reload during a full-page shot: the tab draws its scrolled frame', r.ok, { shot, r });
+    // a capture the reload overtook is lost (tab_not_rendered); one answered first has bytes
+    const outcome = shot.code === 'tab_not_rendered' || shot.bytes > 0;
+    check('a reload during a full-page shot: the tab draws its scrolled frame', overlapped && outcome && r.ok, { overlapped, shot, r });
     v.s.close();
   }
 

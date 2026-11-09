@@ -877,13 +877,17 @@ const ops = {
       else clip = { x: vis.pageX, y: vis.pageY, width: vis.clientWidth, height: vis.clientHeight, scale };
       // a clip: its device metrics are cleared after it (see clipReady in activity.mjs)
       const send = (method, params) => state.session.send(method, params);
-      const small = laneShot(state.captures, cleanCapture(send, shotParams({ type, quality, clip, beyond: Boolean(element || args.full) })), deadlineAt);
+      const debug = (text) => log('debug', text);
+      const small = laneShot(state.captures, cleanCapture(send, shotParams({ type, quality, clip, beyond: Boolean(element || args.full) }), debug), deadlineAt);
       shots.push(small);
       let answer;
       try {
         answer = await small.wait(left());
       } catch (err) {
-        if (small.pending()) await clearClipEmulation(send);
+        if (small.pending()) {
+          debug('screenshot: gave up on the inline copy Chromium still holds; clearing its device metrics');
+          await clearClipEmulation(send, debug);
+        }
         if (/Timeout/i.test(err.message)) fail('tab_not_rendered', 'the tab could not be drawn for the inline copy; try again');
         throw err;
       }
