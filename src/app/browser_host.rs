@@ -506,7 +506,9 @@ impl App {
 
     /// Store each due page-error batch quietly for its agent when that
     /// agent takes quiet messages (Claude); others pull (`browser console`).
-    /// Never typed in, never a wake-up, never urgent.
+    /// Never typed in, never a wake-up, never urgent. It supersedes the
+    /// agent's notice for the same tab still waiting
+    /// ([`PageErrorBatch::coalesce_key`](crate::browser::page_errors::PageErrorBatch::coalesce_key)).
     pub(crate) fn handle_browser_page_errors(&mut self) -> bool {
         let batches = hub().take_page_errors();
         let now = crate::coordinator::now_unix();
@@ -529,7 +531,8 @@ impl App {
                 id: Some(crate::coordinator::messages::new_id()),
                 ..AgentMessage::default()
             };
-            match self.store_quiet_message(&target, message, dnd, None, now) {
+            let key = batch.coalesce_key();
+            match self.store_coalesced_quiet_message(&target, message, dnd, key, now) {
                 Ok(()) => stored = true,
                 Err((code, _)) => {
                     tracing::debug!(event = "browser.page_errors", code = %code, pane = %batch.pane, "page errors not stored")

@@ -16,7 +16,9 @@
 //! The log (`messages.jsonl`) gets the full line with outcome `quiet`
 //! when a message is stored (an update line `quiet` when a queued message
 //! moves here because its tab went into do-not-disturb), then an update
-//! line `delivered` or `expired`. The store is saved as
+//! line `delivered` or `expired` (or `superseded`: a newer message with
+//! the same coalescing key, a browser page-error notice for the same tab,
+//! replaced it before its hook was offered it). The store is saved as
 //! `quiet_messages.json` next to `session.json` (restarts, live handoffs).
 //!
 //! A stored message follows its agent, not the terminal: each sync binds
@@ -51,7 +53,7 @@ use super::App;
 use crate::api::schema::agents_model::{AgentsAckQuietParams, AgentsTakeQuietParams};
 use crate::api::schema::{EventKind, ResponseResult};
 use crate::coordinator::messages::{
-    self, AgentMessage, OUTCOME_DELIVERED, OUTCOME_EXPIRED, OUTCOME_QUIET,
+    self, AgentMessage, OUTCOME_DELIVERED, OUTCOME_EXPIRED, OUTCOME_QUIET, OUTCOME_SUPERSEDED,
 };
 
 /// How long a quiet message is kept (7 days).
@@ -132,6 +134,12 @@ pub(crate) struct QuietMessage {
     /// tab leaves do-not-disturb).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) release: Option<QuietRelease>,
+    /// A sender's coalescing key (a browser page-error notice:
+    /// `browser-page-errors:<tab>`): a new message with the same key for the
+    /// same agent supersedes this one while it waits unoffered
+    /// ([`App::store_coalesced_quiet_message`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) coalesce: Option<String>,
 }
 
 /// The typing queue's parts of a DND-stored message.
@@ -670,6 +678,58 @@ impl App {
         release: Option<QuietRelease>,
         now_unix: u64,
     ) -> Result<(), (String, String)> {
+        self.store_quiet_entry(target, message, dnd, release, None, now_unix)
+    }
+
+    /// [`Self::store_quiet_message`] that first supersedes `target`'s
+    /// waiting messages with the same `key` (the agent holds at most one
+    /// per key, the latest): each one not yet offered to its hook leaves the
+    /// store with an update line `superseded`, before the cap is checked.
+    /// One already offered stays (the hook may have put it into the agent's
+    /// context; its acknowledgement finishes it as `delivered`).
+    pub(crate) fn store_coalesced_quiet_message(
+        &mut self,
+        target: &super::terminal_targets::TerminalTarget,
+        message: AgentMessage,
+        dnd: bool,
+        key: String,
+        now_unix: u64,
+    ) -> Result<(), (String, String)> {
+        self.quiet.prune_expired(now_unix);
+        let mine = self.quiet_ids_for(&target.terminal_id);
+        let superseded: Vec<String> = self
+            .quiet
+            .entries
+            .iter()
+            .filter(|entry| {
+                entry.coalesce.as_deref() == Some(key.as_str())
+                    && entry.offered_unix.is_none()
+                    && mine.iter().any(|id| id == entry.id())
+            })
+            .map(|entry| entry.id().to_string())
+            .collect();
+        let replaced = !superseded.is_empty();
+        if replaced {
+            self.quiet.finish(&superseded, OUTCOME_SUPERSEDED, now_unix);
+        }
+        let stored = self.store_quiet_entry(target, message, dnd, None, Some(key), now_unix);
+        if replaced && stored.is_err() {
+            // Refused past the whole store's cap: the pending counts still
+            // drop the superseded one.
+            self.sync_quiet_pending();
+        }
+        stored
+    }
+
+    fn store_quiet_entry(
+        &mut self,
+        target: &super::terminal_targets::TerminalTarget,
+        message: AgentMessage,
+        dnd: bool,
+        release: Option<QuietRelease>,
+        coalesce: Option<String>,
+        now_unix: u64,
+    ) -> Result<(), (String, String)> {
         self.quiet.prune_expired(now_unix);
         let for_target = self
             .quiet
@@ -700,6 +760,7 @@ impl App {
                 offered_unix: None,
                 offers: 0,
                 release: release.filter(|_| dnd),
+                coalesce,
             },
             true,
         );
@@ -1061,6 +1122,7 @@ impl App {
                     dnd: true,
                     offered_unix: None,
                     offers: 0,
+                    coalesce: None,
                 },
                 false,
             );

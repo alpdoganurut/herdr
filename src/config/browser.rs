@@ -128,7 +128,9 @@ pub struct BrowserConfig {
     pub host: String,
     /// Fork (companion browser): page errors of a tab an agent uses go to
     /// that agent quietly (`agent`, Claude only; others pull) or nowhere
-    /// (`off`). Anything else is a diagnostic and reads as `agent`.
+    /// (`off`), only for a page the agent builds or tests (a shown HTML
+    /// view, a `file:` URL, a loopback host; one waiting notice per tab).
+    /// Anything else is a diagnostic and reads as `agent`.
     /// Default: `agent`.
     pub page_errors: String,
     /// Fork (companion launcher): start the installed companion with the

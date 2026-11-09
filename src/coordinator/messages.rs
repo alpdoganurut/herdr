@@ -59,10 +59,15 @@ pub const OUTCOME_UNCONFIRMED: &str = "unconfirmed";
 /// the target's hook took it into its context (or a waiter claimed it), or
 /// to `expired`. Not a refusal: waiters receive it like a queued message.
 pub const OUTCOME_QUIET: &str = "quiet";
+/// Fork: a quiet message a newer one with the same coalescing key replaced
+/// before its target was offered it (a browser page-error notice for the
+/// same tab: the agent holds the latest only). Not a failure: the newer
+/// message carries the news. Only on [`KIND_UPDATE`] lines.
+pub const OUTCOME_SUPERSEDED: &str = "superseded";
 
 /// `kind` of a line that only moves an earlier message (same `id`) to a new
 /// outcome (`queued`, `delivered`, `expired`, `dropped`, `confirmed`,
-/// `unconfirmed`, `quiet`). The log stays
+/// `unconfirmed`, `quiet`, `superseded`). The log stays
 /// append-only; readers fold these lines into the message ([`fold`]).
 pub const KIND_UPDATE: &str = "update";
 

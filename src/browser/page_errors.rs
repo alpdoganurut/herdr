@@ -9,6 +9,13 @@
 //! [`DEDUPE_WINDOW`] (same tab, kind and first 200 chars) is dropped; at
 //! most [`TAB_PUSHES`] batches per tab per [`TAB_PUSH_WINDOW`] and
 //! [`PANE_PUSHES`] per pane per [`PANE_PUSH_WINDOW`]. Pure data.
+//!
+//! Scope: only a page the agent builds or tests sends it notices (an HTML
+//! view from `browser show`, or a URL [`notice_url`] accepts: `file:`, a
+//! loopback host); another site's errors stay in the tab's console for
+//! `herdr browser console`. The App stores at most one batch per agent and
+//! tab: a new one supersedes the one still waiting
+//! (src/app/quiet_messages.rs, [`PageErrorBatch::coalesce_key`]).
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::time::{Duration, Instant};
@@ -209,12 +216,64 @@ impl PageErrorQueue {
     }
 }
 
+/// Whether a page at `url` is one the agent builds or tests, so its errors
+/// are worth a notice: a `file:` URL, or `http(s)` on `localhost`,
+/// `*.localhost`, `127.0.0.1` or `[::1]` (case-insensitive; port, user
+/// info and a trailing dot ignored). Any other site, and every other
+/// scheme, is not.
+pub fn notice_url(url: &str) -> bool {
+    let url = url.trim();
+    let Some((scheme, rest)) = url.split_once(':') else {
+        return false;
+    };
+    let scheme = scheme.to_ascii_lowercase();
+    if scheme == "file" {
+        return true;
+    }
+    if scheme != "http" && scheme != "https" {
+        return false;
+    }
+    let Some(rest) = rest.strip_prefix("//") else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let host_port = authority.rsplit('@').next().unwrap_or_default();
+    let host = if host_port.starts_with('[') {
+        match host_port.find(']') {
+            Some(end) => &host_port[..=end],
+            None => return false,
+        }
+    } else {
+        host_port.split(':').next().unwrap_or_default()
+    };
+    let host = host.to_ascii_lowercase();
+    let host = host.strip_suffix('.').unwrap_or(&host);
+    matches!(host, "localhost" | "127.0.0.1" | "[::1]")
+        || (host.len() > ".localhost".len() && host.ends_with(".localhost"))
+}
+
+/// Whether an error of `kind` with `text` on a tab now at `url` is worth a
+/// notice ([`notice_url`]). A failed main-frame load can leave the tab on
+/// Chromium's error page, so for `load_failed` the URL herdr's sidecar or
+/// the companion puts last in the text (the request's URL, not page
+/// output) counts too.
+pub fn notice_worthy(url: &str, kind: &str, text: &str) -> bool {
+    notice_url(url)
+        || (kind == "load_failed" && text.split_whitespace().next_back().is_some_and(notice_url))
+}
+
 /// A page label on the header line: no control characters, one line.
 fn header_text(text: &str) -> String {
     crate::agents_model::envelope::strip_controls(text).replace(['\n', '\t'], " ")
 }
 
 impl PageErrorBatch {
+    /// The quiet store's coalescing key: a new batch for the same agent and
+    /// tab supersedes the one still waiting.
+    pub fn coalesce_key(&self) -> String {
+        format!("browser-page-errors:{}", self.tab)
+    }
+
     /// The quiet message: the page's words fenced and labelled untrusted.
     pub fn message_text(&self) -> String {
         let mut body = String::new();
@@ -249,6 +308,62 @@ mod tests {
             url: "https://x.test/".into(),
             title: "X".into(),
         }
+    }
+
+    #[test]
+    fn fork_smoke_page_error_notices_are_for_files_and_loopback_hosts_only() {
+        for url in [
+            "file:///Users/me/report.html",
+            "FILE://localhost/tmp/x.html",
+            "http://localhost/",
+            "http://localhost:5173/app?x=1#y",
+            "HTTPS://LocalHost.:8443",
+            "http://127.0.0.1:8080/",
+            "http://user:pw@127.0.0.1/",
+            "http://[::1]:3000/",
+            "http://[::1]",
+            "http://app.localhost:3000/",
+            "  http://localhost  ",
+        ] {
+            assert!(notice_url(url), "{url}");
+        }
+        for url in [
+            "https://apps.apple.com/us/app/x",
+            "https://example.com/",
+            "https://localhost.evil.com/",
+            "http://127.0.0.1.nip.io/",
+            "http://localhost@evil.com/",
+            "http://evil.com/?next=http://localhost/",
+            "http://evil.com/#localhost",
+            "http://.localhost/",
+            "http://[::2]/",
+            "http://127.0.0.2/",
+            "about:blank",
+            "chrome-error://chromewebdata/",
+            "data:text/html,hi",
+            "localhost:3000",
+            "",
+        ] {
+            assert!(!notice_url(url), "{url}");
+        }
+        // A failed load names the request's URL last; only `load_failed`
+        // looks at the text (page output never decides).
+        let page = "chrome-error://chromewebdata/";
+        assert!(notice_worthy(
+            page,
+            "load_failed",
+            "net::ERR_CONNECTION_REFUSED http://localhost:3000/"
+        ));
+        assert!(!notice_worthy(
+            page,
+            "load_failed",
+            "net::ERR_FAILED https://x.test/"
+        ));
+        assert!(!notice_worthy(
+            "https://x.test/",
+            "console_error",
+            "fetch http://localhost:3000/"
+        ));
     }
 
     #[test]

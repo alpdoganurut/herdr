@@ -2898,7 +2898,7 @@ fn page_errors_are_batched_deduped_and_capped_per_tab() {
     let (hub, shared, _stream, _home) = hub("page-errors");
     let actor = pane("w2:pD");
     let opened = hub
-        .run(&actor, params(open_op("https://a.test/")))
+        .run(&actor, params(open_op("http://localhost:5173/")))
         .expect("open");
     let target = opened.data["target_id"]
         .as_str()
@@ -2916,15 +2916,16 @@ fn page_errors_are_batched_deduped_and_capped_per_tab() {
         // A repeat of the first: deduped.
         state.events.push(event("page_error", "boom 0"));
     }
-    // Any op makes the fake host send the queued events first.
+    // Any op makes the fake host send the queued events first (a navigate
+    // keeps the tab on the local page that notices need).
     hub.run(
         &actor,
-        params(BrowserOp::Links {
-            filter: None,
-            max: None,
+        params(BrowserOp::Navigate {
+            url: "http://localhost:5173/".into(),
+            wait: None,
         }),
     )
-    .expect("links");
+    .expect("navigate");
     let deadline = Instant::now() + Duration::from_secs(2);
     while !hub.page_errors_pending() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(10));
@@ -2957,12 +2958,12 @@ fn page_errors_are_batched_deduped_and_capped_per_tab() {
         drop(state);
         hub.run(
             &actor,
-            params(BrowserOp::Links {
-                filter: None,
-                max: None,
+            params(BrowserOp::Navigate {
+                url: "http://localhost:5173/".into(),
+                wait: None,
             }),
         )
-        .expect("links");
+        .expect("navigate");
         std::thread::sleep(Duration::from_millis(30));
         pushed += hub
             .take_page_errors_at(later + super::page_errors::BATCH_WINDOW * (round + 2))
@@ -2982,14 +2983,130 @@ fn page_errors_are_batched_deduped_and_capped_per_tab() {
         .push(event("page_error", "quiet please"));
     hub.run(
         &actor,
+        params(BrowserOp::Navigate {
+            url: "http://localhost:5173/".into(),
+            wait: None,
+        }),
+    )
+    .expect("navigate");
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(!hub.page_errors_pending());
+}
+
+/// Runs any op so the fake host sends its queued events, then waits a
+/// moment for the reader thread to apply them.
+fn flush_host_events(hub: &BrowserHub, actor: &BrowserActor) {
+    hub.run(
+        actor,
         params(BrowserOp::Links {
             filter: None,
             max: None,
         }),
     )
     .expect("links");
-    std::thread::sleep(Duration::from_millis(50));
-    assert!(!hub.page_errors_pending());
+    std::thread::sleep(Duration::from_millis(80));
+}
+
+#[test]
+fn fork_smoke_page_errors_notify_only_for_pages_the_agent_builds() {
+    let (hub, shared, _stream, home) = hub("page-error-scope");
+    let actor = pane("w2:pD");
+    let target_of = |result: &crate::api::schema::BrowserRunResult| {
+        hub.get(None)
+            .tabs
+            .iter()
+            .find(|tab| Some(tab.id.as_str()) == result.tab.as_deref())
+            .map(|tab| tab.target_id.clone())
+            .expect("the tab in the ledger")
+    };
+    let error = |target: &str, kind: &str, text: &str| {
+        json!({ "event": "tab", "profile": "main", "target": target, "kind": kind, "text": text })
+            .to_string()
+    };
+    let later = || Instant::now() + super::page_errors::BATCH_WINDOW * 2;
+    // Another site: no notice, but the error is still on the tab.
+    let site = target_of(
+        &hub.run(&actor, params(open_op("https://apps.apple.com/us/app")))
+            .expect("open"),
+    );
+    shared.lock().unwrap().events.extend([
+        error(&site, "console_error", "CORS policy: blocked"),
+        error(&site, "page_error", "TypeError: x is undefined"),
+        error(
+            &site,
+            "load_failed",
+            "net::ERR_FAILED https://apps.apple.com/us/app",
+        ),
+    ]);
+    flush_host_events(&hub, &actor);
+    assert!(
+        !hub.page_errors_pending(),
+        "a third-party site's errors are not sent"
+    );
+    assert!(hub.take_page_errors_at(later()).is_empty());
+    let info = hub.get(None);
+    let tab = info
+        .tabs
+        .iter()
+        .find(|tab| tab.target_id == site)
+        .expect("the site's tab");
+    assert_eq!(tab.console_errors, 2, "still counted for `browser console`");
+    // A loopback dev server and a local file: one notice each.
+    for url in ["http://127.0.0.1:8080/app", "file:///tmp/report.html"] {
+        let target = target_of(&hub.run(&actor, params(open_op(url))).expect("open"));
+        shared
+            .lock()
+            .unwrap()
+            .events
+            .push(error(&target, "page_error", &format!("boom on {url}")));
+        flush_host_events(&hub, &actor);
+        let batches = hub.take_page_errors_at(later());
+        assert_eq!(batches.len(), 1, "{url}");
+        assert_eq!(batches[0].pane, "w2:pD");
+    }
+    // A failed load of a dev server that is down, now on Chromium's error
+    // page: the request's URL in the text counts.
+    let down = target_of(
+        &hub.run(&actor, params(open_op("http://localhost:3000/")))
+            .expect("open"),
+    );
+    shared.lock().unwrap().events.extend([
+        json!({ "event": "tab", "profile": "main", "target": down, "kind": "navigated", "url": "chrome-error://chromewebdata/", "title": "", "initiator": "command" }).to_string(),
+        error(&down, "load_failed", "net::ERR_CONNECTION_REFUSED http://localhost:3000/"),
+    ]);
+    flush_host_events(&hub, &actor);
+    assert_eq!(hub.take_page_errors_at(later()).len(), 1);
+    // A shown HTML view notifies whatever its URL became.
+    let file = home.join("view.html");
+    std::fs::write(&file, "<p>v</p>").unwrap();
+    let shown = hub
+        .run(
+            &actor,
+            params(BrowserOp::Show {
+                file: file.display().to_string(),
+                allow_network: true,
+                page_api: false,
+                watch: false,
+                focus: false,
+                title: None,
+            }),
+        )
+        .expect("show");
+    let profile = shown
+        .tab
+        .as_deref()
+        .and_then(|tab| tab.split_once(':'))
+        .map(|(profile, _)| profile.to_string())
+        .expect("tab id");
+    let view = target_of(&shown);
+    shared.lock().unwrap().events.extend([
+        json!({ "event": "tab", "profile": profile, "target": view, "kind": "navigated", "url": "https://cdn.example/after-redirect", "title": "", "initiator": "other" }).to_string(),
+        json!({ "event": "tab", "profile": profile, "target": view, "kind": "page_error", "text": "view boom" }).to_string(),
+    ]);
+    flush_host_events(&hub, &actor);
+    let batches = hub.take_page_errors_at(later());
+    assert_eq!(batches.len(), 1, "an HTML view always notifies");
+    assert!(batches[0].message_text().contains("view boom"));
 }
 
 #[test]

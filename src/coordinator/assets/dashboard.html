@@ -573,8 +573,10 @@ function renderMessages(live) {
     // a queued one that never got there. "confirmed": its target read it or
     // started a turn on it; "unconfirmed": no proof it got there (bad).
     // "quiet": stored for its target, not typed in (pending, not bad).
+    // "superseded": a newer quiet message from the same source replaced it
+    // (not bad).
     const delivered = outcome === "sent" || outcome === "logged" || outcome === "delivered" ||
-      outcome === "confirmed";
+      outcome === "confirmed" || outcome === "superseded";
     const pending = outcome === "queued" || outcome === "quiet";
     add(body, el("span", "outcome" + (delivered ? "" : pending ? " pending" : " bad"), "[" + outcome + "] "));
     if (str(m.reply_to)) add(body, el("span", "reply", "↩ " + str(m.reply_to) + " "));
