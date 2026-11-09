@@ -344,19 +344,96 @@ export function captureTimeout(promise, ms) {
 export function laneShot(lane, send, deadlineAt = null) {
   let request = null;
   let abandoned = false;
+  let sent = false;
+  let settled = false;
   // past the op's deadline its caller has been answered already: the request
   // is never sent, however long it waited in the lane
   const wanted = () => !abandoned && (deadlineAt == null || Date.now() < deadlineAt);
+  const run = () => {
+    sent = true;
+    return Promise.resolve().then(send).finally(() => { settled = true; });
+  };
   return {
     wait(ms) {
       if (!request) {
         if (!wanted()) return Promise.reject(new Error('capture abandoned before it started'));
-        request = lane.enqueue(send, wanted);
+        request = lane.enqueue(run, wanted);
         request.catch(() => {});
       }
       return captureTimeout(request, ms);
     },
     abandon() { abandoned = true; },
+    /** Chromium has the request and has not answered it. */
+    pending() { return sent && !settled; },
+  };
+}
+
+/** How long a clipped capture waits for its tab to be ready: a size, its
+ *  document loaded (a quiet select halfway when it has no size). */
+export const CLIP_READY_MS = 4000;
+const CLIP_PROBE = `({ width: innerWidth, height: innerHeight, loaded: document.readyState === 'complete' && !location.href.startsWith(${JSON.stringify('about:blank#herdr-view=')}) })`;
+
+/** Chromium's clipped Page.captureScreenshot (a full page, an element, the
+ *  scaled inline copy) sets the clip as device-metrics emulation on the
+ *  session (a viewport offset and scale) and takes it back when the capture
+ *  settles, but only when the view had a size at request time, and never
+ *  for a request a new document overtook (a navigation, a reload, the
+ *  companion's about:blank marker giving way to the page right after a
+ *  show: Chromium does not answer it at all). The emulation that stays makes
+ *  the tab draw every frame translated by its scroll offset, through reloads,
+ *  while the page itself and every capture look right. So a clipped capture
+ *  first waits here for its tab to have a size and its document to be
+ *  loaded, inside `waitMs` and the op's deadline: without a size by halfway
+ *  it selects the tab quietly once (a companion view that was never shown
+ *  has none), still none at the end is `tab_not_rendered` and no capture is
+ *  sent; a document still loading by then (a page that never finishes, a
+ *  blank tab still on its marker) goes ahead. Answers the last probe. */
+export async function clipReady({ send, select = null, deadlineAt = Infinity, log = () => {}, waitMs = CLIP_READY_MS, pollMs = 100 }) {
+  const sized = (p) => Boolean(p && p.width > 0 && p.height > 0);
+  const probe = () => captureTimeout(send('Runtime.evaluate', { expression: CLIP_PROBE, returnByValue: true }), 1000)
+    .then((r) => (r && r.result ? r.result.value : null), () => null);
+  const start = Date.now();
+  const until = Math.min(start + waitMs, deadlineAt - CAPTURE_MIN_MS);
+  let selected = false;
+  let last = null;
+  for (;;) {
+    last = await probe();
+    if (sized(last) && last.loaded) return last;
+    if (Date.now() >= until) break;
+    if (!selected && select && last && !sized(last) && Date.now() - start >= waitMs / 2) {
+      selected = true;
+      const ok = await Promise.resolve().then(select).catch(() => false);
+      log(`screenshot: the tab has no size yet; ${ok ? 'selected it quietly' : 'it could not be selected'}`);
+      continue;
+    }
+    await new Promise((r) => setTimeout(r, pollMs));
+  }
+  if (last && !sized(last)) {
+    throw Object.assign(new Error('the tab has not been shown yet, so it has no size to capture; show it (browser_focus) and try again'), { code: 'tab_not_rendered' });
+  }
+  if (last) log('screenshot: the page is still loading; capturing anyway');
+  return last;
+}
+
+/** Takes back the device metrics a clipped capture left on the host's
+ *  session (see clipReady). A no-op when there are none: the host never sets
+ *  device metrics of its own on that session. */
+export function clearClipEmulation(send) {
+  // the renderer answers it (a busy one may not soon): never more than 1 s
+  return captureTimeout(Promise.resolve().then(() => send('Emulation.clearDeviceMetricsOverride')), 1000).then(() => true, () => false);
+}
+
+/** A capture's request for the lane: the capture, then the device metrics a
+ *  clipped one may have left cleared before the next capture of the page
+ *  starts (after a viewport shot too: that heals a tab an older sidecar left
+ *  offset on this session). */
+export function cleanCapture(send, params) {
+  return async () => {
+    try {
+      return await send('Page.captureScreenshot', params);
+    } finally {
+      await clearClipEmulation(send);
+    }
   };
 }
 
@@ -374,29 +451,40 @@ export function shotParams({ type, quality, clip = null, beyond = false }) {
 /** A screenshot op's first capture, through the page's lane: the element's box
  *  (`element()`, measured first), the whole document (`full`, measured with
  *  Page.getLayoutMetrics) or the viewport (neither: no clip), then
- *  captureWithQuietRetry. `send` is the host's CDP session, `select` the quiet
- *  select; every laneShot made goes into `shots` (the op abandons them when it
- *  is over). Answers Chromium's `{ data }`. */
+ *  captureWithQuietRetry. A clipped one waits for clipReady first, has its
+ *  device metrics cleared once Chromium answers (cleanCapture), and when
+ *  the op gives up on it while Chromium still holds it (a request a new
+ *  document overtook is never answered) clears them then. `send` is the
+ *  host's CDP session, `select` the quiet select; every laneShot made goes
+ *  into `shots` (the op abandons them when it is over). Answers Chromium's
+ *  `{ data }`. */
 export async function firstShot({ send, lane, type, quality, element = null, full = false, select, log = () => {}, deadlineAt, stallMs, shots }) {
+  if (element || full) await clipReady({ send, select, deadlineAt, log });
   let clip = element ? await element() : null;
   if (!clip && full) {
     const metrics = await send('Page.getLayoutMetrics');
     const content = metrics.cssContentSize || metrics.contentSize;
     clip = { x: 0, y: 0, width: content.width, height: content.height };
   }
-  const shot = laneShot(lane, () => send('Page.captureScreenshot', shotParams({ type, quality, clip, beyond: Boolean(clip) })), deadlineAt);
+  const params = shotParams({ type, quality, clip, beyond: Boolean(clip) });
+  const shot = laneShot(lane, cleanCapture(send, params), deadlineAt);
   shots.push(shot);
   // A background tab whose renderer stalled: select it quietly and wait
   // once more for the same capture, inside the op's deadline; an element
   // capture is not retried.
-  return captureWithQuietRetry({
-    capture: (timeout) => shot.wait(timeout),
-    select,
-    log,
-    deadlineAt,
-    stallMs,
-    scoped: Boolean(element),
-  });
+  try {
+    return await captureWithQuietRetry({
+      capture: (timeout) => shot.wait(timeout),
+      select,
+      log,
+      deadlineAt,
+      stallMs,
+      scoped: Boolean(element),
+    });
+  } catch (err) {
+    if (clip && shot.pending()) await clearClipEmulation(send);
+    throw err;
+  }
 }
 
 /** Panes that are gone: the overlay of every page a pane's directive touched

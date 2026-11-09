@@ -14,7 +14,7 @@ import { createRequire } from 'node:module';
 import readline from 'node:readline';
 import fs from 'node:fs';
 import { EXTRACT_SOURCE, LINKS_SOURCE } from './extract.mjs';
-import { Overlay, Companion, NUDGE_URL, dismissPanes, captureWithQuietRetry, CaptureLane, laneShot, shotParams, firstShot, SELECT_BUDGET_MS, describe, probePages, ControlPage, ViewWatches, isFurnitureUrl, VIEW_MARKER, CompanionDialog, reconcileDialogs, pruneAnswered, DIALOG_BINDING } from './activity.mjs';
+import { Overlay, Companion, NUDGE_URL, dismissPanes, captureWithQuietRetry, CaptureLane, laneShot, shotParams, firstShot, cleanCapture, clearClipEmulation, SELECT_BUDGET_MS, describe, probePages, ControlPage, ViewWatches, isFurnitureUrl, VIEW_MARKER, CompanionDialog, reconcileDialogs, pruneAnswered, DIALOG_BINDING } from './activity.mjs';
 import { pathToFileURL } from 'node:url';
 import nodePath from 'node:path';
 // the act's change probe and timeout message (on a line of their own)
@@ -805,7 +805,9 @@ const ops = {
     // its document's height. A viewport shot sends no clip at all.
     // Past the op's deadline (the caller already has its browser_timeout) no
     // capture is sent: the lane checks it when the request's turn comes.
-    const capture = (params) => laneShot(state.captures, () => state.session.send('Page.captureScreenshot', params), deadlineAt);
+    // A clipped capture waits for a tab with a size and its document loaded,
+    // and the device metrics it sets are always taken back (firstShot,
+    // clipReady in activity.mjs).
     const shots = [];
     let buffer;
     // The agent's picture is the page: the activity overlay steps aside for
@@ -873,12 +875,15 @@ const ops = {
       if (element) clip = { ...element, scale };
       else if (args.full) clip = { x: 0, y: 0, width: content.width, height: content.height, scale };
       else clip = { x: vis.pageX, y: vis.pageY, width: vis.clientWidth, height: vis.clientHeight, scale };
-      const small = capture(shotParams({ type, quality, clip, beyond: Boolean(element || args.full) }));
+      // a clip: its device metrics are cleared after it (see clipReady in activity.mjs)
+      const send = (method, params) => state.session.send(method, params);
+      const small = laneShot(state.captures, cleanCapture(send, shotParams({ type, quality, clip, beyond: Boolean(element || args.full) })), deadlineAt);
       shots.push(small);
       let answer;
       try {
         answer = await small.wait(left());
       } catch (err) {
+        if (small.pending()) await clearClipEmulation(send);
         if (/Timeout/i.test(err.message)) fail('tab_not_rendered', 'the tab could not be drawn for the inline copy; try again');
         throw err;
       }
