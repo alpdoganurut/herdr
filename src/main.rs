@@ -43,6 +43,7 @@ mod metadata_tokens;
 mod noninteractive_process;
 mod notes;
 mod pane;
+mod perf;
 use ghostty_vt::pane_graphics_files;
 mod persist;
 mod platform;

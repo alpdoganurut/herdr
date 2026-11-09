@@ -410,6 +410,9 @@ src/protocol/render_ansi/host_scroll.rs
 src/server/headless/placement_action.rs
 apps/companion/src/ui/bar-model.js
 apps/companion/test/bar-model.test.js
+src/perf/mod.rs
+src/perf/watchdog.rs
+src/perf/tests.rs
 
 
 ## 2. Owned fields on upstream structs (E0063 in upstream-authored literals: insert the default)
@@ -1785,6 +1788,7 @@ src/client/shell/context_menu.rs  additive: compact bar: GLYPH_OPEN is `⊟` U+2
 src/protocol/endpoint.rs  additive: compact bar: EndpointClientHello.placement_actions (`#[serde(default)]`, last, with its doc comment); the tests' hello() literal sets it false
 src/client/handshake.rs  additive: compact bar: the endpoint hello sets placement_actions: true (with its comment) after blob_codecs
 src/server/client_transport.rs  additive: compact bar: after the endpoint hello's incompatibility check, board().set_takes_actions(client_id, hello.placement_actions) (with its comment); the tests' endpoint_hello literal sets placement_actions: false
+src/main.rs  additive: perf watch: `mod perf;` directly after `mod pane;`
 ## 8. Extended surfaces (upstream touch forces human review in the report, even when green)
 src/client/shell/notifications.rs  mid-logic: render_notification_card (and the fork's fold line) narrows `area` through toast_area_beside_dock directly after its content width, so a right-anchored toast that fits ends one column left of an open info dock; render_visible_notification and render_mobile_notification_banner swap the drawn `●` for notification_glyph (reminder marker, `✓` finished, `×` needs attention) via put_notification_glyph after the upstream render; render_notification_card and render_mobile_notice_banner are unchanged; Finished uses palette.green (was blue)
 src/terminal/state.rs  mid-logic: set_detected_state_with_screen_signals_at (suspend reconcile, hook-clear durable session, name kept on exit), clear_full_lifecycle_hook_suppression_for_detected_agent (replacement sessions), set_agent_session_ref_for_session_start (launch-session identity), release_agent_with_mutation, managed_agent_launch_pending, managed_agent_interactive_ready, managed_agent_kind, reconcile_managed_agent_at, clear_agent_name, clear_agent_runtime_identity_after_respawn; active_subagents (with subagent_snapshot_seen) is forgotten in recompute_effective_state on an agent label change (before the early return; before the first snapshot an Idle state also clears the set, the older Claude rule; a session other than subagent_session clears it too), release_agent_with_mutation, begin_agent_suspend and clear_agent_runtime_identity_after_respawn; a turn end and an Unknown with the same label keep it; the set never changes the status (recompute_effective_state uses the detected state as upstream does; background subagents are not a turn); report_subagents_with_mutation (start / stop / snapshot through the effective state) is the only path the API uses; active_subagent_count is len() in any state, 0 while suspended Agents v2: TerminalState carries agent_meta (persisted through PaneSnapshot.agent_meta), turn (runtime only; mark_restored makes a restored or handed-off terminal start Unknown) and created_unix; SuspendedAgent.suspended_by.
@@ -3299,6 +3303,13 @@ app::quiet_messages::tests::fork_smoke_quiet_messages_follow_a_claude_session_ch
 app::quiet_messages::tests::fork_smoke_an_agent_exit_then_another_session_detaches_its_messages
 app::quiet_messages::tests::fork_smoke_a_restore_does_not_move_a_message_onto_a_terminal_without_its_session
 app::quiet_messages::tests::fork_smoke_a_handoff_replacement_start_finishes_no_stored_message
+perf::tests::fork_smoke_perf_a_long_busy_period_is_reported_once
+perf::tests::fork_smoke_perf_an_idle_loop_never_stalls
+perf::tests::fork_smoke_perf_begin_keeps_the_first_mark_until_the_loop_waits
+perf::tests::fork_smoke_perf_a_wall_clock_jump_drops_the_open_busy_period
+perf::tests::fork_smoke_perf_a_paused_watchdog_drops_the_open_busy_period
+perf::tests::fork_smoke_perf_small_wall_clock_corrections_do_not_hide_a_stall
+perf::tests::fork_smoke_perf_counters_and_gauges_are_plain_atomics
 ## 11. Fork changelog (moved out of docs/next/CHANGELOG.md)
 A user-facing feature or fix that changes what herdr+ offers also updates the showcase page `docs/fork/herdr-plus.html` (self-contained, no network resources, no personal data; mockups follow the current code), in the same change.
 ### Added
