@@ -35,7 +35,7 @@ pub const HEARTBEAT_MS: u64 = 5_000;
 /// A lease not renewed within this goes.
 pub const LEASE_TTL_MS: u64 = 15_000;
 /// What the lease answer advertises beyond the register methods.
-pub const SERVER_FEATURES: [&str; 7] = [
+pub const SERVER_FEATURES: [&str; 8] = [
     "host_sync",
     "host_report",
     "send_page",
@@ -46,6 +46,9 @@ pub const SERVER_FEATURES: [&str; 7] = [
     // Fork (compact bar): browser.placement_action (the bar's expand,
     // restore and close; without it the companion hides them).
     "placement_actions",
+    // Fork (browser keys): browser.view_cycle (the lease's view_cycle_keys
+    // pressed in the companion; without it the companion takes no key).
+    "view_cycle",
 ];
 /// Fork (page API): advertised besides [`SERVER_FEATURES`] while `[browser]
 /// page_api` is on: the host gives `page_api` views `window.herdr` and
@@ -253,6 +256,7 @@ impl BrowserHub {
             expires_unix,
             managed.then(|| self.companion_update_ready()).flatten(),
             self.config().page_api,
+            self.view_cycle_keys(),
         ))
     }
 
@@ -277,6 +281,7 @@ impl BrowserHub {
             expires_unix,
             managed.then(|| self.companion_update_ready()).flatten(),
             self.config().page_api,
+            self.view_cycle_keys(),
         ))
     }
 
@@ -300,6 +305,24 @@ impl BrowserHub {
             "companion browser unregistered"
         );
         Ok(())
+    }
+
+    /// Fork (browser keys): the lease's `view_cycle_keys` from now on (the
+    /// next register or heartbeat answers them).
+    pub fn set_view_cycle_keys(&self, keys: Vec<String>) {
+        *self
+            .inner
+            .view_cycle_keys
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = keys;
+    }
+
+    fn view_cycle_keys(&self) -> Vec<String> {
+        self.inner
+            .view_cycle_keys
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Whether `lease_id` names the live lease (the App lane's check).
@@ -748,6 +771,7 @@ fn lease_info(
     expires_unix: u64,
     update: Option<String>,
     page_api: bool,
+    view_cycle_keys: Vec<String>,
 ) -> BrowserHostLeaseInfo {
     let mut server_features: Vec<String> = SERVER_FEATURES.iter().map(|f| f.to_string()).collect();
     if page_api {
@@ -763,7 +787,66 @@ fn lease_info(
         host_protocol: COMPANION_HOST_PROTOCOL,
         server_features,
         update,
+        view_cycle_keys,
     }
+}
+
+/// Fork (browser keys): the direct bindings of an action as the lease's
+/// `view_cycle_keys` labels: modifiers `ctrl`, `alt`, `shift`, `super` in
+/// that order, then the key (`b`, `space`, `tab`, `f5`, …), one spelling on
+/// every platform. Prefixed bindings, and keys or modifiers a host cannot
+/// tell apart (hyper, meta), are left out.
+pub fn view_cycle_key_labels(keybinds: &crate::config::ActionKeybinds) -> Vec<String> {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    let mut labels = Vec::new();
+    for binding in &keybinds.bindings {
+        if !binding.trigger.is_direct() {
+            continue;
+        }
+        let (code, modifiers) = binding.trigger.combo();
+        if modifiers.intersects(KeyModifiers::HYPER | KeyModifiers::META) {
+            continue;
+        }
+        let mut shift = modifiers.contains(KeyModifiers::SHIFT);
+        let key = match code {
+            KeyCode::Char(' ') => "space".to_string(),
+            KeyCode::Char('+') => "plus".to_string(),
+            KeyCode::Char(c) => c.to_lowercase().to_string(),
+            KeyCode::Enter => "enter".into(),
+            KeyCode::Esc => "esc".into(),
+            KeyCode::Tab => "tab".into(),
+            KeyCode::BackTab => {
+                shift = true;
+                "tab".into()
+            }
+            KeyCode::Backspace => "backspace".into(),
+            KeyCode::Left => "left".into(),
+            KeyCode::Right => "right".into(),
+            KeyCode::Up => "up".into(),
+            KeyCode::Down => "down".into(),
+            KeyCode::F(n) => format!("f{n}"),
+            _ => continue,
+        };
+        let mut parts: Vec<&str> = Vec::new();
+        if modifiers.contains(KeyModifiers::CONTROL) {
+            parts.push("ctrl");
+        }
+        if modifiers.contains(KeyModifiers::ALT) {
+            parts.push("alt");
+        }
+        if shift {
+            parts.push("shift");
+        }
+        if modifiers.contains(KeyModifiers::SUPER) {
+            parts.push("super");
+        }
+        parts.push(&key);
+        let label = parts.join("+");
+        if !labels.contains(&label) {
+            labels.push(label);
+        }
+    }
+    labels
 }
 
 pub fn lease_unknown() -> BrowserError {
@@ -1271,5 +1354,44 @@ impl BrowserHub {
                     }
                 }
             });
+    }
+}
+
+#[cfg(test)]
+mod view_cycle_key_tests {
+    use super::view_cycle_key_labels;
+    use crate::config::ActionKeybinds;
+
+    fn labels(bindings: &[&str]) -> Vec<String> {
+        let bindings: Vec<String> = bindings.iter().map(|label| label.to_string()).collect();
+        view_cycle_key_labels(&ActionKeybinds::from_labels(&bindings).expect("parses"))
+    }
+
+    /// Fork (browser keys): the lease names only direct bindings, one
+    /// spelling on every platform (`super`, never `cmd`), modifiers in a
+    /// fixed order; prefixed bindings and hyper are left out.
+    #[test]
+    fn view_cycle_keys_are_the_direct_bindings_in_one_spelling() {
+        assert_eq!(labels(&["ctrl+shift+b"]), ["ctrl+shift+b"]);
+        assert_eq!(labels(&["ctrl+B"]), ["ctrl+shift+b"]);
+        assert_eq!(
+            labels(&["shift+alt+ctrl+x", "cmd+f5", "ctrl+shift+tab", "alt+space"]),
+            [
+                "ctrl+alt+shift+x",
+                "super+f5",
+                "ctrl+shift+tab",
+                "alt+space"
+            ]
+        );
+        assert!(
+            labels(&["prefix+shift+b"]).is_empty(),
+            "the prefix is herdr's"
+        );
+        assert_eq!(
+            labels(&["prefix+shift+b", "ctrl+shift+b"]),
+            ["ctrl+shift+b"]
+        );
+        assert!(labels(&["hyper+b"]).is_empty());
+        assert!(labels(&[]).is_empty());
     }
 }

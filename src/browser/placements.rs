@@ -17,6 +17,10 @@
 //! Fork (compact bar): the host's asks on a placement (promote, restore,
 //! close; `browser.placement_action`) wait here, numbered, for the headless
 //! server's render pass that relays each to the client owning it.
+//!
+//! Fork (browser keys): the host's cycle key (`browser.view_cycle`) waits
+//! here the same way, for the client owning the placement the host covers,
+//! else the foreground client (the board keeps which one that is).
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -64,6 +68,20 @@ pub struct PlacementActionRecord {
     pub action: BrowserPlacementAction,
 }
 
+/// Fork (browser keys): the cycles kept for the relay (oldest dropped).
+pub const VIEW_CYCLE_CAP: usize = 16;
+
+/// Fork (browser keys): one cycle-key press in the host, for its client.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ViewCycleRecord {
+    /// From 1, per server process.
+    pub revision: u64,
+    /// The server's id of the client that takes it.
+    pub client_id: u64,
+    /// The herdr tab the host showed when pressed.
+    pub tab_id: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Entry {
     spec: BrowserPlacementSpec,
@@ -97,6 +115,16 @@ struct Board {
     /// asks (`EndpointClientHello.placement_actions`); an older client
     /// ignores them, so they are refused for it.
     takes_actions: HashSet<u64>,
+    /// Fork (browser keys): the clients whose handshake says they take the
+    /// host's cycle key (`EndpointClientHello.view_cycle`).
+    takes_view_cycle: HashSet<u64>,
+    /// Fork (browser keys): the host's cycle-key presses, at most
+    /// [`VIEW_CYCLE_CAP`].
+    view_cycles: VecDeque<ViewCycleRecord>,
+    view_cycle_revision: u64,
+    /// Fork (browser keys): the server's foreground client, with or
+    /// without a placement (the cycle's target when the host covers none).
+    foreground: Option<u64>,
 }
 
 /// Fork (compact bar): why an ask was not queued.
@@ -169,6 +197,10 @@ impl PlacementBoard {
                 actions: VecDeque::new(),
                 action_revision: 0,
                 takes_actions: HashSet::new(),
+                takes_view_cycle: HashSet::new(),
+                view_cycles: VecDeque::new(),
+                view_cycle_revision: 0,
+                foreground: None,
             }),
             changed: Condvar::new(),
         }
@@ -255,6 +287,10 @@ impl PlacementBoard {
     pub fn remove(&self, client_id: u64) -> bool {
         let mut board = self.lock();
         board.takes_actions.remove(&client_id);
+        board.takes_view_cycle.remove(&client_id);
+        if board.foreground == Some(client_id) {
+            board.foreground = None;
+        }
         self.remove_locked(&mut board, client_id)
     }
 
@@ -271,6 +307,23 @@ impl PlacementBoard {
             self.bump(&mut board);
         }
         changed
+    }
+
+    /// Fork (browser keys): client `client_id`'s handshake said whether it
+    /// takes the host's cycle key. Returns whether that changed.
+    pub fn set_takes_view_cycle(&self, client_id: u64, takes: bool) -> bool {
+        let mut board = self.lock();
+        if takes {
+            board.takes_view_cycle.insert(client_id)
+        } else {
+            board.takes_view_cycle.remove(&client_id)
+        }
+    }
+
+    /// Fork (browser keys): the server's foreground client now (no
+    /// placement needed; not part of `browser.placements`, so no `rev`).
+    pub fn set_foreground(&self, client_id: Option<u64>) {
+        self.lock().foreground = client_id;
     }
 
     fn remove_locked(&self, board: &mut Board, client_id: u64) -> bool {
@@ -403,6 +456,62 @@ impl PlacementBoard {
         Ok(revision)
     }
 
+    /// Fork (browser keys): the host's cycle key, for the client owning
+    /// placement `id` when the board holds it, else the foreground client.
+    /// Returns the press's revision; refused `NotFound` with no client to
+    /// take it, `Unsupported` for a client that predates the relay.
+    pub fn queue_view_cycle(
+        &self,
+        id: Option<&str>,
+        tab_id: Option<&str>,
+    ) -> Result<u64, ActionRefused> {
+        let id = id
+            .map(|id| clip(id.trim(), MAX_ID))
+            .filter(|id| !id.is_empty());
+        let tab_id = tab_id
+            .map(|tab_id| clip(tab_id.trim(), MAX_TAB_ID))
+            .filter(|tab_id| !tab_id.is_empty());
+        let mut board = self.lock();
+        let owner = id.and_then(|id| {
+            board
+                .entries
+                .iter()
+                .find(|(_, entry)| entry.spec.id == id)
+                .map(|(client_id, _)| *client_id)
+        });
+        let client_id = owner.or(board.foreground).ok_or(ActionRefused::NotFound)?;
+        if !board.takes_view_cycle.contains(&client_id) {
+            return Err(ActionRefused::Unsupported);
+        }
+        board.view_cycle_revision = board.view_cycle_revision.saturating_add(1);
+        let revision = board.view_cycle_revision;
+        board.view_cycles.push_back(ViewCycleRecord {
+            revision,
+            client_id,
+            tab_id,
+        });
+        while board.view_cycles.len() > VIEW_CYCLE_CAP {
+            board.view_cycles.pop_front();
+        }
+        Ok(revision)
+    }
+
+    /// Fork (browser keys): the newest cycle's revision (0: none yet).
+    pub fn view_cycle_revision(&self) -> u64 {
+        self.lock().view_cycle_revision
+    }
+
+    /// Fork (browser keys): client `client_id`'s kept cycles above revision
+    /// `after`, oldest first.
+    pub fn view_cycles_for(&self, client_id: u64, after: u64) -> Vec<ViewCycleRecord> {
+        self.lock()
+            .view_cycles
+            .iter()
+            .filter(|record| record.client_id == client_id && record.revision > after)
+            .cloned()
+            .collect()
+    }
+
     /// Fork (compact bar): the newest ask's revision (0: none yet).
     pub fn action_revision(&self) -> u64 {
         self.lock().action_revision
@@ -524,6 +633,64 @@ mod tests {
         assert_eq!(board.action_revision(), 2 + ACTION_CAP as u64);
         assert!(board.actions_for(8, 0).is_empty(), "dropped past the cap");
         assert_eq!(board.actions_for(7, 0).len(), ACTION_CAP);
+    }
+
+    /// Fork (browser keys): a cycle goes to the client owning the covered
+    /// placement, else to the foreground client (no placement needed);
+    /// nobody to take it, or a client that predates the relay, is refused;
+    /// a client that leaves stops being the foreground one.
+    #[test]
+    fn a_view_cycle_goes_to_the_placement_owner_else_the_foreground_client() {
+        let board = PlacementBoard::new();
+        assert_eq!(
+            board.queue_view_cycle(None, Some("t1")),
+            Err(ActionRefused::NotFound)
+        );
+        board.set_foreground(Some(5));
+        assert_eq!(
+            board.queue_view_cycle(None, Some("t1")),
+            Err(ActionRefused::Unsupported),
+            "a client without the handshake flag"
+        );
+        board.set_takes_view_cycle(5, true);
+        board.set_takes_view_cycle(8, true);
+        assert_eq!(board.queue_view_cycle(None, Some(" t1 ")), Ok(1));
+        assert!(board.set(8, Some(spec("pl2", "t2")), facts(false, false), 100));
+        // the covered placement's client, though another is in front
+        assert_eq!(board.queue_view_cycle(Some("pl2"), Some("t2")), Ok(2));
+        // a placement the board no longer holds: the foreground client
+        assert_eq!(board.queue_view_cycle(Some("pl-gone"), None), Ok(3));
+        let front = board.view_cycles_for(5, 0);
+        assert_eq!(
+            front
+                .iter()
+                .map(|r| (r.revision, r.tab_id.clone()))
+                .collect::<Vec<_>>(),
+            [(1, Some("t1".to_string())), (3, None)]
+        );
+        let owner = board.view_cycles_for(8, 0);
+        assert_eq!(owner.len(), 1);
+        assert_eq!(
+            (owner[0].revision, owner[0].tab_id.as_deref()),
+            (2, Some("t2"))
+        );
+        assert!(board.view_cycles_for(5, 3).is_empty());
+        assert_eq!(board.view_cycle_revision(), 3);
+        // placement actions are a separate queue
+        assert!(board.actions_for(8, 0).is_empty());
+        for _ in 0..VIEW_CYCLE_CAP {
+            assert!(board.queue_view_cycle(Some("pl2"), None).is_ok());
+        }
+        assert!(
+            board.view_cycles_for(5, 0).is_empty(),
+            "dropped past the cap"
+        );
+        // the foreground client leaves: nobody to take it
+        board.remove(5);
+        assert_eq!(
+            board.queue_view_cycle(None, None),
+            Err(ActionRefused::NotFound)
+        );
     }
 
     #[test]

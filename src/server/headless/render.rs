@@ -589,6 +589,8 @@ impl HeadlessServer {
         let mut notes_reveal_frame = super::notes_reveal::PassFrame::default();
         // Fork (compact bar): the newest placement action, read once per pass.
         let placement_action_revision = crate::browser::placements::board().action_revision();
+        // Fork (browser keys): the newest view cycle, likewise.
+        let view_cycle_revision = crate::browser::placements::board().view_cycle_revision();
         for (client_id, (cols, rows), cell_size, _is_foreground, mode) in render_targets {
             #[cfg(unix)]
             if matches!(mode, ClientConnectionMode::TerminalObserve { .. })
@@ -861,6 +863,16 @@ impl HeadlessServer {
                     client,
                 ) {
                     warn!(client_id, err = %err, "failed to relay a placement action");
+                    broken_clients.push(client_id);
+                    continue;
+                }
+                if let Err(err) = super::view_cycle::sync_client(
+                    view_cycle_revision,
+                    &self.client_shell_boot_id,
+                    client_id,
+                    client,
+                ) {
+                    warn!(client_id, err = %err, "failed to relay a view cycle");
                     broken_clients.push(client_id);
                     continue;
                 }

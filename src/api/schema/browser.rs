@@ -977,6 +977,13 @@ pub struct BrowserHostLeaseInfo {
     /// than are installed: the installed version (a restart applies it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub update: Option<String>,
+    /// Fork (browser keys): the user's direct (no-prefix) bindings of
+    /// `keys.cycle_browser`, as `ctrl+shift+b` labels (modifiers `ctrl`,
+    /// `alt`, `shift`, `super` in that order, then the key): pressed in
+    /// the host, it sends `browser.view_cycle` (feature `view_cycle`).
+    /// Empty when the key is off or only prefixed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub view_cycle_keys: Vec<String>,
 }
 
 /// `browser.host_state`.

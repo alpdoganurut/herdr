@@ -248,6 +248,7 @@ mod tests {
             "agents.reorder_tab",
             "agents.set_quiet",
             "browser.placement_action",
+            "browser.view_cycle",
         ]
         .into_iter()
         .collect::<BTreeSet<_>>();

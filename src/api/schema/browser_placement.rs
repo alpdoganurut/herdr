@@ -176,3 +176,21 @@ pub struct BrowserPlacementActionParams {
     pub id: String,
     pub action: BrowserPlacementAction,
 }
+
+/// Fork (browser keys): `browser.view_cycle` (browser host, App lane): the
+/// user pressed the browser-view cycle key (`keys.cycle_browser`) while the
+/// host had the keyboard. The server relays it to one client, which steps
+/// its focused tab's browser like the key does in its terminal (none,
+/// docked, Browser view, none): the client owning placement `id` when the
+/// host covers one, else the foreground client. Answered `ok` once relayed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
+pub struct BrowserViewCycleParams {
+    pub lease_id: String,
+    /// The placement the host covers, if any (its client takes the cycle).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// The herdr tab the host shows; a client focused on another tab
+    /// ignores the cycle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab_id: Option<String>,
+}

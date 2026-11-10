@@ -19,6 +19,10 @@ impl App {
     pub(crate) fn install_browser_hub(&self, config: &crate::config::BrowserConfig) {
         let hub = hub();
         hub.apply_config(config);
+        // Fork (browser keys): the companion's lease names the cycle key.
+        hub.set_view_cycle_keys(crate::browser::hub::view_cycle_key_labels(
+            &self.state.keybinds.cycle_browser,
+        ));
         if self.policy.persist_session {
             hub.enable_persistence(&crate::session::data_dir());
         }

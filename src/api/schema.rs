@@ -43,7 +43,7 @@ pub use browser_placement::{
     BrowserCellRect, BrowserGridSize, BrowserPlacementAction, BrowserPlacementActionParams,
     BrowserPlacementInfo, BrowserPlacementKind, BrowserPlacementReportParams,
     BrowserPlacementSetParams, BrowserPlacementSpec, BrowserPlacementStatus,
-    BrowserPlacementsParams, BrowserPxSize,
+    BrowserPlacementsParams, BrowserPxSize, BrowserViewCycleParams,
 };
 pub use closed_sessions::*;
 pub use commands::*;
@@ -284,6 +284,10 @@ operations::define_operations! {
     /// close a placement, relayed to the client that owns it (App lane:
     /// changes_ui, so the render pass that relays it follows at once).
     BrowserPlacementAction(BrowserPlacementActionParams) => "browser.placement_action", true, false;
+    /// Fork (browser keys): the browser host's cycle key, relayed to the
+    /// client that owns its placement, else the foreground client (App
+    /// lane: changes_ui, like `browser.placement_action`).
+    BrowserViewCycle(BrowserViewCycleParams) => "browser.view_cycle", true, false;
     /// Fork (page API): a page an agent showed with `page_api` messages
     /// that agent (the companion's `window.herdr.send`; App lane, src/app/
     /// browser_page_message.rs). Not client-shell.

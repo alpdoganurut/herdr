@@ -41,7 +41,8 @@ use companion_host::ShowRequest;
 #[cfg(test)]
 pub use companion_host::SERVER_FEATURES;
 pub use companion_host::{
-    is_companion, lease_unknown, window_disabled, COMPANION_PROFILE, REPORT_MAX_EVENTS,
+    is_companion, lease_unknown, view_cycle_key_labels, window_disabled, COMPANION_PROFILE,
+    REPORT_MAX_EVENTS,
 };
 
 /// Grace the hub adds to the sidecar's own deadline before giving up on a reply.
@@ -147,6 +148,9 @@ struct Inner {
     launcher: super::companion_app::Launcher,
     /// Fork (companion launcher): tests shorten the routing wait (0 = the default).
     companion_wait_ms: AtomicU64,
+    /// Fork (browser keys): the lease's `view_cycle_keys` (the App sets
+    /// them from `keys.cycle_browser`).
+    view_cycle_keys: Mutex<Vec<String>>,
     /// Fork (page API): the companion pages agent ops are driving.
     agent_ops: Mutex<super::agent_ops::AgentOps>,
     /// Fork (page API): page openers' identities (runtime; the boot id is
@@ -320,6 +324,7 @@ impl BrowserHub {
                 html_views: Mutex::new(HashSet::new()),
                 launcher: super::companion_app::Launcher::new(),
                 companion_wait_ms: AtomicU64::new(0),
+                view_cycle_keys: Mutex::new(Vec::new()),
                 agent_ops: Mutex::new(Default::default()),
                 openers: Mutex::new(super::agent_ops::Openers::new(super::session::random_hex(
                     16,

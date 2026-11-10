@@ -85,6 +85,12 @@ answers `unknown_method` and the strip says "this herdr is too old for the compa
   advertises `placement_actions` and the herdr client owning the placement takes them
   (`browser.placements` `placement_actions`). ⌘T new tab, ⌘W close, ⌘L address, ⌘R reload, ⌘[ / ⌘] history,
   ⌘⇧S send. ⌘-click / `target=_blank` opens a tab in the same session.
+* herdr's browser-view cycle key (`keys.cycle_browser`, default ⌃⇧B) works in every view (pages,
+  both bars, the dialog card; `before-input-event`, src/keys.js): the companion takes the lease's
+  `view_cycle_keys` (direct bindings only) when herdr advertises `view_cycle` and sends
+  `browser.view_cycle` (the placement it covers, the shown herdr tab); herdr's client steps its
+  focused tab's browser like the key in its terminal. An older herdr names no key, so the page
+  gets it.
 * Auto-hide: docked and in herdr's Browser view the bar is unpinned by default and hides to a
   2 px line (gold while loading, rust while a tab needs you) in a 6 px hit zone; a 180 ms dwell
   there shows it over the page (the page never moves; the dock's bar is a view above the pages),

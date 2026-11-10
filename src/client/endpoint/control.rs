@@ -32,6 +32,9 @@ pub(crate) enum EndpointControlMessage {
     /// Fork (compact bar): the browser host's ask on this client's placement
     /// (`endpoint.placement-action.v1`).
     PlacementAction(crate::server::headless::placement_action::PlacementActionPayload),
+    /// Fork (browser keys): the browser host's cycle key for this client
+    /// (`endpoint.view-cycle.v1`).
+    ViewCycle(crate::server::headless::view_cycle::ViewCyclePayload),
     Snapshot(Box<crate::protocol::ClientShellSnapshot>),
     Ignored,
 }
@@ -120,6 +123,14 @@ pub(crate) fn decode_endpoint_control(
         return Ok(
             crate::server::headless::placement_action::PlacementActionPayload::decode(data)
                 .map(EndpointControlMessage::PlacementAction)
+                .unwrap_or(EndpointControlMessage::Ignored),
+        );
+    }
+    // Fork (browser keys): a view cycle, optional likewise.
+    if kind == crate::server::headless::view_cycle::VIEW_CYCLE_KIND {
+        return Ok(
+            crate::server::headless::view_cycle::ViewCyclePayload::decode(data)
+                .map(EndpointControlMessage::ViewCycle)
                 .unwrap_or(EndpointControlMessage::Ignored),
         );
     }

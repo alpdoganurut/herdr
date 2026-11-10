@@ -19,6 +19,7 @@ const { sessionCounts, sessionMenuItems } = require('./info.js');
 const { pageMenuItems, pageMenuActions } = require('./context-menu.js');
 const bar = require('./ui/bar-model.js');
 const pageApi = require('./page-api.js');
+const keys = require('./keys.js');
 
 const VERSION = require('../package.json').version;
 const APP_NAME = 'herdr+ companion'; // the macOS menu bar, Dock and window titles
@@ -158,7 +159,7 @@ class Companion {
       onState: (id) => this.onViewState(id),
       onError: (id, kind, text) => this.onPageError(id, kind, text),
       onOpen: (from, url, disposition, opts) => this.onWindowOpen(from, url, disposition, opts),
-      onKey: (input) => this.dockKey(input),
+      onKey: (input) => this.appKey(input),
       onPermission: (id, req, done) => this.onPermission(id, req, done),
       onLeave: (id, origin) => this.onLeave(id, origin),
       onContextMenu: (id, params) => this.openPageMenu(id, params),
@@ -181,6 +182,8 @@ class Companion {
     this.dockWin = null;
     this.docked = false;
     this.dockPlacement = null; // {id, kind} of the placement the dock covers (its bar's window actions)
+    this.viewCycleKeys = []; // herdr's cycle key (the lease's view_cycle_keys, parsed; src/keys.js)
+    this.viewCycleLabels = '[]';
     this.dockBar = null; // the dock's bar: a view above its pages (it floats over them while unpinned)
     // The bar's auto-hide: the pin per surface (saved), what each bar reports (its height and
     // whether it shows), a counter that makes it show for a moment, the pill menu being open.
@@ -238,6 +241,10 @@ class Companion {
     nativeTheme.on('updated', onTheme);
     this.win.on('closed', () => nativeTheme.removeListener('updated', onTheme));
     this.win.on('focus', () => this.onWindowFocus());
+    // the floating bar (the window's own page): the companion's keys, like a page's
+    this.win.webContents.on('before-input-event', (e, input) => {
+      if (this.appKey(input)) e.preventDefault();
+    });
     this.win.on('closed', () => {
       this.win = null;
       app.quit();
@@ -294,7 +301,10 @@ class Companion {
       this.pushStrip();
     });
     this.link.on('lease', (lease) => this.onLease(lease));
-    this.link.on('heartbeat', (lease) => this.onUpdateNote(lease));
+    this.link.on('heartbeat', (lease) => {
+      this.onUpdateNote(lease);
+      this.onViewCycleKeys(lease);
+    });
     this.link.on('lost', () => this.pushStrip());
     this.link.on('event', (ev) => this.onEvent(ev));
     // Docking: herdr's placements, the terminal windows, and what the dock does with them.
@@ -365,6 +375,7 @@ class Companion {
     log('lease', lease.lease_id, lease.state, 'features', (lease.server_features || []).join(','));
     this.features = new Set(lease.server_features || []);
     this.onUpdateNote(lease);
+    this.onViewCycleKeys(lease);
     this.feed.reset();
     this.feed.start();
     if (!this.features.has('placements')) this.showStartupWindow();
@@ -372,6 +383,19 @@ class Companion {
     await this.refreshState();
     if (this.link) this.link.releaseEvents();
     this.scheduleSync(0);
+  }
+
+  // herdr's browser-view cycle key (`keys.cycle_browser`, direct bindings only), taken while
+  // the companion has the keyboard: only from a herdr that advertises `view_cycle` (an older
+  // one names no key, so the key stays the page's). A heartbeat carries a reloaded config.
+  onViewCycleKeys(lease) {
+    const on = !!(lease && (lease.server_features || []).includes('view_cycle'));
+    const labels = on ? lease.view_cycle_keys || [] : [];
+    const next = JSON.stringify(labels);
+    if (next === this.viewCycleLabels) return;
+    this.viewCycleLabels = next;
+    this.viewCycleKeys = keys.parseLabels(labels);
+    log('view cycle keys', labels.join(',') || '-');
   }
 
   // herdr installed newer app files than this process runs (managed): the bar's chip.
@@ -631,7 +655,7 @@ class Companion {
     barView.setBounds({ x: 0, y: 0, width: 600, height: CHROME_HEIGHT });
     this.dockBar = barView;
     barView.webContents.on('before-input-event', (e, input) => {
-      if (this.dockKey(input)) e.preventDefault();
+      if (this.appKey(input)) e.preventDefault();
     });
     win.on('resize', () => this.layout());
     win.on('focus', () => {
@@ -648,7 +672,7 @@ class Companion {
       if (this.dockBar === barView) this.dockBar = null;
     });
     win.webContents.on('before-input-event', (e, input) => {
-      if (this.dockKey(input)) e.preventDefault();
+      if (this.appKey(input)) e.preventDefault();
     });
     // the window's own page is only the background (the bar and the pages are views over it)
     win.loadURL('about:blank').catch(() => {});
@@ -709,6 +733,35 @@ class Companion {
     if (!show || !this.win || this.docked || anyDockPlacement(this.feed && this.feed.placements)) return;
     if (show === 'inactive') this.win.showInactive();
     else if (show === 'show') this.win.show();
+  }
+
+  // Every view's keys before the page gets them (pages, both bars, the dialog card): herdr's
+  // cycle key, then the dock's own. True: taken (the page never sees it).
+  appKey(input) {
+    if (!input || input.type !== 'keyDown') return false;
+    if (keys.isCycleKey(this.viewCycleKeys, input)) {
+      // a held key steps once (herdr drops its autorepeat too)
+      if (!input.isAutoRepeat) this.cycleView();
+      return true;
+    }
+    return this.dockKey(input);
+  }
+
+  // herdr's client steps its focused tab's browser (none, docked, Browser view, none), like
+  // the key in its terminal (browser.view_cycle): the client whose dock this covers, else the
+  // one in front. Quiet when herdr refuses (an older client: one line in the bar).
+  async cycleView() {
+    const lease = this.link && this.link.lease;
+    if (!lease) return;
+    const params = { lease_id: lease.lease_id };
+    if (this.shownTab) params.tab_id = this.shownTab;
+    if (this.docked && this.dockPlacement && this.dockPlacement.id) params.id = this.dockPlacement.id;
+    try {
+      await this.link.request('browser.view_cycle', params);
+    } catch (e) {
+      log('view_cycle refused', e.code || e.message);
+      if (e.code === 'unsupported') this.say('warn', e.message);
+    }
   }
 
   // Keys while the dock (or one of its pages) has the keyboard: ⌘⎋ gives it back to the
@@ -900,7 +953,7 @@ class Companion {
     view.setBackgroundColor('#00000000');
     view.setVisible(false);
     view.webContents.on('before-input-event', (e, input) => {
-      if (this.dockKey(input)) e.preventDefault();
+      if (this.appKey(input)) e.preventDefault();
     });
     this.dialogView = view;
     this.views.addOverlay(view, this.win);
@@ -1143,6 +1196,21 @@ class Companion {
           this.stripPreview = a && typeof a === 'object' ? a : null;
           this.pushStrip();
           return { ok: true };
+        case 'send_key': {
+          // a key through the view's input pipeline (webContents.sendInputEvent, which reaches
+          // before-input-event as a real keyboard does; CDP key events skip it): {view_id} or
+          // {surface: 'bar' | 'dock'} (the floating or the docked bar), keyCode (Electron's),
+          // modifiers
+          if (!MANAGED.testHooks) return errOut('unknown_op', 'unknown control op send_key');
+          const r = a || {};
+          const bars = { bar: this.win && this.win.webContents, dock: this.dockBarView() && this.dockBar.webContents };
+          const wc = r.surface ? bars[r.surface] || null : this.views.has(r.view_id) ? this.views.get(r.view_id).view.webContents : null;
+          if (!wc) return errOut('view_not_found', `no view ${r.view_id || r.surface}`);
+          const modifiers = Array.isArray(r.modifiers) ? r.modifiers.map(String) : [];
+          wc.sendInputEvent({ type: 'keyDown', keyCode: String(r.keyCode || ''), modifiers });
+          wc.sendInputEvent({ type: 'keyUp', keyCode: String(r.keyCode || ''), modifiers });
+          return { ok: true };
+        }
         case 'view_pixels': {
           // what the compositor shows of a view (webContents.capturePage, not a CDP capture):
           // its size and the RGBA of the asked points ({view_id, points: [[x, y], ...]}, DIPs)

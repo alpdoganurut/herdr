@@ -2319,6 +2319,35 @@ async fn run_client_loop(
                                 }
                                 continue;
                             }
+                            // Fork (browser keys): the companion's cycle key
+                            // (`shell/browser_dock.rs`), taken like the key in this
+                            // terminal; it can resize the surface, likewise.
+                            Ok(endpoint::EndpointControlMessage::ViewCycle(payload)) => {
+                                let Some(shell) = state.shell.as_mut() else {
+                                    continue;
+                                };
+                                let outcome =
+                                    shell.receive_browser_view_cycle(&endpoint_id, payload);
+                                let frame = outcome
+                                    .repaint
+                                    .then(|| {
+                                        shell.compose(state.reported_size.0, state.reported_size.1)
+                                    })
+                                    .flatten();
+                                if finish_client_shell_input(
+                                    &mut state,
+                                    outcome,
+                                    frame,
+                                    &mut write_stream,
+                                    &mut pending_activation,
+                                    &mut endpoint_commands,
+                                    &mut prefix_input_source,
+                                    &mut scheduled_activation,
+                                )? {
+                                    return Ok(());
+                                }
+                                continue;
+                            }
                             Ok(endpoint::EndpointControlMessage::Ignored) => {
                                 debug!(%kind, "ignoring unknown endpoint control message");
                                 continue;

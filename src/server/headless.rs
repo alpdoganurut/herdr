@@ -108,6 +108,8 @@ pub mod tab_mutes;
 pub mod tab_pins;
 /// Fork: the `endpoint.teams.v1` push.
 pub mod teams;
+/// Fork (browser keys): the `endpoint.view-cycle.v1` relay.
+pub mod view_cycle;
 /// Fork: the `endpoint.voice.v1` push.
 pub mod voice;
 

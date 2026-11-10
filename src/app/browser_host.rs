@@ -7,6 +7,8 @@
 //! Fork (compact bar): `browser.placement_action` (the strip's expand,
 //! restore and close), queued on the placement board for the render pass
 //! that relays it to the client owning the placement.
+//! Fork (browser keys): `browser.view_cycle` (the cycle key pressed in the
+//! companion), queued on the board for the client the user works in.
 //!
 //! O(groups) per call, no render work, no sidecar call on this thread
 //! (re-watching restored HTML views runs on the hub's own thread). The
@@ -20,7 +22,8 @@ use super::App;
 use crate::api::schema::{
     BrowserHostReportKind, BrowserHostReportParams, BrowserHostStateInfo, BrowserHostStateParams,
     BrowserHostSyncParams, BrowserHostTabState, BrowserPlacementAction,
-    BrowserPlacementActionParams, BrowserSendPageParams, BrowserSessionInfo, ResponseResult,
+    BrowserPlacementActionParams, BrowserSendPageParams, BrowserSessionInfo,
+    BrowserViewCycleParams, ResponseResult,
 };
 use crate::browser::hub::COMPANION_PROFILE;
 use crate::browser::session::TabBrowser;
@@ -117,6 +120,35 @@ impl App {
                 id,
                 "unsupported",
                 "this herdr client predates the bar's expand and close; use its own ⤢ / ✕ or restart the client",
+            ),
+        }
+    }
+
+    /// Fork (browser keys): `browser.view_cycle`: the live lease asks the
+    /// client owning placement `id` (else the foreground client) to step its
+    /// focused tab's browser like its `cycle_browser` key. `ok` once queued,
+    /// `not_found` with no client to take it, `unsupported` when that
+    /// client predates the relay.
+    pub(super) fn handle_browser_view_cycle(
+        &mut self,
+        id: String,
+        params: BrowserViewCycleParams,
+    ) -> String {
+        if !hub().lease_matches(&params.lease_id) {
+            return error(id, crate::browser::hub::lease_unknown());
+        }
+        use crate::browser::placements::ActionRefused;
+        match crate::browser::placements::board()
+            .queue_view_cycle(params.id.as_deref(), params.tab_id.as_deref())
+        {
+            Ok(_) => encode_success(id, ResponseResult::Ok {}),
+            Err(ActionRefused::NotFound) => {
+                encode_error(id, "not_found", "no herdr client to take the cycle")
+            }
+            Err(ActionRefused::Unsupported) => encode_error(
+                id,
+                "unsupported",
+                "this herdr client predates the browser's cycle key; restart the client",
             ),
         }
     }

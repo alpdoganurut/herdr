@@ -226,6 +226,9 @@ pub(crate) struct ClientBrowserDockState {
     /// Fork (compact bar): the last placement action taken (`boot_id`,
     /// revision): a relay seen twice acts once.
     action_seen: Option<(String, u64)>,
+    /// Fork (browser keys): the last view cycle taken (`boot_id`,
+    /// revision), likewise.
+    view_cycle_seen: Option<(String, u64)>,
     guard_toasts: HashMap<String, Instant>,
     /// The live alignment smoke (`scripts/smoke_companion_dock.sh`):
     /// `HERDR_TEST_BROWSER_VIEW=side|full` docks (or opens Browser view on)
@@ -277,6 +280,7 @@ impl ClientBrowserDockState {
             pending_ticked_at: None,
             nudge: 0,
             action_seen: None,
+            view_cycle_seen: None,
             guard_toasts: HashMap::new(),
             test_view: match std::env::var("HERDR_TEST_BROWSER_VIEW").as_deref() {
                 Ok("side") => Some(BrowserPlacementKind::Side),
@@ -1152,6 +1156,42 @@ impl ClientShellState {
             }
             _ => {}
         }
+        outcome
+    }
+
+    /// Fork (browser keys): the companion's cycle key for this client
+    /// (`endpoint.view-cycle.v1`: `keys.cycle_browser` pressed while the
+    /// companion had the keyboard), taken like the key in this terminal
+    /// (`cycle_browser_for_focused_tab`). Ignored for another endpoint, a
+    /// tab other than the focused one, or a relay already taken.
+    pub(crate) fn receive_browser_view_cycle(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+        payload: crate::server::headless::view_cycle::ViewCyclePayload,
+    ) -> ClientShellInput {
+        let mut outcome = ClientShellInput::default();
+        if *endpoint_id != self.active_endpoint_id {
+            return outcome;
+        }
+        if payload
+            .tab_id
+            .as_deref()
+            .is_some_and(|tab_id| self.browser_dock_focused_tab() != Some(tab_id))
+        {
+            return outcome;
+        }
+        let seen = self
+            .browser_dock
+            .view_cycle_seen
+            .as_ref()
+            .is_some_and(|(boot_id, revision)| {
+                *boot_id == payload.boot_id && *revision >= payload.revision
+            });
+        if seen {
+            return outcome;
+        }
+        self.browser_dock.view_cycle_seen = Some((payload.boot_id, payload.revision));
+        self.cycle_browser_for_focused_tab(&mut outcome);
         outcome
     }
 

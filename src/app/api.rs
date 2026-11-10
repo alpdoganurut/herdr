@@ -1473,6 +1473,10 @@ impl App {
             Method::BrowserPlacementAction(params) => {
                 return self.handle_browser_placement_action(request.id, params)
             }
+            // Fork (browser keys): the host's cycle key.
+            Method::BrowserViewCycle(params) => {
+                return self.handle_browser_view_cycle(request.id, params)
+            }
             Method::BrowserPlacements(_) | Method::BrowserPlacementReport(_) => {
                 return responses::encode_error(
                     request.id,

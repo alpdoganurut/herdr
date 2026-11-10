@@ -77,6 +77,11 @@ pub struct EndpointClientHello {
     /// older client omits it, and the server refuses those asks for it.
     #[serde(default)]
     pub placement_actions: bool,
+    /// Fork (browser keys): this client takes `endpoint.view-cycle.v1` (the
+    /// browser host's cycle key). An older client omits it, and the server
+    /// refuses the cycle for it.
+    #[serde(default)]
+    pub view_cycle: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -225,6 +230,7 @@ mod tests {
             input_codecs: vec![INPUT_CODEC_V1.into()],
             blob_codecs: vec![BLOB_CODEC_V1.into()],
             placement_actions: false,
+            view_cycle: false,
         }
     }
 
@@ -275,6 +281,8 @@ mod tests {
         // Fork (compact bar): a generation-one client never says it takes
         // placement actions
         assert!(!hello.placement_actions);
+        // Fork (browser keys): nor that it takes the host's cycle key
+        assert!(!hello.view_cycle);
 
         let welcome: EndpointServerWelcome = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),

@@ -213,6 +213,8 @@ pub(super) fn do_handshake(
             blob_codecs: vec![BLOB_CODEC_V1.into()],
             // Fork (compact bar): takes endpoint.placement-action.v1.
             placement_actions: true,
+            // Fork (browser keys): takes endpoint.view-cycle.v1.
+            view_cycle: true,
         };
         ClientMessage::EndpointControl {
             kind: ENDPOINT_HELLO_KIND.into(),

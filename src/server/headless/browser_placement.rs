@@ -50,6 +50,9 @@ impl HeadlessServer {
     /// usually).
     pub(super) fn sync_browser_placement_facts(&self) {
         let board = crate::browser::placements::board();
+        // Fork (browser keys): the host's cycle key goes to the foreground
+        // client when it covers no placement.
+        board.set_foreground(self.foreground_client_id);
         let ids = board.client_ids();
         if ids.is_empty() {
             return;

@@ -36,6 +36,8 @@ export function createMockHerdr({ socketPath, verifyCdp = false, log = () => {},
     update: null, // an installed update the lease answer names, as herdr's launcher does
     companionCalls: [], // browser.companion requests (the update chip's restart)
     companionDelayMs: 0, // their (failing) answer comes this late
+    viewCycleKeys: null, // herdr's keys.cycle_browser for the lease (null: an older herdr, no view_cycle)
+    viewCycles: [], // browser.view_cycle calls (the companion's cycle key)
   };
   const mintKey = () => 'g-' + crypto.randomBytes(8).toString('hex');
   const now = () => Math.floor(Date.now() / 1000);
@@ -206,6 +208,11 @@ export function createMockHerdr({ socketPath, verifyCdp = false, log = () => {},
         emit('tab.renamed', { type: 'tab_renamed', tab_id: params.tab_id, workspace_id: t ? t.workspace_id : 'w1', label: params.label });
         return ok(id, { type: 'ok' });
       }
+      case 'browser.view_cycle':
+        if (!leaseOk(params)) return err(id, 'lease_unknown', 'no such lease');
+        if (!state.viewCycleKeys) return err(id, 'unknown_method', `unknown method ${method}`);
+        state.viewCycles.push(params);
+        return ok(id, { type: 'ok' });
       case 'browser.companion':
         // no launcher here: the restart fails (after companionDelayMs)
         state.companionCalls.push(params || {});
@@ -229,7 +236,7 @@ export function createMockHerdr({ socketPath, verifyCdp = false, log = () => {},
   }
 
   function leaseBody() {
-    return { lease_id: state.lease.lease_id, profile: 'companion', state: 'attached', heartbeat_ms: heartbeatMs, ttl_ms: ttlMs, expires_unix: now() + Math.round(ttlMs / 1000), host_protocol: 1, server_features: ['host_sync', 'host_report', 'send_page', 'show', 'page_errors', ...(state.noPageMessages ? [] : ['page_messages'])], ...(state.update ? { update: state.update } : {}) };
+    return { lease_id: state.lease.lease_id, profile: 'companion', state: 'attached', heartbeat_ms: heartbeatMs, ttl_ms: ttlMs, expires_unix: now() + Math.round(ttlMs / 1000), host_protocol: 1, server_features: ['host_sync', 'host_report', 'send_page', 'show', 'page_errors', ...(state.noPageMessages ? [] : ['page_messages']), ...(state.viewCycleKeys ? ['view_cycle'] : [])], ...(state.update ? { update: state.update } : {}), ...(state.viewCycleKeys && state.viewCycleKeys.length ? { view_cycle_keys: state.viewCycleKeys } : {}) };
   }
 
   function focus(tab_id) {

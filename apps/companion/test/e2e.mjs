@@ -898,6 +898,62 @@ try {
     );
   }
 
+  // herdr's cycle key, pressed in a page (send_key: the view's own
+  // input pipeline, as a keyboard reaches before-input-event; CDP key events skip it)
+  {
+    const kt = await api('mock.create_tab', { label: 'keys' });
+    await api('mock.focus_tab', { tab_id: kt.tab_id });
+    const KEYPAGE = (n) => `data:text/html,<title>k${n}</title><script>window.keys=[];addEventListener('keydown',(e)=>keys.push((e.ctrlKey?'c':'')+(e.shiftKey?'s':'')+(e.altKey?'a':'')+(e.metaKey?'m':'')+e.code))</script>k${n}`;
+    const ko = [];
+    for (const n of [1, 2, 3]) ko.push(await ctl(`__herdrCompanion.open({tab_id:${JSON.stringify(kt.tab_id)}, url:${JSON.stringify(KEYPAGE(n))}, background:false})`));
+    const kp = [];
+    for (const o of ko) kp.push(await waitFor(() => pageForTarget(o.target_id), 5000));
+    const activeView = async () => ((await ctl('__herdrCompanion.views()')).find((v) => v.tab_id === kt.tab_id && v.active) || {}).view_id;
+    const key = (target, keyCode, modifiers) => ctl(`__herdrCompanion.send_key(${JSON.stringify({ ...target, keyCode, modifiers })})`);
+    const pageKeys = (p) => p.evaluate(() => window.keys.slice());
+    const activeIs = (i) => waitFor(async () => ((await activeView()) === ko[i].view_id ? true : null), 3000);
+    check('three pages in the keys tab, the last one active', kp.every(Boolean) && (await activeView()) === ko[2].view_id, await activeView());
+    const v3 = { view_id: ko[2].view_id };
+    // an older herdr (no view_cycle, no key in the lease): ctrl+shift+b stays the page's
+    const sent = await key(v3, 'B', ['control', 'shift']);
+    check('send_key answers', sent && sent.ok, sent);
+    const reached = await waitFor(async () => ((await pageKeys(kp[2])).includes('csKeyB') ? true : null), 3000);
+    check('an older herdr: ctrl+shift+b reaches the page, no browser.view_cycle', reached && mock.state.viewCycles.length === 0, { keys: await pageKeys(kp[2]), cycles: mock.state.viewCycles.length });
+    // herdr advertises view_cycle and names the key: the next heartbeat brings it
+    mock.state.viewCycleKeys = ['ctrl+shift+b'];
+    await sleep(2500);
+    await kp[2].evaluate(() => (window.keys.length = 0));
+    await key(v3, 'B', ['control', 'shift']);
+    const cyc = await waitFor(() => mock.state.viewCycles[0], 3000);
+    check('ctrl+shift+b asks herdr to cycle the shown tab', cyc && cyc.tab_id === kt.tab_id && cyc.lease_id === mock.state.lease.lease_id && !cyc.id, cyc);
+    // a probe key after it: the page has had its keys once the probe arrives
+    await key(v3, 'X', ['control']);
+    await waitFor(async () => ((await pageKeys(kp[2])).includes('cKeyX') ? true : null), 3000);
+    check('and the page never sees it', !(await pageKeys(kp[2])).includes('csKeyB'), await pageKeys(kp[2]));
+    // a key the user configured instead: the default is no longer taken
+    mock.state.viewCycleKeys = ['alt+shift+k'];
+    await sleep(2500);
+    await key(v3, 'B', ['control', 'shift']);
+    await key(v3, 'K', ['alt', 'shift']);
+    await waitFor(() => mock.state.viewCycles.length >= 2 || null, 3000);
+    check('the configured key is the one taken', mock.state.viewCycles.length === 2 && (await pageKeys(kp[2])).includes('csKeyB') && !(await pageKeys(kp[2])).includes('saKeyK'), { cycles: mock.state.viewCycles.length, keys: await pageKeys(kp[2]) });
+    // the floating bar has the keyboard: taken there too
+    await key({ surface: 'bar' }, 'K', ['alt', 'shift']);
+    check('the floating bar takes the cycle key too', await waitFor(() => mock.state.viewCycles.length === 3 || null, 3000), mock.state.viewCycles.length);
+    // the key turned off in herdr (`cycle_browser = ""`: the feature stays, the field goes):
+    // the next heartbeat drops it, and the page gets the key again
+    mock.state.viewCycleKeys = [];
+    await sleep(2500);
+    await kp[2].evaluate(() => (window.keys.length = 0));
+    await key(v3, 'K', ['alt', 'shift']);
+    check('herdr turns the key off: the page gets it again, no browser.view_cycle', (await waitFor(async () => ((await pageKeys(kp[2])).includes('saKeyK') ? true : null), 3000)) && mock.state.viewCycles.length === 3, { keys: await pageKeys(kp[2]), cycles: mock.state.viewCycles.length });
+    mock.state.viewCycleKeys = null;
+    await sleep(2500);
+    await api('mock.focus_tab', { tab_id: 'w1:t1' });
+    await sleep(300);
+    await api('mock.close_tab', { tab_id: kt.tab_id });
+  }
+
   // an agent focus() into a non-focused herdr tab survives unrelated tab events
   const fo = await ctl(`__herdrCompanion.show({tab_id:'w1:t1', file:${JSON.stringify(path.join(site, 'inside.html'))}, focus:true})`);
   await api('mock.create_tab', { label: 'later' });

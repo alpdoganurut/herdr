@@ -213,6 +213,9 @@ pub(crate) struct ClientConnection {
     /// Fork (compact bar): the last browser placement action revision
     /// relayed to this client (`None` until its first render pass).
     pub(crate) shell_placement_action_sent: Option<u64>,
+    /// Fork (browser keys): the last view-cycle revision relayed to this
+    /// client (`None` until its first render pass).
+    pub(crate) shell_view_cycle_sent: Option<u64>,
     /// View policy paired with the last coherent shell replacement.
     pub(crate) shell_agent_view: Option<crate::api::schema::AgentViewSetParams>,
     /// Monotonic shell replacement revision for this connection.
@@ -293,6 +296,7 @@ impl ClientConnection {
             shell_agent_context_sent: None,
             shell_notes_reveal_sent: None,
             shell_placement_action_sent: None,
+            shell_view_cycle_sent: None,
             shell_agent_view: None,
             shell_projection_revision: 0,
             shell_endpoint_command_in_flight: false,

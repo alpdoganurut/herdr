@@ -3446,6 +3446,105 @@ async fn fork_smoke_a_placement_action_reaches_only_its_client_once() {
     shutdown_test_runtimes(&mut server);
 }
 
+/// Fork (browser keys): the companion's cycle key (`browser.view_cycle`,
+/// live lease only) reaches one client once, as `endpoint.view-cycle.v1`:
+/// the owner of the placement the host covers, else the foreground client
+/// (no placement needed); a client whose handshake predates it is refused.
+/// The lease advertises the method and names the configured key.
+#[tokio::test]
+async fn fork_smoke_a_view_cycle_reaches_the_covered_client_else_the_foreground_one() {
+    use crate::server::headless::view_cycle::{ViewCyclePayload, VIEW_CYCLE_KIND};
+    let (mut server, _rx) = server_with_claude(None);
+    let (first, _first_render) = connect_test_shell(&mut server, 9091, 80, 23);
+    let (second, _second_render) = connect_test_shell(&mut server, 9092, 80, 23);
+    let tab_id = server.app.public_tab_id(0, 0).expect("tab id");
+    // the second client covers a placement; the first is in front
+    let boot_id = server.client_shell_boot_id.clone();
+    server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
+        client_id: 9092,
+        boot_id,
+        request: Box::new(Request {
+            id: "client-shell-placement:9092".into(),
+            method: Method::BrowserPlacementSet(api::schema::BrowserPlacementSetParams {
+                placement: Some(api::schema::BrowserPlacementSpec {
+                    id: "pl-cycle-b".into(),
+                    kind: api::schema::BrowserPlacementKind::Side,
+                    tab_id: tab_id.clone(),
+                    shown: true,
+                    ..Default::default()
+                }),
+            }),
+        }),
+    });
+    server.promote_client_to_foreground(9091);
+    server.render_and_stream();
+    let cycles = |control: &std::sync::mpsc::Receiver<Vec<u8>>| {
+        let mut payloads = Vec::new();
+        while let Ok(bytes) = control.try_recv() {
+            if let ServerMessage::EndpointControl { kind, data } = read_server_message(bytes) {
+                if kind == VIEW_CYCLE_KIND {
+                    payloads.push(ViewCyclePayload::decode(&data).expect("decodes"));
+                }
+            }
+        }
+        payloads
+    };
+    assert!(cycles(&first).is_empty() && cycles(&second).is_empty());
+    let ask = |server: &mut HeadlessServer, lease: &str, id: Option<&str>| {
+        api(
+            server,
+            Method::BrowserViewCycle(api::schema::BrowserViewCycleParams {
+                lease_id: lease.into(),
+                id: id.map(str::to_owned),
+                tab_id: Some(tab_id.clone()),
+            }),
+        )
+    };
+    let refused = ask(&mut server, "no-lease", None);
+    assert_eq!(refused["error"]["code"], "lease_unknown", "{refused}");
+    crate::browser::hub().install_test_lease("lease-cycle");
+    // neither handshake said it takes the cycle (older clients)
+    let older = ask(&mut server, "lease-cycle", None);
+    assert_eq!(older["error"]["code"], "unsupported", "{older}");
+    let board = crate::browser::placements::board();
+    board.set_takes_view_cycle(9091, true);
+    board.set_takes_view_cycle(9092, true);
+    // no placement covered: the foreground client
+    let ok = ask(&mut server, "lease-cycle", None);
+    assert_eq!(ok["result"]["type"], "ok", "{ok}");
+    server.render_and_stream();
+    let got = cycles(&first);
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert_eq!(got[0].tab_id.as_deref(), Some(tab_id.as_str()));
+    assert_eq!(got[0].boot_id, server.client_shell_boot_id);
+    assert!(cycles(&second).is_empty(), "only the foreground client");
+    server.render_and_stream();
+    assert!(cycles(&first).is_empty(), "relayed once");
+    // the covered placement's client, though another is in front
+    ask(&mut server, "lease-cycle", Some("pl-cycle-b"));
+    server.render_and_stream();
+    assert_eq!(cycles(&second).len(), 1);
+    assert!(cycles(&first).is_empty());
+    // the foreground moves: the next cycle follows it
+    server.promote_client_to_foreground(9092);
+    ask(&mut server, "lease-cycle", None);
+    ask(&mut server, "lease-cycle", None);
+    server.render_and_stream();
+    let revisions: Vec<_> = cycles(&second).into_iter().map(|p| p.revision).collect();
+    assert_eq!(revisions.len(), 2, "both, in order");
+    assert!(revisions[0] < revisions[1]);
+    assert!(cycles(&first).is_empty());
+    // the lease advertises it and names the default key
+    let lease = crate::browser::hub()
+        .host_heartbeat("lease-cycle")
+        .expect("the test lease");
+    assert!(lease.server_features.iter().any(|f| f == "view_cycle"));
+    assert_eq!(lease.view_cycle_keys, ["ctrl+shift+b"]);
+    server.remove_client(9091);
+    server.remove_client(9092);
+    shutdown_test_runtimes(&mut server);
+}
+
 /// Fork (companion launcher): the host sees each placement with the
 /// server's facts about its client (its terminal's focus, the foreground
 /// client, its surface showing this server), as they change; an unknown

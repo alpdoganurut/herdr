@@ -1236,3 +1236,55 @@ fn cycle_browser_closes_the_dock_when_the_companion_is_off() {
     cycle(&mut state);
     assert_eq!(browser_state(&state), (false, false));
 }
+
+/// Fork (browser keys): the companion's cycle key, relayed by the server
+/// (`endpoint.view-cycle.v1`), steps the focused tab like ctrl+shift+b in
+/// this terminal (none → docked → Browser view → none), once per relay, and
+/// only for the active endpoint and the tab the companion showed.
+#[test]
+fn fork_smoke_a_view_cycle_from_the_companion_steps_like_the_key() {
+    use crate::server::headless::view_cycle::ViewCyclePayload;
+    let mut state = dock_state();
+    let local = crate::client::endpoint::ClientEndpointId::Local;
+    let relay = |state: &mut ClientShellState,
+                 endpoint: &crate::client::endpoint::ClientEndpointId,
+                 boot: &str,
+                 revision,
+                 tab: Option<&str>| {
+        let outcome = state.receive_browser_view_cycle(
+            endpoint,
+            ViewCyclePayload {
+                boot_id: boot.into(),
+                revision,
+                tab_id: tab.map(str::to_owned),
+            },
+        );
+        recompose(state);
+        outcome
+    };
+    let outcome = relay(&mut state, &local, "boot", 1, Some("tab_1"));
+    assert_eq!(browser_state(&state), (true, false), "none → docked");
+    assert!(outcome.resize, "the band narrows the panes");
+    // the same relay twice acts once
+    relay(&mut state, &local, "boot", 1, Some("tab_1"));
+    assert_eq!(browser_state(&state), (true, false));
+    relay(&mut state, &local, "boot", 2, Some("tab_1"));
+    assert_eq!(browser_state(&state), (true, true), "docked → full");
+    // a tab other than the focused one: nothing
+    relay(&mut state, &local, "boot", 3, Some("tab_2"));
+    assert_eq!(browser_state(&state), (true, true));
+    assert!(!state.browser_dock_open_for("tab_2") && !state.browser_view_open_for("tab_2"));
+    // another endpoint (an SSH server's relay): nothing
+    let remote = crate::client::endpoint::ClientEndpointId::Ssh(
+        crate::client::endpoint::ProfileId::parse("0123456789abcdef0123456789abcdef")
+            .expect("profile id"),
+    );
+    relay(&mut state, &remote, "boot", 4, Some("tab_1"));
+    assert_eq!(browser_state(&state), (true, true));
+    // no tab named: the focused one
+    relay(&mut state, &local, "boot", 5, None);
+    assert_eq!(browser_state(&state), (false, false), "full → none");
+    // a new server boot (a live handoff) counts from revision 1 again
+    relay(&mut state, &local, "boot-2", 1, Some("tab_1"));
+    assert_eq!(browser_state(&state), (true, false));
+}

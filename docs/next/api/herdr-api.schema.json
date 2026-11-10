@@ -5329,6 +5329,32 @@
           ],
           "type": "object"
         },
+        "BrowserViewCycleParams": {
+          "description": "Fork (browser keys): `browser.view_cycle` (browser host, App lane): the\nuser pressed the browser-view cycle key (`keys.cycle_browser`) while the\nhost had the keyboard. The server relays it to one client, which steps\nits focused tab's browser like the key does in its terminal (none,\ndocked, Browser view, none): the client owning placement `id` when the\nhost covers one, else the foreground client. Answered `ok` once relayed.",
+          "properties": {
+            "id": {
+              "description": "The placement the host covers, if any (its client takes the cycle).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "lease_id": {
+              "type": "string"
+            },
+            "tab_id": {
+              "description": "The herdr tab the host shows; a client focused on another tab\nignores the cycle.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "lease_id"
+          ],
+          "type": "object"
+        },
         "CheckpointKind": {
           "description": "A checkpoint's kind.",
           "oneOf": [
@@ -11892,6 +11918,23 @@
           "type": "object"
         },
         {
+          "description": "Fork (browser keys): the browser host's cycle key, relayed to the\nclient that owns its placement, else the foreground client (App\nlane: changes_ui, like `browser.placement_action`).",
+          "properties": {
+            "method": {
+              "const": "browser.view_cycle",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/BrowserViewCycleParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Fork (page API): a page an agent showed with `page_api` messages\nthat agent (the companion's `window.herdr.send`; App lane, src/app/\nbrowser_page_message.rs). Not client-shell.",
           "properties": {
             "method": {
@@ -15820,6 +15863,13 @@
                 "string",
                 "null"
               ]
+            },
+            "view_cycle_keys": {
+              "description": "Fork (browser keys): the user's direct (no-prefix) bindings of\n`keys.cycle_browser`, as `ctrl+shift+b` labels (modifiers `ctrl`,\n`alt`, `shift`, `super` in that order, then the key): pressed in\nthe host, it sends `browser.view_cycle` (feature `view_cycle`).\nEmpty when the key is off or only prefixed.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
             }
           },
           "required": [

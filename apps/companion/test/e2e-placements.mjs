@@ -287,6 +287,20 @@ if (covering) {
     check('in Browser view the bar offers restore', !!(await waitFor(() => dockBar.evaluate(() => document.getElementById('expand').dataset.action === 'restore' || null), 5000)));
     await barBtn('expand');
     check('restore: back to the dock beside the terminal', (await waitFor(async () => ((await kindNow()) === 'side') || null, 10000)) === true, await debug().catch((e) => e.message));
+    // herdr's cycle key pressed in the companion (browser.view_cycle, the lease's
+    // view_cycle_keys): herdr's client steps like ctrl+shift+b in its terminal
+    const cycleKey = (surface) => ctl('send_key', { surface, keyCode: 'B', modifiers: ['control', 'shift'] });
+    check('send_key reaches the docked bar', ((await cycleKey('dock')) || {}).ok === true);
+    check("ctrl+shift+b in the docked companion: herdr's client turns the tab to Browser view", (await waitFor(async () => ((await kindNow()) === 'full') || null, 10000)) === true, await debug().catch((e) => e.message));
+    await waitFor(() => dockBar.evaluate(() => document.getElementById('expand').dataset.action === 'restore' || null), 5000);
+    await cycleKey('dock');
+    const none = await waitFor(async () => {
+      const d = await debug();
+      return d && !d.docked ? d : null;
+    }, 15000);
+    check('again: neither docked nor Browser view (the companion leaves docked mode)', !!none, await debug().catch((e) => e.message));
+    await cycleKey('bar');
+    check("in the floating window: herdr's client (the one in front, no placement) docks the tab again", (await waitFor(async () => ((await kindNow()) === 'side') || null, 15000)) === true, await debug().catch((e) => e.message));
   }
   if (pg && pg.view_id) await ctl('close', pg.view_id);
 

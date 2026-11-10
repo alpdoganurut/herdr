@@ -777,6 +777,8 @@ pub(crate) fn handle_client_handshake(
             // refuses the asks for a client without them).
             crate::browser::placements::board()
                 .set_takes_actions(client_id, hello.placement_actions);
+            // Fork (browser keys): likewise the host's cycle key.
+            crate::browser::placements::board().set_takes_view_cycle(client_id, hello.view_cycle);
             (
                 hello.surface_size.cols,
                 hello.surface_size.rows,
@@ -1487,6 +1489,7 @@ mod tests {
             input_codecs: vec![crate::protocol::endpoint::INPUT_CODEC_V1.into()],
             blob_codecs: vec![crate::protocol::endpoint::BLOB_CODEC_V1.into()],
             placement_actions: false,
+            view_cycle: false,
         };
         ClientMessage::EndpointControl {
             kind: ENDPOINT_HELLO_KIND.into(),

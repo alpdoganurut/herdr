@@ -1082,6 +1082,12 @@ impl App {
                 Ok((live, keybind_diagnostics)) => {
                     self.state.prefix_keys = live.prefix;
                     self.state.keybinds = live.keybinds;
+                    // Fork (browser keys): the companion's lease names the cycle key.
+                    crate::browser::hub().set_view_cycle_keys(
+                        crate::browser::hub::view_cycle_key_labels(
+                            &self.state.keybinds.cycle_browser,
+                        ),
+                    );
                     match config.local_keybindings_profile_toml() {
                         Ok(profile) => self.client_shell_keybindings_profile = Some(profile),
                         Err(err) => diagnostics.push(format!(

@@ -151,8 +151,9 @@ class HerdrLink extends EventEmitter {
       try {
         const res = await this._rpc('browser.host_heartbeat', { lease_id: this.lease.lease_id }, { timeoutMs: every * 2 });
         if (gen === this.gen && res && res.lease) {
-          // `update` is absent when there is none: an old note must not linger
-          this.lease = { ...this.lease, update: undefined, ...res.lease };
+          // `update` is absent when there is none: an old note must not linger; likewise
+          // `view_cycle_keys` (herdr's cycle key turned off or prefix-only)
+          this.lease = { ...this.lease, update: undefined, view_cycle_keys: undefined, ...res.lease };
           this.emit('heartbeat', this.lease);
         }
       } catch (e) {
