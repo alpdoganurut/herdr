@@ -288,6 +288,8 @@ mod mobile;
 mod mouse_selection;
 mod news;
 mod notification_format;
+/// Fork (perf watch).
+mod perf_readout;
 mod popup_focus_projection;
 mod quiet;
 mod session_header;

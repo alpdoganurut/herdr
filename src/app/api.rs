@@ -1170,6 +1170,13 @@ impl App {
                     },
                 }
             }
+            // Fork (perf watch): normally answered before the app (the API
+            // connection thread, the client shell's endpoint lane); this arm
+            // serves any other caller that dispatches to the app directly.
+            Method::ServerPerfSummary(params) => SuccessResponse {
+                id: request.id,
+                result: crate::api::schema::perf::summary(&params),
+            },
             Method::ServerReloadAgentManifests(_) => {
                 let summaries = crate::detect::manifest::reload_manifests();
                 self.state.agent_manifest_summaries = summaries.clone();

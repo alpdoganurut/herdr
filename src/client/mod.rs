@@ -683,7 +683,9 @@ async fn run_client_loop(
     );
     #[cfg(windows)]
     let mut stdin_open = true;
+    crate::perf::watchdog::start(crate::perf::watchdog::Role::Client); // fork (perf watch)
     while !should_quit.load(Ordering::Acquire) {
+        crate::perf::client::LOOP.begin(); // fork (perf watch): busy until the wait below
         if pending_activation.is_none() {
             if let Some(reload) = pending_catalog.take() {
                 match reload {
@@ -810,6 +812,7 @@ async fn run_client_loop(
             });
         let timer_deadline = client_timer.deadline(std::time::Instant::now(), timer_delay);
         let immediate_event = scheduled_activation.take();
+        crate::perf::client::LOOP.end(); // fork (perf watch)
         #[cfg(windows)]
         let event = if let Some(event) = immediate_event {
             event
@@ -840,6 +843,7 @@ async fn run_client_loop(
                 ev = event_rx.recv() => ev.unwrap_or(ClientLoopEvent::Timer),
             }
         };
+        crate::perf::client::LOOP.begin(); // fork (perf watch): handling the event is busy
         let now = std::time::Instant::now();
         if let Some(shell) = state.shell.as_mut() {
             shell.tick_popup_pending(now);
@@ -2526,6 +2530,7 @@ async fn run_client_loop(
                         }
                         let (effects, notification_repaint) = shell.tick_notifications(now);
                         shell.tick_news(now, &mut outcome);
+                        shell.tick_perf_readout(now, &mut outcome);
                         shell.tick_coordinator(now, &mut outcome);
                         shell.tick_teams(now, &mut outcome);
                         shell.tick_browser(now, &mut outcome);

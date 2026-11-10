@@ -624,6 +624,19 @@ fn handle_request(
         });
     }
 
+    // Fork (perf watch): process counters, answered without the app loop so
+    // `herdr server perf` still reads a stalled server.
+    if let Method::ServerPerfSummary(params) = &request.method {
+        return serde_json::to_string(&SuccessResponse {
+            id: request.id.clone(),
+            result: crate::api::schema::perf::summary(params),
+        })
+        .unwrap_or_else(|_| {
+            r#"{"id":"","error":{"code":"internal_error","message":"failed to encode response"}}"#
+                .to_string()
+        });
+    }
+
     if matches!(&request.method, Method::ClientShellSurfaceSet(_)) {
         return error_response_json(
             request.id,
@@ -1556,6 +1569,32 @@ mod tests {
         let parsed: SuccessResponse = serde_json::from_str(&response).unwrap();
         assert_eq!(parsed.id, "req_1");
         assert!(matches!(parsed.result, ResponseResult::Pong { .. }));
+    }
+
+    /// Fork (perf watch): answered from the process counters on the
+    /// connection thread, never queued for the (possibly stalled) app loop.
+    #[test]
+    fn fork_smoke_perf_summary_bypasses_the_app_channel() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let response = handle_request(
+            Request {
+                id: "perf_1".into(),
+                method: Method::ServerPerfSummary(Default::default()),
+            },
+            &tx,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let parsed: SuccessResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(parsed.id, "perf_1");
+        let ResponseResult::ServerPerfSummary { perf } = parsed.result else {
+            panic!("expected a perf summary: {response}");
+        };
+        assert_eq!(perf.pid, std::process::id());
+        assert!(rx.try_recv().is_err(), "nothing reached the app loop");
     }
 
     #[test]

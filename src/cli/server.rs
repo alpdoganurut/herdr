@@ -20,6 +20,8 @@ pub(super) fn run_server_command(args: &[String]) -> std::io::Result<Option<i32>
         "agent-manifests" => server_agent_manifests(&args[1..]).map(Some),
         "update-agent-manifests" => server_update_agent_manifests(&args[1..]).map(Some),
         "reload-agent-manifests" => server_reload_agent_manifests(&args[1..]).map(Some),
+        // Fork (perf watch): src/cli/server_perf.rs.
+        "perf" => super::server_perf::server_perf(&args[1..]).map(Some),
         "help" | "--help" | "-h" => {
             print_server_help();
             Ok(Some(0))
@@ -265,6 +267,7 @@ fn print_server_help() {
     eprintln!("  herdr server agent-manifests [--json]  show agent detection manifest status");
     eprintln!("  herdr server update-agent-manifests [--json]  fetch and reload agent detection manifests");
     eprintln!("  herdr server reload-agent-manifests  reload agent detection manifests in the running server");
+    eprintln!("  herdr server perf [--json] [--reset]  show the running server's frame, render and stall counters");
 }
 
 #[cfg(test)]

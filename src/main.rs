@@ -43,6 +43,7 @@ mod metadata_tokens;
 mod noninteractive_process;
 mod notes;
 mod pane;
+mod perf;
 use ghostty_vt::pane_graphics_files;
 mod persist;
 mod platform;
@@ -321,6 +322,10 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # Frames per second herdr paces screen updates to; set it to your display's refresh rate
 # (e.g. 120 on a ProMotion display). 30 through 240.
 # render_fps = 60
+
+# A small live readout in the bottom-right corner: frames per second, the slowest
+# frame and the server's render time and stalls.
+# perf_readout = false
 
 # Show the Active block (blocked, voice, working, running-subagent and finished
 # agents) under the tab list in the "tabs" sidebar layout; it hides while nothing is active.

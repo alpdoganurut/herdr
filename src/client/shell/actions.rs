@@ -576,6 +576,10 @@ impl ClientShellState {
         if let Some(done) = self.complete_toolbar_new_tab(&pending.kind, &result) {
             return done;
         }
+        // Fork (perf watch): the readout's poll never raises a notice.
+        if matches!(pending.kind, PendingEndpointKind::PerfSummary) {
+            return self.complete_perf_readout(result);
+        }
         // Fork: info dock replies show in the dock, never as a notice.
         if pending.kind.is_info_dock() {
             return self.handle_info_dock_endpoint_result(pending, result);
@@ -636,7 +640,8 @@ impl ClientShellState {
             PendingEndpointKind::Generic
             | PendingEndpointKind::ForceableAgentStop { .. }
             | PendingEndpointKind::ToolbarNewTab
-            | PendingEndpointKind::ToolbarNewTabMove => {}
+            | PendingEndpointKind::ToolbarNewTabMove
+            | PendingEndpointKind::PerfSummary => {}
             PendingEndpointKind::PaneLinkResolve { .. } => unreachable!("handled above"),
             PendingEndpointKind::InfoNotesGet
             | PendingEndpointKind::InfoNotesWrite

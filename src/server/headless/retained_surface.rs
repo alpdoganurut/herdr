@@ -232,6 +232,7 @@ impl HeadlessServer {
         let started = crate::render_prof::timer();
         macro_rules! fallback {
             ($reason:literal) => {{
+                crate::perf::server::RETAINED_FALLBACKS.inc(); // fork (perf watch)
                 crate::render_prof::event(concat!("retained_surface.fallback.", $reason));
                 crate::render_prof::duration_since("retained_surface.total", started);
                 return false;
@@ -239,6 +240,7 @@ impl HeadlessServer {
         }
         macro_rules! success {
             ($reason:literal) => {{
+                crate::perf::server::RETAINED_RENDERS.inc(); // fork (perf watch)
                 crate::render_prof::event("retained_surface.success");
                 crate::render_prof::event(concat!("retained_surface.success.", $reason));
                 crate::render_prof::duration_since("retained_surface.total", started);
@@ -563,6 +565,7 @@ impl HeadlessServer {
                 serialized.extend_from_slice(&file_frame);
             }
             crate::render_prof::counter("retained_surface.bytes", serialized.len() as u64);
+            let frame_len = serialized.len(); // fork (perf watch)
             let send = if native_upload.is_some() || self.native_graphics.is_pending(client_id) {
                 writer.render.send_ordered(serialized)
             } else {
@@ -570,6 +573,7 @@ impl HeadlessServer {
             };
             match send {
                 Ok(()) => {
+                    crate::perf::record_frame_sent(client_id, frame_len);
                     if let Some((graphics, inline_assets)) = prepared.queued_surface_graphics() {
                         self.native_graphics
                             .commit_scene(client_id, graphics, inline_assets);
@@ -592,6 +596,7 @@ impl HeadlessServer {
                     sent += 1;
                 }
                 Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                    crate::perf::server::FRAMES_DEFERRED.inc();
                     client.defer_full_render();
                     deferred += 1;
                 }

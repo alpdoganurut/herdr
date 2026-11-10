@@ -348,6 +348,7 @@ impl ClientState {
         } else {
             patch.rows
         };
+        let perf_started = crate::perf::now_ns(); // fork (perf watch)
         let encode_started = crate::render_prof::timer();
         let Some(encoded) =
             self.blit_encoder
@@ -362,6 +363,8 @@ impl ClientState {
             let mut stdout = io::stdout();
             stdout.write_all(&encoded.bytes)?;
             stdout.flush()?;
+            // Fork (perf watch): only a patch that wrote something is a frame.
+            crate::perf::record_client_frame(crate::perf::now_ns().saturating_sub(perf_started));
         }
         crate::render_prof::duration_since("client_surface_patch.write", write_started);
         let committed = self.blit_encoder.commit_patch(&rows, patch.cursor, encoded);
@@ -585,6 +588,7 @@ impl ClientState {
         } else {
             frame_data
         };
+        let perf_started = crate::perf::now_ns(); // fork (perf watch)
         let encoded = if !scroll_regions.is_empty() {
             self.blit_encoder.encode_scrolling(
                 &frame_data,
@@ -604,6 +608,7 @@ impl ClientState {
             self.repaint_pending = true;
             return false;
         }
+        crate::perf::record_client_frame(crate::perf::now_ns().saturating_sub(perf_started)); // fork (perf watch)
         self.blit_encoder.commit(frame_data, encoded);
         self.repaint_pending = false;
         true

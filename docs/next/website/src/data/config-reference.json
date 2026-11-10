@@ -1084,6 +1084,12 @@
           "description": "Frames per second herdr paces screen updates to while output changes. Frames land on a fixed grid at this rate, so set it to your display's refresh rate (for example 120 on a ProMotion display); 60 also stays smooth on a 120 Hz display. 30 through 240; a value outside that range is a config warning and is clamped. Applies live."
         },
         {
+          "key": "ui.perf_readout",
+          "type": "boolean",
+          "default": "false",
+          "description": "A small live readout in the bottom-right corner, for example `58 fps · 4.1 ms · srv 3.2 ms`: this client's frames per second and its slowest frame (encode and write) in the last second, then the server's average full render time from server.perf_summary, polled at most once a second, and the server's stall count once a loop stalls. Off draws and polls nothing. Applies live."
+        },
+        {
           "key": "ui.sidebar_active_agents",
           "type": "boolean",
           "default": "true",

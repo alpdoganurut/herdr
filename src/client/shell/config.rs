@@ -153,6 +153,7 @@ impl ClientShellConfig {
             sidebar_scheduled_agents: config.ui.sidebar_scheduled_agents,
             sidebar_collapse_suspended: config.ui.sidebar_collapse_suspended,
             sidebar_context_usage: config.ui.sidebar_context_usage,
+            perf_readout: config.ui.perf_readout,
             tab_agent_glyphs: config.ui.tab_agent_glyphs.clone(),
             tab_agent_glyph_colors: crate::config::resolve_tab_agent_glyph_colors(
                 &config.ui.tab_agent_glyph_colors,
@@ -400,6 +401,7 @@ impl ClientShellConfig {
                 self.sidebar_scheduled_agents = ui.sidebar_scheduled_agents;
                 self.sidebar_collapse_suspended = ui.sidebar_collapse_suspended;
                 self.sidebar_context_usage = ui.sidebar_context_usage;
+                self.perf_readout = ui.perf_readout;
                 self.tab_agent_glyphs = ui.tab_agent_glyphs.clone();
                 diagnostics.extend(crate::config::tab_agent_glyph_color_diagnostics(
                     &ui.tab_agent_glyph_colors,

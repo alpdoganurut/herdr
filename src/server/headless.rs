@@ -460,6 +460,7 @@ impl HeadlessServer {
     /// - Renders virtually and streams frames to clients
     pub async fn run(&mut self) -> io::Result<()> {
         crate::logging::startup("server");
+        crate::perf::watchdog::start(crate::perf::watchdog::Role::Server); // fork (perf watch)
 
         let server_stop = self.server_stop.clone();
         let quit_notify = self.server_event_tx.clone();
@@ -481,12 +482,16 @@ impl HeadlessServer {
         let mut needs_graphics_render = false;
 
         loop {
+            crate::perf::server::LOOP.begin(); // fork (perf watch): busy until the wait below
             crate::render_prof::event("loop.tick");
             crate::render_prof::flush_if_due();
             self.app.reap_finished_detached_processes();
 
             // If shutdown has been initiated, complete it and exit.
             if self.shutting_down {
+                // Fork (perf watch): shutdown, the session save and browser
+                // stop are not a stalled loop.
+                crate::perf::server::LOOP.end();
                 self.complete_shutdown().await?;
                 break;
             }
@@ -690,6 +695,7 @@ impl HeadlessServer {
                 .fold(next_deadline, |deadline, pending| {
                     Some(deadline.map_or(pending, |current| current.min(pending)))
                 });
+            crate::perf::server::LOOP.end(); // fork (perf watch)
             let event = {
                 tokio::select! {
                     maybe_api = self.app.api_rx.recv() => match maybe_api {
@@ -708,6 +714,7 @@ impl HeadlessServer {
                     _ = self.app.render_notify.notified() => LoopEvent::RenderRequested,
                 }
             };
+            crate::perf::server::LOOP.begin(); // fork (perf watch): dispatching the event is busy
 
             if self.should_quit.load(Ordering::Acquire) || self.host_shutdown_requested() {
                 match event {
@@ -1016,6 +1023,7 @@ impl HeadlessServer {
     }
 
     fn remove_client(&mut self, client_id: u64) -> bool {
+        crate::perf::forget_client(client_id); // fork (perf watch)
         self.disconnect_native_graphics(client_id);
         // Fork (companion launcher): its browser placement leaves with it.
         self.drop_browser_placement(client_id);
@@ -3060,7 +3068,10 @@ impl HeadlessServer {
 
         let metadata_expired = self.app.expire_due_metadata(Instant::now());
         if let api::schema::Method::ServerLiveHandoff(params) = &msg.request.method {
+            // Fork (perf watch): handing the panes over is not a stalled loop.
+            crate::perf::server::LOOP.end();
             let handoff_result = self.perform_live_handoff(params.clone());
+            crate::perf::server::LOOP.begin();
             let handoff_succeeded = handoff_result.is_ok();
             let response = match handoff_result {
                 Ok(()) => serde_json::to_string(&api::schema::SuccessResponse {

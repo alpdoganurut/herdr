@@ -17,6 +17,7 @@ pub mod news;
 pub mod notes;
 pub(crate) mod operations;
 pub mod panes;
+pub mod perf;
 pub mod plugins;
 pub mod response;
 pub mod server;
@@ -51,6 +52,7 @@ pub use events::*;
 pub use integrations::*;
 pub use news::*;
 pub use panes::*;
+pub use perf::ServerPerfSummaryParams;
 pub use plugins::*;
 pub use response::*;
 pub use server::*;
@@ -88,6 +90,10 @@ operations::define_operations! {
     ServerSshAgentRegister(ServerSshAgentRegisterParams) => "server.ssh_agent.register", false, false;
     ServerAgentManifests(EmptyParams) => "server.agent_manifests", false, false;
     ServerReloadAgentManifests(EmptyParams) => "server.reload_agent_manifests", true, false;
+    /// Fork (perf watch): the server's frame, render and stall counters
+    /// (src/perf); advertised so a client shell can poll it, answered from
+    /// process atomics on the API connection lane too.
+    ServerPerfSummary(ServerPerfSummaryParams) => "server.perf_summary", false, true;
     NotificationShow(NotificationShowParams) => "notification.show", true, false;
     ProductAnnouncementDismiss(ProductAnnouncementDismissParams) => "product_announcement.dismiss", true, true;
     ReleaseNotesDismiss(ReleaseNotesDismissParams) => "release_notes.dismiss", true, true;

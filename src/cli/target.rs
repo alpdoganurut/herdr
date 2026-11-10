@@ -309,7 +309,7 @@ fn validate_machine_command(args: &[String]) -> Result<(), String> {
         ),
         "server" => matches!(
             subcommand,
-            "stop" | "reload-config" | "agent-manifests" | "reload-agent-manifests"
+            "stop" | "reload-config" | "agent-manifests" | "reload-agent-manifests" | "perf"
         ),
         _ => false,
     };

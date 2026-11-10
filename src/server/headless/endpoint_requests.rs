@@ -64,6 +64,19 @@ impl HeadlessServer {
             self.handle_client_shell_browser_placement(client_id, boot_id, request_id, params);
             return false;
         }
+        // Fork (perf watch): process counters, answered at once: no command
+        // lane, no response thread, no foreground promotion and no render,
+        // so a client's 1 s poll does not perturb what it measures.
+        if let api::schema::Method::ServerPerfSummary(params) = &request.method {
+            let result = api::schema::perf::summary(params);
+            self.send_to_client(
+                client_id,
+                crate::server::client_commands::success_message_with_result(
+                    boot_id, request_id, result,
+                ),
+            );
+            return false;
+        }
         if client.shell_endpoint_command_in_flight {
             let message = crate::server::client_commands::error_message(
                 boot_id,

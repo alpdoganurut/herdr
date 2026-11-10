@@ -568,7 +568,8 @@ impl ClientShellState {
                 | PendingEndpointKind::CopySearch { .. }
                 | PendingEndpointKind::ForceableAgentStop { .. }
                 | PendingEndpointKind::ToolbarNewTab
-                | PendingEndpointKind::ToolbarNewTabMove,
+                | PendingEndpointKind::ToolbarNewTabMove
+                | PendingEndpointKind::PerfSummary,
                 Err(_),
             ) => true,
         }

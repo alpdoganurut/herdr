@@ -1231,6 +1231,15 @@ impl ClientShellState {
             self.hits.pane_splits.clear();
             self.hits.popup = None;
         }
+        // Fork (perf watch): the `[ui] perf_readout` corner, last on top.
+        // Off: no work.
+        if self.config.perf_readout {
+            if let Some(rect) = self.paint_perf_readout(&mut frame) {
+                occlusion.cover(rect);
+            }
+        } else {
+            self.perf_readout.drawn = None;
+        }
         let graphics = self.compose_graphics(layout, &occlusion);
         // Fork (scrollback scroll): the panes' content the blit may scroll on
         // the host, unless a host image is placed (images do not follow).
