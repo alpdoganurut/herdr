@@ -1288,3 +1288,30 @@ fn fork_smoke_a_view_cycle_from_the_companion_steps_like_the_key() {
     relay(&mut state, &local, "boot-2", 1, Some("tab_1"));
     assert_eq!(browser_state(&state), (true, false));
 }
+
+/// Fork (browser keys audit): a client that cannot dock here (its server
+/// lacks `browser.placement.set`) ignores the companion's cycle quietly: no
+/// dock, no Browser view, no "update the server" notice.
+#[test]
+fn a_view_cycle_on_a_client_that_cannot_dock_is_ignored_quietly() {
+    use crate::server::headless::view_cycle::ViewCyclePayload;
+    let mut state = dock_state();
+    state
+        .endpoints
+        .iter_mut()
+        .find(|endpoint| endpoint.endpoint_id == state.active_endpoint_id)
+        .expect("the local endpoint")
+        .methods = Some(vec!["browser.get".to_owned()].into_iter().collect());
+    assert!(!state.browser_dock_available());
+    let outcome = state.receive_browser_view_cycle(
+        &crate::client::endpoint::ClientEndpointId::Local,
+        ViewCyclePayload {
+            boot_id: "boot".into(),
+            revision: 1,
+            tab_id: Some("tab_1".into()),
+        },
+    );
+    assert!(!outcome.repaint && !outcome.resize);
+    assert_eq!(browser_state(&state), (false, false));
+    assert!(state.visible_endpoint_notice.is_none(), "no notice");
+}

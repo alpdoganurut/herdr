@@ -38,6 +38,7 @@ export function createMockHerdr({ socketPath, verifyCdp = false, log = () => {},
     companionDelayMs: 0, // their (failing) answer comes this late
     viewCycleKeys: null, // herdr's keys.cycle_browser for the lease (null: an older herdr, no view_cycle)
     viewCycles: [], // browser.view_cycle calls (the companion's cycle key)
+    viewCycleRefuse: null, // an error code browser.view_cycle answers (not_found: no herdr client)
   };
   const mintKey = () => 'g-' + crypto.randomBytes(8).toString('hex');
   const now = () => Math.floor(Date.now() / 1000);
@@ -211,6 +212,7 @@ export function createMockHerdr({ socketPath, verifyCdp = false, log = () => {},
       case 'browser.view_cycle':
         if (!leaseOk(params)) return err(id, 'lease_unknown', 'no such lease');
         if (!state.viewCycleKeys) return err(id, 'unknown_method', `unknown method ${method}`);
+        if (state.viewCycleRefuse) return err(id, state.viewCycleRefuse, `refused: ${state.viewCycleRefuse}`);
         state.viewCycles.push(params);
         return ok(id, { type: 'ok' });
       case 'browser.companion':

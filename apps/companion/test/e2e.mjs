@@ -937,6 +937,12 @@ try {
     await key(v3, 'K', ['alt', 'shift']);
     await waitFor(() => mock.state.viewCycles.length >= 2 || null, 3000);
     check('the configured key is the one taken', mock.state.viewCycles.length === 2 && (await pageKeys(kp[2])).includes('csKeyB') && !(await pageKeys(kp[2])).includes('saKeyK'), { cycles: mock.state.viewCycles.length, keys: await pageKeys(kp[2]) });
+    // no herdr client to take it (not_found): one line in the bar
+    mock.state.viewCycleRefuse = 'not_found';
+    await key(v3, 'K', ['alt', 'shift']);
+    const said = await waitFor(() => stripPage().evaluate(() => (document.getElementById('status').textContent.includes('refused: not_found') ? document.getElementById('status').textContent : null)), 3000);
+    check('no herdr client to take the cycle: the bar says so', said, said);
+    mock.state.viewCycleRefuse = null;
     // the floating bar has the keyboard: taken there too
     await key({ surface: 'bar' }, 'K', ['alt', 'shift']);
     check('the floating bar takes the cycle key too', await waitFor(() => mock.state.viewCycles.length === 3 || null, 3000), mock.state.viewCycles.length);

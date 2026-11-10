@@ -58,8 +58,19 @@ function parseLabels(labels) {
   return (Array.isArray(labels) ? labels : []).map(parseLabel).filter(Boolean);
 }
 
-// The herdr key name of an Electron `before-input-event` input: by its physical key first.
-function inputKey(input) {
+// The key name of what the input types: a single printable ASCII character, lowercased (the
+// layout's own letter, as herdr's terminal reads it); null for anything else (a control
+// character, a non-ASCII character such as Alt's ¶ on macOS, a named key, a non-Latin layout).
+function typedKey(input) {
+  const k = String(input.key || '');
+  if (k.length !== 1 || k < ' ' || k > '~') return null;
+  if (k === ' ') return 'space';
+  if (k === '+') return 'plus';
+  return k.toLowerCase();
+}
+
+// The key name of the physical key (KeyboardEvent.code); null when unknown.
+function codeKey(input) {
   const code = String(input.code || '');
   let m = /^Key([A-Z])$/.exec(code);
   if (m) return m[1].toLowerCase();
@@ -67,18 +78,32 @@ function inputKey(input) {
   if (m) return m[1];
   m = /^F([0-9]{1,2})$/.exec(code);
   if (m) return `f${m[1]}`;
-  if (CODE_KEYS[code]) return CODE_KEYS[code];
-  return String(input.key || '').toLowerCase();
+  return CODE_KEYS[code] || null;
 }
 
+// The herdr key name of an Electron `before-input-event` input: what it types when that is a
+// printable ASCII character, else its physical key.
+function inputKey(input) {
+  return typedKey(input) || codeKey(input) || String(input.key || '').toLowerCase();
+}
+
+// A single-character key that is not a letter (`?`, `]`, `7`, `plus`).
+const symbolKey = (key) => (key.length === 1 && !/^[a-z]$/.test(key)) || key === 'plus';
+
+// As herdr's terminal matches a key (config/keybinds.rs key_parts_match_combo): ctrl, alt and
+// super exact; shift exact for letters (herdr spells `ctrl+B` as `ctrl+shift+b`); a letter is
+// the one the layout types. A symbol also matches by its physical key while shift is exact
+// (`ctrl+shift+]` types `}`), and a symbol bound without shift matches the same character
+// typed with shift held (`ctrl+?` is shift+/ on most layouts).
 function matches(spec, input) {
   if (!spec || !input) return false;
-  if (!!input.control !== spec.ctrl || !!input.alt !== spec.alt || !!input.shift !== spec.shift || !!input.meta !== spec.super) return false;
-  const key = inputKey(input);
-  if (key === spec.key) return true;
-  if (spec.key === 'plus') return input.key === '+';
-  // a symbol herdr names by its character (a layout without that physical key)
-  return spec.key.length === 1 && String(input.key || '').toLowerCase() === spec.key;
+  if (!!input.control !== spec.ctrl || !!input.alt !== spec.alt || !!input.meta !== spec.super) return false;
+  const typed = typedKey(input);
+  if (!!input.shift === spec.shift) {
+    if (inputKey(input) === spec.key) return true;
+    return symbolKey(spec.key) && codeKey(input) === spec.key;
+  }
+  return !spec.shift && !!input.shift && symbolKey(spec.key) && typed === spec.key;
 }
 
 // Whether a keyDown input is one of the parsed cycle keys.

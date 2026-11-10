@@ -20,9 +20,9 @@ test("herdr's cycle key labels parse; unknown spellings and bare keys do not", (
   assert.deepEqual(keys.parseLabels(undefined), []);
 });
 
-test('the cycle key matches by the physical key and the exact modifiers', () => {
+test('the cycle key matches like herdr\'s terminal: the typed letter, exact modifiers', () => {
   const specs = keys.parseLabels(['ctrl+shift+b']);
-  // macOS reports ctrl+shift+b with key "B" (or a control character); the code decides
+  // the typed character decides ("B"); a control character falls back to the physical key
   assert.ok(keys.isCycleKey(specs, down({ control: true, shift: true, key: 'B', code: 'KeyB' })));
   assert.ok(keys.isCycleKey(specs, down({ control: true, shift: true, key: '\u0002', code: 'KeyB' })));
   assert.ok(!keys.isCycleKey(specs, down({ control: true, key: 'b', code: 'KeyB' })), 'ctrl+b is the prefix');
@@ -35,7 +35,33 @@ test('the cycle key matches by the physical key and the exact modifiers', () => 
   assert.ok(keys.isCycleKey(more, down({ meta: true, key: 'F5', code: 'F5' })));
   assert.ok(keys.isCycleKey(more, down({ control: true, shift: true, key: 'Tab', code: 'Tab' })));
   assert.ok(keys.isCycleKey(more, down({ control: true, key: ']', code: 'BracketRight' })));
+  // non-ASCII (Alt on macOS): the physical key
   assert.ok(keys.isCycleKey(more, down({ control: true, alt: true, key: '¶', code: 'Digit7' })));
+});
+
+test('letters follow the layout; symbols match shifted as herdr does', () => {
+  const b = keys.parseLabels(['ctrl+shift+b']);
+  // Dvorak: the physical KeyB types x, the key that types b is KeyN
+  assert.ok(!keys.isCycleKey(b, down({ control: true, shift: true, key: 'X', code: 'KeyB' })), 'KeyB typing x is not b');
+  assert.ok(keys.isCycleKey(b, down({ control: true, shift: true, key: 'B', code: 'KeyN' })), 'the key typing b is');
+  // AZERTY: a and q swap places
+  const a = keys.parseLabels(['ctrl+a']);
+  assert.ok(keys.isCycleKey(a, down({ control: true, key: 'a', code: 'KeyQ' })));
+  assert.ok(!keys.isCycleKey(a, down({ control: true, key: 'q', code: 'KeyA' })));
+  // a non-Latin layout types no ASCII: the physical key
+  assert.ok(keys.isCycleKey(b, down({ control: true, shift: true, key: 'И', code: 'KeyB' })));
+  // ctrl+? is shift+/ on most layouts
+  const q = keys.parseLabels(['ctrl+?']);
+  assert.ok(keys.isCycleKey(q, down({ control: true, shift: true, key: '?', code: 'Slash' })));
+  assert.ok(!keys.isCycleKey(q, down({ control: true, key: '/', code: 'Slash' })));
+  // an explicitly shifted symbol: ctrl+shift+] types }
+  const br = keys.parseLabels(['ctrl+shift+]']);
+  assert.ok(keys.isCycleKey(br, down({ control: true, shift: true, key: '}', code: 'BracketRight' })));
+  assert.ok(!keys.isCycleKey(br, down({ control: true, key: ']', code: 'BracketRight' })));
+  // a letter needs its shift exactly: ctrl+b (the prefix) never matches shifted, nor the reverse
+  assert.ok(!keys.isCycleKey(keys.parseLabels(['ctrl+alt+b']), down({ control: true, alt: true, shift: true, key: 'B', code: 'KeyB' })));
+  // ctrl+plus: shift+= on US
+  assert.ok(keys.isCycleKey(keys.parseLabels(['ctrl+plus']), down({ control: true, shift: true, key: '+', code: 'Equal' })));
 });
 
 test('Ctrl+Tab steps forward, Ctrl+Shift+Tab back; ⌘⇧] / ⌘⇧[ on macOS only', () => {

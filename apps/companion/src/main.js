@@ -758,7 +758,7 @@ class Companion {
 
   // herdr's client steps its focused tab's browser (none, docked, Browser view, none), like
   // the key in its terminal (browser.view_cycle): the client whose dock this covers, else the
-  // one in front. Quiet when herdr refuses (an older client: one line in the bar).
+  // one in front. Quiet when herdr refuses, except an older client or none: one line in the bar.
   async cycleView() {
     const lease = this.link && this.link.lease;
     if (!lease) return;
@@ -769,7 +769,8 @@ class Companion {
       await this.link.request('browser.view_cycle', params);
     } catch (e) {
       log('view_cycle refused', e.code || e.message);
-      if (e.code === 'unsupported') this.say('warn', e.message);
+      // an older herdr client, or none attached: one line in the bar
+      if (e.code === 'unsupported' || e.code === 'not_found') this.say('warn', e.message);
     }
   }
 

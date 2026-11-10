@@ -1163,6 +1163,8 @@ impl ClientShellState {
     /// (`endpoint.view-cycle.v1`: `keys.cycle_browser` pressed while the
     /// companion had the keyboard), taken like the key in this terminal
     /// (`cycle_browser_for_focused_tab`). Ignored for another endpoint, a
+    /// client that cannot dock here (its server lacks `browser.placement.set`:
+    /// quietly, no "update the server" notice for a key pressed elsewhere), a
     /// tab other than the focused one, or a relay already taken.
     pub(crate) fn receive_browser_view_cycle(
         &mut self,
@@ -1170,7 +1172,7 @@ impl ClientShellState {
         payload: crate::server::headless::view_cycle::ViewCyclePayload,
     ) -> ClientShellInput {
         let mut outcome = ClientShellInput::default();
-        if *endpoint_id != self.active_endpoint_id {
+        if *endpoint_id != self.active_endpoint_id || !self.browser_dock_available() {
             return outcome;
         }
         if payload

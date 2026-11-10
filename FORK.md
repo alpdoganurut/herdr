@@ -1366,7 +1366,7 @@ scripts/agent_detection_manifest_check.py  additive: `signal` and `value` in RUL
 scripts/test_agent_detection_manifest_check.py  additive: test_signal_rules_require_engine_four_and_known_neutral_values directly after the engine-3 region test
 src/detect/manifest/tests.rs  additive: the four signal-rule tests last in the file; any_gate_of_anchored_end_lines_each_must_end_the_region_and_not_vetoes sits directly after a_screen_rule_anchored_above_the_prompt_box_outranks_a_title_rule
 src/pane/agent_detection.rs  additive: DetectionPublishState.voice, ScreenDetectionPublishInput.last_voice and DetectionPublishDecision::Publish.voice (section 2); screen_publish_publishes_a_voice_only_change and an_exited_process_reports_voice_off directly before detection_content_change_tracks_raw_nonempty_reads_for_scan_scheduling
-src/server/headless.rs  additive: `pub mod voice;` (with its doc line) directly after `pub mod teams;`
+src/server/headless.rs  additive: `pub mod voice;` (with its doc line) directly after `pub mod view_cycle;`
 tests/api_ping.rs  deny: the fork's one line is the protocol literal in ping_over_socket_returns_version; it must equal PROTOCOL_VERSION in src/protocol/wire.rs after the sync
 tests/support/mod.rs  deny: the fork's one line is CURRENT_PROTOCOL; it must equal PROTOCOL_VERSION in src/protocol/wire.rs after the sync
 tests/client_mode.rs  additive: session header: read_until_client_attaches also takes the tabs layout's header notes toggle (`≡` U+2261 since the compact bar; was `▤` U+25A4) for a drawn frame (the detail strip's `─` that the tabs layout drew is gone), one comment line and one condition directly after the `\u{2500}` check
@@ -1815,7 +1815,7 @@ src/api/schema.rs  additive: browser keys: the BrowserViewCycle row (with its do
 src/api/schema/operations.rs  additive: browser keys: "browser.view_cycle" in operation_ui_impact_preserves_existing_classification directly after "browser.placement_action"
 src/app/api.rs  additive: browser keys: the Method::BrowserViewCycle dispatch directly after BrowserPlacementAction
 src/app/mod.rs  additive: browser keys: apply_live_config's keys block sets crate::browser::hub().set_view_cycle_keys(view_cycle_key_labels(&self.state.keybinds.cycle_browser)) (with its comment) directly after `self.state.keybinds = live.keybinds;`
-src/server/headless.rs  additive: browser keys: `pub mod view_cycle;` (with its doc line) directly after `pub mod placement_action;`
+src/server/headless.rs  additive: browser keys: `pub mod view_cycle;` (with its doc line) directly after `pub mod teams;` (before `pub mod voice;`)
 src/server/headless/render.rs  additive: browser keys: view_cycle_revision (the board's newest cycle, one lock per pass) directly after placement_action_revision; the view_cycle::sync_client call directly after the placement_action one
 src/server/clients.rs  additive: browser keys: ClientConnection.shell_view_cycle_sent directly after shell_placement_action_sent (struct and new())
 src/client/endpoint/control.rs  additive: browser keys: EndpointControlMessage::ViewCycle directly after PlacementAction, its decode branch directly after the placement-action one
