@@ -371,7 +371,10 @@ export function laneShot(lane, send, deadlineAt = null) {
 /** How long a clipped capture waits for its tab to be ready: a size, its
  *  document loaded (a quiet select halfway when it has no size). */
 export const CLIP_READY_MS = 4000;
-const CLIP_PROBE = `({ width: innerWidth, height: innerHeight, loaded: document.readyState === 'complete' && !location.href.startsWith(${JSON.stringify('about:blank#herdr-view=')}) })`;
+/** A view the companion created, before its target id is known (its about:blank
+ *  marker; the page itself loads after it). Defined here, before CLIP_PROBE uses it. */
+export const VIEW_MARKER = 'about:blank#herdr-view=';
+const CLIP_PROBE = `({ width: innerWidth, height: innerHeight, loaded: document.readyState === 'complete' && !location.href.startsWith(${JSON.stringify(VIEW_MARKER)}) })`;
 
 /** Chromium's clipped Page.captureScreenshot (a full page, an element, the
  *  scaled inline copy) sets the clip as device-metrics emulation on the
@@ -995,8 +998,6 @@ export class Companion {
 // own pages (`herdr-companion:` scheme) are furniture, never tabs.
 
 export const CONTROL_URL_PREFIX = 'herdr-companion://control/';
-/** A view the companion created, before its target id is known. */
-export const VIEW_MARKER = 'about:blank#herdr-view=';
 export const CONTROL_CALL_MS = 5000;
 
 /** The companion's own pages (control page, strip): never adopted, tracked or counted. */

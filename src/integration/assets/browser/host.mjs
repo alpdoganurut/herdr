@@ -14,7 +14,7 @@ import { createRequire } from 'node:module';
 import readline from 'node:readline';
 import fs from 'node:fs';
 import { EXTRACT_SOURCE, LINKS_SOURCE } from './extract.mjs';
-import { Overlay, Companion, NUDGE_URL, dismissPanes, captureWithQuietRetry, CaptureLane, laneShot, shotParams, firstShot, cleanCapture, clearClipEmulation, SELECT_BUDGET_MS, describe, probePages, ControlPage, ViewWatches, isFurnitureUrl, VIEW_MARKER, CompanionDialog, reconcileDialogs, pruneAnswered, DIALOG_BINDING } from './activity.mjs';
+import { Overlay, Companion, NUDGE_URL, dismissPanes, CaptureLane, laneShot, shotParams, firstShot, cleanCapture, clearClipEmulation, SELECT_BUDGET_MS, describe, probePages, ControlPage, ViewWatches, isFurnitureUrl, VIEW_MARKER, CompanionDialog, reconcileDialogs, pruneAnswered, DIALOG_BINDING } from './activity.mjs';
 import { pathToFileURL } from 'node:url';
 import nodePath from 'node:path';
 // the act's change probe and timeout message (on a line of their own)
@@ -798,6 +798,8 @@ const ops = {
     const scope = scopeLocator(state, args);
     const deadlineAt = Date.now() + Number(deadline_ms || 30000);
     const left = () => Math.max(1000, deadlineAt - Date.now());
+    // the host's own CDP session, for every capture of this op
+    const send = (method, params) => state.session.send(method, params);
     // Raw CDP on the host's own session, through the page's capture lane:
     // Playwright's page.screenshot abandons a capture that timed out while
     // Chromium still holds it, and a second one sent beside it (the quiet
@@ -833,7 +835,7 @@ const ops = {
     let element = null;
     try {
       const answer = await firstShot({
-        send: (method, params) => state.session.send(method, params),
+        send,
         lane: state.captures,
         type,
         quality,
@@ -876,7 +878,6 @@ const ops = {
       else if (args.full) clip = { x: 0, y: 0, width: content.width, height: content.height, scale };
       else clip = { x: vis.pageX, y: vis.pageY, width: vis.clientWidth, height: vis.clientHeight, scale };
       // a clip: its device metrics are cleared after it (see clipReady in activity.mjs)
-      const send = (method, params) => state.session.send(method, params);
       const debug = (text) => log('debug', text);
       const small = laneShot(state.captures, cleanCapture(send, shotParams({ type, quality, clip, beyond: Boolean(element || args.full) }), debug), deadlineAt);
       shots.push(small);
