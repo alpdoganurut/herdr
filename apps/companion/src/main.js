@@ -1143,6 +1143,26 @@ class Companion {
           this.stripPreview = a && typeof a === 'object' ? a : null;
           this.pushStrip();
           return { ok: true };
+        case 'view_pixels': {
+          // what the compositor shows of a view (webContents.capturePage, not a CDP capture):
+          // its size and the RGBA of the asked points ({view_id, points: [[x, y], ...]}, DIPs)
+          if (!MANAGED.testHooks) return errOut('unknown_op', 'unknown control op view_pixels');
+          const rec = a && this.views.get(a.view_id);
+          if (!rec) return errOut('view_not_found', `no view ${a && a.view_id}`);
+          const img = await rec.view.webContents.capturePage(undefined, { stayHidden: true });
+          const size = img.getSize();
+          const bounds = rec.view.getBounds();
+          const sx = size.width / Math.max(1, bounds.width);
+          const sy = size.height / Math.max(1, bounds.height);
+          const bmp = img.toBitmap(); // BGRA
+          const pixels = (a.points || []).map(([x, y]) => {
+            const px = Math.min(size.width - 1, Math.max(0, Math.round(x * sx)));
+            const py = Math.min(size.height - 1, Math.max(0, Math.round(y * sy)));
+            const i = (py * size.width + px) * 4;
+            return [bmp[i + 2], bmp[i + 1], bmp[i], bmp[i + 3]];
+          });
+          return { size, bounds, visible: rec.view.getVisible(), pixels };
+        }
         case '__hang':
           if (!MANAGED.testHooks) return errOut('unknown_op', 'unknown control op __hang');
           log('test hook: no more heartbeats');

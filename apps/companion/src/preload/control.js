@@ -24,5 +24,6 @@ contextBridge.exposeInMainWorld('__herdrCompanion', {
   page_menu: (args) => call('page_menu', args), // the last page context menu ({close}: closes it)
   sessions_menu: () => call('sessions_menu'), // the pill menu's items as last built
   bar_debug: () => call('bar_debug'), // the bar's last layout, what the bars reported, the saved pins
+  view_pixels: (args) => call('view_pixels', args), // {view_id, points}: the compositor's pixels of a view (capturePage)
   strip_preview: (args) => call('strip_preview', args), // {dock, kind, features}: the floating bar as that surface; null: its own
 });

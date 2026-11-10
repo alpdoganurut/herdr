@@ -14,7 +14,7 @@ import { createRequire } from 'node:module';
 import readline from 'node:readline';
 import fs from 'node:fs';
 import { EXTRACT_SOURCE, LINKS_SOURCE } from './extract.mjs';
-import { Overlay, Companion, NUDGE_URL, dismissPanes, captureWithQuietRetry, CaptureLane, laneShot, shotParams, SELECT_BUDGET_MS, describe, probePages, ControlPage, ViewWatches, isFurnitureUrl, VIEW_MARKER, CompanionDialog, reconcileDialogs, pruneAnswered, DIALOG_BINDING } from './activity.mjs';
+import { Overlay, Companion, NUDGE_URL, dismissPanes, CaptureLane, laneShot, shotParams, firstShot, cleanCapture, clearClipEmulation, SELECT_BUDGET_MS, describe, probePages, ControlPage, ViewWatches, isFurnitureUrl, VIEW_MARKER, CompanionDialog, reconcileDialogs, pruneAnswered, DIALOG_BINDING } from './activity.mjs';
 import { pathToFileURL } from 'node:url';
 import nodePath from 'node:path';
 // the act's change probe and timeout message (on a line of their own)
@@ -798,6 +798,8 @@ const ops = {
     const scope = scopeLocator(state, args);
     const deadlineAt = Date.now() + Number(deadline_ms || 30000);
     const left = () => Math.max(1000, deadlineAt - Date.now());
+    // the host's own CDP session, for every capture of this op
+    const send = (method, params) => state.session.send(method, params);
     // Raw CDP on the host's own session, through the page's capture lane:
     // Playwright's page.screenshot abandons a capture that timed out while
     // Chromium still holds it, and a second one sent beside it (the quiet
@@ -805,7 +807,9 @@ const ops = {
     // its document's height. A viewport shot sends no clip at all.
     // Past the op's deadline (the caller already has its browser_timeout) no
     // capture is sent: the lane checks it when the request's turn comes.
-    const capture = (params) => laneShot(state.captures, () => state.session.send('Page.captureScreenshot', params), deadlineAt);
+    // A clipped capture waits for a tab with a size and its document loaded,
+    // and the device metrics it sets are always taken back (firstShot,
+    // clipReady in activity.mjs).
     const shots = [];
     let buffer;
     // The agent's picture is the page: the activity overlay steps aside for
@@ -830,25 +834,18 @@ const ops = {
     };
     let element = null;
     try {
-      if (scope) element = await elementBox();
-      let clip = element;
-      if (!clip && args.full) {
-        const metrics = await state.session.send('Page.getLayoutMetrics');
-        const content = metrics.cssContentSize || metrics.contentSize;
-        clip = { x: 0, y: 0, width: content.width, height: content.height };
-      }
-      const shot = capture(shotParams({ type, quality, clip, beyond: Boolean(clip) }));
-      shots.push(shot);
-      // A background tab whose renderer stalled: select it quietly and wait
-      // once more for the same capture, inside the op's deadline; an element
-      // capture is not retried.
-      const answer = await captureWithQuietRetry({
-        capture: (timeout) => shot.wait(timeout),
+      const answer = await firstShot({
+        send,
+        lane: state.captures,
+        type,
+        quality,
+        element: scope ? async () => (element = await elementBox()) : null,
+        full: Boolean(args.full),
         select: () => quietSelect(state),
         log: (text) => log('debug', text),
         deadlineAt,
         stallMs: SCREENSHOT_STALL_MS,
-        scoped: Boolean(scope),
+        shots,
       });
       buffer = Buffer.from(answer.data, 'base64');
     } catch (err) {
@@ -880,12 +877,18 @@ const ops = {
       if (element) clip = { ...element, scale };
       else if (args.full) clip = { x: 0, y: 0, width: content.width, height: content.height, scale };
       else clip = { x: vis.pageX, y: vis.pageY, width: vis.clientWidth, height: vis.clientHeight, scale };
-      const small = capture(shotParams({ type, quality, clip, beyond: Boolean(element || args.full) }));
+      // a clip: its device metrics are cleared after it (see clipReady in activity.mjs)
+      const debug = (text) => log('debug', text);
+      const small = laneShot(state.captures, cleanCapture(send, shotParams({ type, quality, clip, beyond: Boolean(element || args.full) }), debug), deadlineAt);
       shots.push(small);
       let answer;
       try {
         answer = await small.wait(left());
       } catch (err) {
+        if (small.pending()) {
+          debug('screenshot: gave up on the inline copy Chromium still holds; clearing its device metrics');
+          await clearClipEmulation(send, debug);
+        }
         if (/Timeout/i.test(err.message)) fail('tab_not_rendered', 'the tab could not be drawn for the inline copy; try again');
         throw err;
       }

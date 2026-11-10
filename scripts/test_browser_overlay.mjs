@@ -10,7 +10,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { Overlay, Companion, OVERLAY_JS, dismissPanes, captureWithQuietRetry, CaptureLane, laneShot, captureTimeout, shotParams, FRAME_LINGER_MS, CURSOR_LINGER_MS, LINGER_MS } from '../src/integration/assets/browser/activity.mjs';
+import { Overlay, Companion, OVERLAY_JS, dismissPanes, captureWithQuietRetry, CaptureLane, laneShot, captureTimeout, shotParams, clipReady, cleanCapture, firstShot, FRAME_LINGER_MS, CURSOR_LINGER_MS, LINGER_MS } from '../src/integration/assets/browser/activity.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function check(cond, msg) { if (!cond) { console.error(`FAIL: ${msg}`); process.exit(1); } }
@@ -278,6 +278,91 @@ check((() => { const o = new Overlay({ session }); o.linger('x'); const ok = o.u
   const full = shotParams({ type: 'png', quality: 70, clip: { x: 0, y: 0, width: 600, height: 9000 }, beyond: true });
   check(full.clip.scale === 1 && full.captureBeyondViewport === true && full.quality === undefined, `a full page: ${JSON.stringify(full)}`);
   console.log('ok: a page\'s captures run one at a time, the quiet retry waits on the same request, an abandoned one is never sent');
+}
+
+// ------------------------------------------- clipped captures (fork, 2026-11-09)
+// A clipped capture waits for a tab with a size and its document loaded, and
+// the device metrics it sets are always taken back (clipReady, cleanCapture
+// in activity.mjs; live: apps/companion/test/e2e-capture-race.mjs).
+{
+  // a fake session: Runtime.evaluate answers the probes in turn (the last one repeats)
+  const fake = (probes, extra = {}) => {
+    const sent = [];
+    let i = 0;
+    const send = async (method, params) => {
+      sent.push(method);
+      if (method === 'Runtime.evaluate') {
+        const p = probes[Math.min(i++, probes.length - 1)];
+        if (p instanceof Error) throw p;
+        return { result: { value: p } };
+      }
+      if (extra[method]) return extra[method](params);
+      return {};
+    };
+    return { send, sent };
+  };
+  const sized = { width: 800, height: 600, loaded: true };
+  let f = fake([{ width: 0, height: 0, loaded: true }, { width: 0, height: 0, loaded: true }, sized]);
+  check((await clipReady({ send: f.send, pollMs: 5 })).width === 800, 'a tab that gets its size is ready');
+  f = fake([{ width: 800, height: 600, loaded: false }, sized]);
+  check((await clipReady({ send: f.send, pollMs: 5 })).loaded, 'a document still loading (or the companion marker) is waited for');
+
+  // never a size: one quiet select halfway, then tab_not_rendered and no capture
+  f = fake([{ width: 0, height: 0, loaded: true }]);
+  const selects = [];
+  const t0 = Date.now();
+  let err = null;
+  try { await clipReady({ send: f.send, pollMs: 5, waitMs: 200, select: () => { selects.push(Date.now() - t0); return true; } }); } catch (e) { err = e; }
+  check(err && err.code === 'tab_not_rendered' && /not been shown/.test(err.message), `a tab that never gets a size is tab_not_rendered: ${err && err.message}`);
+  check(selects.length === 1 && selects[0] >= 100, `selected quietly once, halfway: ${selects}`);
+  // no room left in the op's deadline for a quiet select: none, still tab_not_rendered
+  f = fake([{ width: 0, height: 0, loaded: true }]);
+  const late = [];
+  const logged = [];
+  err = null;
+  try { await clipReady({ send: f.send, pollMs: 5, waitMs: 200, deadlineAt: Date.now() + 1000, select: () => { late.push(1); return true; }, log: (t) => logged.push(t) }); } catch (e) { err = e; }
+  check(err && err.code === 'tab_not_rendered' && late.length === 0 && logged.some((t) => /no room/.test(t)), `no quiet select without room in the deadline: ${late} ${logged}`);
+  // the same through firstShot: the full-page capture is never sent
+  f = fake([{ width: 0, height: 0, loaded: true }]);
+  err = null;
+  try {
+    await firstShot({ send: f.send, lane: new CaptureLane(), type: 'png', full: true, select: () => false, deadlineAt: Date.now() + 400, stallMs: 100, shots: [] });
+  } catch (e) { err = e; }
+  check(err && err.code === 'tab_not_rendered' && !f.sent.includes('Page.captureScreenshot'), `no capture of a tab without a size: ${f.sent}`);
+
+  // a still loading page goes ahead at the end; a renderer that does not answer the probe too
+  f = fake([{ width: 800, height: 600, loaded: false }]);
+  check((await clipReady({ send: f.send, pollMs: 5, waitMs: 60 })).loaded === false, 'a page that never finishes loading goes ahead');
+  f = fake([new Error('busy')]);
+  check((await clipReady({ send: f.send, pollMs: 5, waitMs: 60 })) === null, 'a probe that fails does not block the capture');
+
+  // every capture takes its device metrics back, answered or failed
+  f = fake([sized], { 'Page.captureScreenshot': () => ({ data: 'ok' }) });
+  check((await cleanCapture(f.send, {})()).data === 'ok' && f.sent.join() === 'Page.captureScreenshot,Emulation.clearDeviceMetricsOverride', `cleared after a capture: ${f.sent}`);
+  f = fake([sized], { 'Page.captureScreenshot': () => { throw new Error('no'); } });
+  err = null;
+  try { await cleanCapture(f.send, {})(); } catch (e) { err = e; }
+  check(err && f.sent.join() === 'Page.captureScreenshot,Emulation.clearDeviceMetricsOverride', `cleared after a failed capture: ${f.sent}`);
+
+  // a capture Chromium never answers (a new document overtook it): pending, and
+  // firstShot clears the metrics when it gives up on it
+  f = fake([sized], { 'Page.getLayoutMetrics': () => ({ cssContentSize: { width: 800, height: 5000 } }), 'Page.captureScreenshot': () => new Promise(() => {}) });
+  const shots = [];
+  err = null;
+  try {
+    await firstShot({ send: f.send, lane: new CaptureLane(), type: 'png', full: true, select: () => false, deadlineAt: Date.now() + 2000, stallMs: 50, shots });
+  } catch (e) { err = e; }
+  check(err && err.code === 'tab_not_rendered' && shots[0].pending(), `a lost capture: ${err && err.message}`);
+  check(f.sent.slice(-2).join() === 'Page.captureScreenshot,Emulation.clearDeviceMetricsOverride', `its metrics are cleared when the op gives up: ${f.sent}`);
+  // a clear the renderer does not confirm in 1 s is logged; the capture's own answer stays
+  f = fake([sized], { 'Page.captureScreenshot': () => ({ data: 'kept' }), 'Emulation.clearDeviceMetricsOverride': () => new Promise(() => {}) });
+  const clearLog = [];
+  check((await cleanCapture(f.send, {}, (t) => clearLog.push(t))()).data === 'kept' && clearLog.some((t) => /device metrics clear not confirmed within 1 s/.test(t)), `an unconfirmed clear is logged: ${clearLog}`);
+  const done = laneShot(new CaptureLane(), async () => 'x');
+  check(!done.pending(), 'a shot not sent is not pending');
+  await done.wait(100);
+  check(!done.pending(), 'an answered shot is not pending');
+  console.log('ok: a clipped capture waits for a sized, loaded tab and always takes its device metrics back');
 }
 
 // ------------------------------------------------------------- the companion
