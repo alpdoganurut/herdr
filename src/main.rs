@@ -578,7 +578,7 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # "window" (needs window = true).
 # host = "companion"
 # Page errors of a tab an agent uses, for local pages only (a shown HTML file, file://,
-# localhost): "agent" (stored quietly for that Claude agent, the latest per tab; other
+# localhost, 127.0.0.1, 0.0.0.0): "agent" (stored quietly for that Claude agent, the latest per tab; other
 # agents read them with `herdr browser console`) or "off".
 # page_errors = "agent"
 # Start the installed companion browser with the server (in the background) instead of on

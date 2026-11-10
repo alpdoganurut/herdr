@@ -129,7 +129,7 @@ pub struct BrowserConfig {
     /// Fork (companion browser): page errors of a tab an agent uses go to
     /// that agent quietly (`agent`, Claude only; others pull) or nowhere
     /// (`off`), only for a page the agent builds or tests (a shown HTML
-    /// view, a `file:` URL, a loopback host; one waiting notice per tab).
+    /// view, a `file:` URL, a loopback host or `0.0.0.0`; one waiting notice per tab).
     /// Anything else is a diagnostic and reads as `agent`.
     /// Default: `agent`.
     pub page_errors: String,

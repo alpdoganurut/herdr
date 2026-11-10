@@ -1523,3 +1523,45 @@ async fn fork_smoke_a_page_error_notice_replaces_its_tabs_one_at_the_per_agent_c
     let refused = app.store_coalesced_quiet_message(&target, other, false, key, now + 2);
     assert_eq!(refused.unwrap_err().0, "queue_full");
 }
+
+#[tokio::test]
+async fn fork_smoke_a_page_error_notice_says_it_replaces_an_unread_one() {
+    let (mut app, _lead, fixer, _rx) = fixture();
+    let now = crate::coordinator::now_unix();
+    let batch = |text: &str| crate::browser::page_errors::PageErrorBatch {
+        pane: fixer.clone(),
+        tab: "companion:t3".into(),
+        url: "http://localhost:5173/".into(),
+        title: "Dev".into(),
+        errors: vec![crate::browser::page_errors::PageError {
+            kind: "page_error".into(),
+            text: text.into(),
+        }],
+        more: 0,
+    };
+    let replaces = "Replaces an earlier unread notice for this tab; all errors with `herdr browser console --tab companion:t3`.";
+    assert!(app.store_page_error_batch(&batch("first"), now));
+    assert!(!app.quiet.entries[0].message.text.contains("Replaces"));
+    assert!(app.store_page_error_batch(&batch("second"), now + 1));
+    assert_eq!(app.quiet.entries.len(), 1);
+    let text = &app.quiet.entries[0].message.text;
+    assert!(
+        text.contains("second") && text.ends_with(replaces),
+        "{text}"
+    );
+    // Once offered, the next one replaces nothing and says nothing.
+    let taken = take(&mut app, &fixer);
+    assert_eq!(taken["result"]["shown"], 1, "{taken}");
+    assert!(app.store_page_error_batch(&batch("third"), now + 2));
+    let third = app
+        .quiet
+        .entries
+        .iter()
+        .find(|entry| entry.message.text.contains("third"))
+        .expect("stored");
+    assert!(
+        !third.message.text.contains("Replaces"),
+        "{}",
+        third.message.text
+    );
+}

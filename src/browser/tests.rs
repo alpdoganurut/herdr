@@ -3110,6 +3110,34 @@ fn fork_smoke_page_errors_notify_only_for_pages_the_agent_builds() {
 }
 
 #[test]
+fn fork_smoke_a_failed_external_load_from_a_local_tab_sends_no_notice() {
+    let (hub, shared, _stream, _home) = hub("page-error-load-failed");
+    let actor = pane("w2:pD");
+    let opened = hub
+        .run(&actor, params(open_op("http://localhost:5173/")))
+        .expect("open");
+    let target = hub
+        .get(None)
+        .tabs
+        .iter()
+        .find(|tab| Some(tab.id.as_str()) == opened.tab.as_deref())
+        .map(|tab| tab.target_id.clone())
+        .expect("the tab in the ledger");
+    // The sidecar reports the failed request before the tab navigates: the
+    // ledger still says localhost, the request went elsewhere.
+    shared.lock().unwrap().events.extend([
+        json!({ "event": "tab", "profile": "main", "target": target, "kind": "load_failed", "text": "net::ERR_NAME_NOT_RESOLVED https://cdn.external.test/" }).to_string(),
+        json!({ "event": "tab", "profile": "main", "target": target, "kind": "navigated", "url": "chrome-error://chromewebdata/", "title": "", "initiator": "other" }).to_string(),
+    ]);
+    flush_host_events(&hub, &actor);
+    assert!(
+        hub.take_page_errors_at(Instant::now() + super::page_errors::BATCH_WINDOW * 2)
+            .is_empty(),
+        "the request URL decides, not the page the tab was on"
+    );
+}
+
+#[test]
 fn a_show_outside_the_companion_opens_in_the_window_with_network_routed_off() {
     let (hub, shared, _stream, home) = hub("show-window");
     let actor = pane("w2:pD");

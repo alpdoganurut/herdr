@@ -514,32 +514,45 @@ impl App {
         let now = crate::coordinator::now_unix();
         let mut stored = false;
         for batch in batches {
-            let Ok(target) = self.resolve_agent_target(&batch.pane) else {
-                continue;
-            };
-            if !self.takes_quiet_messages(&target) {
-                continue;
-            }
-            let dnd = self.pane_in_dnd(target.ws_idx, target.pane_id);
-            let message = AgentMessage {
-                unix: now,
-                from_pane: None,
-                from_name: Some("herdr browser".into()),
-                to_pane: batch.pane.clone(),
-                text: batch.message_text(),
-                outcome: crate::coordinator::messages::OUTCOME_QUIET.into(),
-                id: Some(crate::coordinator::messages::new_id()),
-                ..AgentMessage::default()
-            };
-            let key = batch.coalesce_key();
-            match self.store_coalesced_quiet_message(&target, message, dnd, key, now) {
-                Ok(()) => stored = true,
-                Err((code, _)) => {
-                    tracing::debug!(event = "browser.page_errors", code = %code, pane = %batch.pane, "page errors not stored")
-                }
-            }
+            stored |= self.store_page_error_batch(&batch, now);
         }
         stored
+    }
+
+    /// Store one page-error batch for its agent (see
+    /// [`Self::handle_browser_page_errors`]); whether it was stored. When it
+    /// supersedes waiting notices for the tab, its text says so.
+    pub(crate) fn store_page_error_batch(
+        &mut self,
+        batch: &crate::browser::page_errors::PageErrorBatch,
+        now: u64,
+    ) -> bool {
+        let Ok(target) = self.resolve_agent_target(&batch.pane) else {
+            return false;
+        };
+        if !self.takes_quiet_messages(&target) {
+            return false;
+        }
+        let dnd = self.pane_in_dnd(target.ws_idx, target.pane_id);
+        let key = batch.coalesce_key();
+        let replaced = self.waiting_coalesced_quiet(&target, &key, now).len();
+        let message = AgentMessage {
+            unix: now,
+            from_pane: None,
+            from_name: Some("herdr browser".into()),
+            to_pane: batch.pane.clone(),
+            text: batch.message_text_replacing(replaced),
+            outcome: crate::coordinator::messages::OUTCOME_QUIET.into(),
+            id: Some(crate::coordinator::messages::new_id()),
+            ..AgentMessage::default()
+        };
+        match self.store_coalesced_quiet_message(&target, message, dnd, key, now) {
+            Ok(()) => true,
+            Err((code, _)) => {
+                tracing::debug!(event = "browser.page_errors", code = %code, pane = %batch.pane, "page errors not stored");
+                false
+            }
+        }
     }
 
     /// The message log line of a page typed in now (queued ones the queue logs).

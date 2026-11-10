@@ -695,19 +695,7 @@ impl App {
         key: String,
         now_unix: u64,
     ) -> Result<(), (String, String)> {
-        self.quiet.prune_expired(now_unix);
-        let mine = self.quiet_ids_for(&target.terminal_id);
-        let superseded: Vec<String> = self
-            .quiet
-            .entries
-            .iter()
-            .filter(|entry| {
-                entry.coalesce.as_deref() == Some(key.as_str())
-                    && entry.offered_unix.is_none()
-                    && mine.iter().any(|id| id == entry.id())
-            })
-            .map(|entry| entry.id().to_string())
-            .collect();
+        let superseded = self.waiting_coalesced_quiet(target, &key, now_unix);
         let replaced = !superseded.is_empty();
         if replaced {
             self.quiet.finish(&superseded, OUTCOME_SUPERSEDED, now_unix);
@@ -719,6 +707,29 @@ impl App {
             self.sync_quiet_pending();
         }
         stored
+    }
+
+    /// The ids of `target`'s stored messages with coalescing `key` not yet
+    /// offered to its hook: the ones [`Self::store_coalesced_quiet_message`]
+    /// would supersede now (a sender can say so in the new text).
+    pub(crate) fn waiting_coalesced_quiet(
+        &mut self,
+        target: &super::terminal_targets::TerminalTarget,
+        key: &str,
+        now_unix: u64,
+    ) -> Vec<String> {
+        self.quiet.prune_expired(now_unix);
+        let mine = self.quiet_ids_for(&target.terminal_id);
+        self.quiet
+            .entries
+            .iter()
+            .filter(|entry| {
+                entry.coalesce.as_deref() == Some(key)
+                    && entry.offered_unix.is_none()
+                    && mine.iter().any(|id| id == entry.id())
+            })
+            .map(|entry| entry.id().to_string())
+            .collect()
     }
 
     fn store_quiet_entry(

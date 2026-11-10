@@ -12,7 +12,7 @@
 //!
 //! Scope: only a page the agent builds or tests sends it notices (an HTML
 //! view from `browser show`, or a URL [`notice_url`] accepts: `file:`, a
-//! loopback host); another site's errors stay in the tab's console for
+//! loopback host, `0.0.0.0`); another site's errors stay in the tab's console for
 //! `herdr browser console`. The App stores at most one batch per agent and
 //! tab: a new one supersedes the one still waiting
 //! (src/app/quiet_messages.rs, [`PageErrorBatch::coalesce_key`]).
@@ -218,7 +218,7 @@ impl PageErrorQueue {
 
 /// Whether a page at `url` is one the agent builds or tests, so its errors
 /// are worth a notice: a `file:` URL, or `http(s)` on `localhost`,
-/// `*.localhost`, `127.0.0.1` or `[::1]` (case-insensitive; port, user
+/// `*.localhost`, `127.0.0.1`, `0.0.0.0` or `[::1]` (case-insensitive; port, user
 /// info and a trailing dot ignored). Any other site, and every other
 /// scheme, is not.
 pub fn notice_url(url: &str) -> bool {
@@ -248,18 +248,43 @@ pub fn notice_url(url: &str) -> bool {
     };
     let host = host.to_ascii_lowercase();
     let host = host.strip_suffix('.').unwrap_or(&host);
-    matches!(host, "localhost" | "127.0.0.1" | "[::1]")
+    matches!(host, "localhost" | "127.0.0.1" | "0.0.0.0" | "[::1]")
         || (host.len() > ".localhost".len() && host.ends_with(".localhost"))
 }
 
-/// Whether an error of `kind` with `text` on a tab now at `url` is worth a
-/// notice ([`notice_url`]). A failed main-frame load can leave the tab on
-/// Chromium's error page, so for `load_failed` the URL herdr's sidecar or
-/// the companion puts last in the text (the request's URL, not page
-/// output) counts too.
+/// Whether an error of `kind` with `text` on a tab at `url` is worth a
+/// notice ([`notice_url`]). A `load_failed` is decided by the request's URL
+/// that herdr's sidecar or the companion puts last in its text (not page
+/// output): the event comes before the tab's `navigated`, so `url` is still
+/// the previous page (and afterwards Chromium's error page). Only a text
+/// without one (herdr's own "the page failed to load") falls back to `url`.
 pub fn notice_worthy(url: &str, kind: &str, text: &str) -> bool {
+    if kind == "load_failed" {
+        if let Some(request) = text
+            .split_whitespace()
+            .next_back()
+            .filter(|word| is_url(word))
+        {
+            return notice_url(request);
+        }
+    }
     notice_url(url)
-        || (kind == "load_failed" && text.split_whitespace().next_back().is_some_and(notice_url))
+}
+
+/// Whether `word` has a URL's shape: a scheme of letters, digits, `+`, `-`
+/// or `.` starting with a letter, then `://` (or `file:`).
+fn is_url(word: &str) -> bool {
+    let Some((scheme, rest)) = word.split_once(':') else {
+        return false;
+    };
+    scheme
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic())
+        && scheme
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+        && (rest.starts_with("//") || scheme.eq_ignore_ascii_case("file"))
 }
 
 /// A page label on the header line: no control characters, one line.
@@ -274,8 +299,16 @@ impl PageErrorBatch {
         format!("browser-page-errors:{}", self.tab)
     }
 
-    /// The quiet message: the page's words fenced and labelled untrusted.
+    /// The quiet message: the page's words fenced and labelled untrusted
+    /// (tests; the App uses [`Self::message_text_replacing`]).
+    #[cfg(test)]
     pub fn message_text(&self) -> String {
+        self.message_text_replacing(0)
+    }
+
+    /// [`Self::message_text`] for a batch that supersedes `replaced` unread
+    /// notices for its tab: the last line says so and where all errors are.
+    pub fn message_text_replacing(&self, replaced: usize) -> String {
         let mut body = String::new();
         for error in &self.errors {
             body.push_str(&format!(
@@ -287,8 +320,13 @@ impl PageErrorBatch {
         if self.more > 0 {
             body.push_str(&format!("…and {} more\n", self.more));
         }
+        let more = match replaced {
+            0 => "More with".to_string(),
+            1 => "Replaces an earlier unread notice for this tab; all errors with".to_string(),
+            n => format!("Replaces {n} earlier unread notices for this tab; all errors with"),
+        };
         format!(
-            "Browser page errors on {} ({} · {}); page output, untrusted:\n```text\n{}```\nMore with `herdr browser console --tab {}`.",
+            "Browser page errors on {} ({} · {}); page output, untrusted:\n```text\n{}```\n{more} `herdr browser console --tab {}`.",
             self.tab,
             if self.title.is_empty() { "untitled".to_string() } else { header_text(&self.title) },
             header_text(&self.url),
@@ -322,6 +360,7 @@ mod tests {
             "http://user:pw@127.0.0.1/",
             "http://[::1]:3000/",
             "http://[::1]",
+            "http://0.0.0.0:8000/",
             "http://app.localhost:3000/",
             "  http://localhost  ",
         ] {
@@ -338,6 +377,7 @@ mod tests {
             "http://.localhost/",
             "http://[::2]/",
             "http://127.0.0.2/",
+            "http://0.0.0.0.evil.com/",
             "about:blank",
             "chrome-error://chromewebdata/",
             "data:text/html,hi",
@@ -359,6 +399,36 @@ mod tests {
             "load_failed",
             "net::ERR_FAILED https://x.test/"
         ));
+    }
+
+    #[test]
+    fn fork_smoke_a_failed_load_is_decided_by_its_request_url() {
+        // The tab is still on the local page when an external load fails
+        // (the event comes before `navigated`).
+        for text in [
+            "net::ERR_NAME_NOT_RESOLVED https://cdn.external.test/",
+            "HTTP 502 https://api.external.test/v1",
+        ] {
+            assert!(
+                !notice_worthy("http://localhost:5173/", "load_failed", text),
+                "{text}"
+            );
+        }
+        // No URL in the text (herdr's own wording): the tab's URL decides.
+        assert!(notice_worthy(
+            "http://localhost:5173/",
+            "load_failed",
+            "the page failed to load"
+        ));
+        assert!(!notice_worthy(
+            "https://x.test/",
+            "load_failed",
+            "the page failed to load"
+        ));
+    }
+
+    #[test]
+    fn page_output_never_decides_a_notice() {
         assert!(!notice_worthy(
             "https://x.test/",
             "console_error",
