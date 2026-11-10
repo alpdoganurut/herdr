@@ -211,7 +211,9 @@ browser_screenshot.
 - Message outcomes: `sent` = typed in; `queued` = waiting in herdr until the target is free (pending, NOT
   undelivered); `delivered` = a queued message was typed in (or picked up by the target's
   agents_wait_for_message); `expired` (2 h in the queue) and `dropped` (the target is gone) were not
-  delivered; `logged` (older senders) = a reply to a busy asker, delivered through the log; anything else
+  delivered; `quiet` = stored for the target, picked up at its next prompt (pending, NOT undelivered);
+  `superseded` = replaced by a newer quiet message from the same source for the same tab (not a failure);
+  `logged` (older senders) = a reply to a busy asker, delivered through the log; anything else
   (`offline`, `rate_limited`, `loop_guard`, ...) is a refusal and was not delivered.
 - `urgent=true` on agents_send_message interrupts a working agent's turn (one Esc) so the message goes in once
   that turn ended: real emergencies only (work doing damage, an incident the user is waiting on), one per agent

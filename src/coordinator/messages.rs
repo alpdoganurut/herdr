@@ -59,10 +59,15 @@ pub const OUTCOME_UNCONFIRMED: &str = "unconfirmed";
 /// the target's hook took it into its context (or a waiter claimed it), or
 /// to `expired`. Not a refusal: waiters receive it like a queued message.
 pub const OUTCOME_QUIET: &str = "quiet";
+/// Fork: a quiet message a newer one with the same coalescing key replaced
+/// before its target was offered it (a browser page-error notice for the
+/// same tab: the agent holds the latest only). Not a failure: the newer
+/// message carries the news. Only on [`KIND_UPDATE`] lines.
+pub const OUTCOME_SUPERSEDED: &str = "superseded";
 
 /// `kind` of a line that only moves an earlier message (same `id`) to a new
 /// outcome (`queued`, `delivered`, `expired`, `dropped`, `confirmed`,
-/// `unconfirmed`, `quiet`). The log stays
+/// `unconfirmed`, `quiet`, `superseded`). The log stays
 /// append-only; readers fold these lines into the message ([`fold`]).
 pub const KIND_UPDATE: &str = "update";
 
@@ -343,8 +348,13 @@ pub fn find_by_id(dir: &Path, id: &str) -> Option<AgentMessage> {
 
 /// Whether a log line reached (or will reach) its target: everything but a
 /// refusal, except the older senders' reply to a busy asker (`busy`,
-/// `logged`), which was delivered through the log.
+/// `logged`), which was delivered through the log. A quiet message a newer
+/// one replaced ([`OUTCOME_SUPERSEDED`]) never will: the newer one carries
+/// its news.
 pub fn delivered_to_waiter(message: &AgentMessage) -> bool {
+    if message.outcome == OUTCOME_SUPERSEDED {
+        return false;
+    }
     message.kind.as_deref() != Some(KIND_REFUSAL)
         || matches!(message.outcome.as_str(), "busy" | OUTCOME_LOGGED)
 }
@@ -658,6 +668,55 @@ mod tests {
         assert_eq!(
             find_reply(&dir, "lead", None, Some("rev"), 30, Some("mgone"), &none).map(|m| m.text),
             Some("before".into())
+        );
+        // A superseded quiet message never reaches a waiter; expired and
+        // dropped lines keep their old answer.
+        let quiet = AgentMessage {
+            outcome: OUTCOME_QUIET.into(),
+            ..message("rev", "lead", "q")
+        };
+        assert!(delivered_to_waiter(&quiet));
+        for (outcome, delivered) in [
+            (OUTCOME_SUPERSEDED, false),
+            (OUTCOME_EXPIRED, true),
+            (OUTCOME_DROPPED, true),
+        ] {
+            let line = AgentMessage {
+                outcome: outcome.into(),
+                ..quiet.clone()
+            };
+            assert_eq!(delivered_to_waiter(&line), delivered, "{outcome}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fork_smoke_a_waiter_never_gets_a_superseded_page_error_notice() {
+        let dir = super::super::test_dir("messages-superseded");
+        let notice = |id: &str, unix: u64, text: &str| AgentMessage {
+            unix,
+            from_pane: None,
+            from_name: Some("herdr browser".into()),
+            to_pane: "lead".into(),
+            text: text.into(),
+            outcome: OUTCOME_QUIET.into(),
+            id: Some(id.into()),
+            ..AgentMessage::default()
+        };
+        let old = notice("mold", 10, "old errors");
+        append(&dir, &old).unwrap();
+        append(&dir, &AgentMessage::update(&old, OUTCOME_SUPERSEDED, 11)).unwrap();
+        let none = HashSet::new();
+        assert_eq!(
+            find_reply(&dir, "lead", None, None, 0, None, &none),
+            None,
+            "the replaced notice is not a delivery"
+        );
+        append(&dir, &notice("mnew", 11, "new errors")).unwrap();
+        assert_eq!(
+            find_reply(&dir, "lead", None, None, 0, None, &none).map(|m| m.text),
+            Some("new errors".into()),
+            "the newer notice is"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

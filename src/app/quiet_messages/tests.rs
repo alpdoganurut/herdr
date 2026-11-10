@@ -28,6 +28,7 @@ fn message(id: &str, from: &str, text: &str, unix: u64) -> QuietMessage {
         dnd: false,
         offered_unix: None,
         offers: 0,
+        coalesce: None,
         release: None,
     }
 }
@@ -1369,4 +1370,198 @@ fn fork_smoke_a_handoff_replacement_start_finishes_no_stored_message() {
     let _ = std::fs::remove_dir_all(&root);
     assert_eq!(kept, 1, "nothing finished before the handoff's terminals");
     assert_eq!(written, 0, "no expired line");
+}
+
+/// A browser page-error notice for `tab` to `to`, as
+/// `handle_browser_page_errors` builds it.
+fn page_error_notice(to: &str, tab: &str, text: &str, unix: u64) -> (AgentMessage, String) {
+    let batch = crate::browser::page_errors::PageErrorBatch {
+        pane: to.into(),
+        tab: tab.into(),
+        url: "http://localhost:5173/".into(),
+        title: "Dev".into(),
+        errors: vec![crate::browser::page_errors::PageError {
+            kind: "page_error".into(),
+            text: text.into(),
+        }],
+        more: 0,
+    };
+    let message = AgentMessage {
+        unix,
+        from_pane: None,
+        from_name: Some("herdr browser".into()),
+        to_pane: to.into(),
+        text: batch.message_text(),
+        outcome: OUTCOME_QUIET.into(),
+        id: Some(crate::coordinator::messages::new_id()),
+        ..AgentMessage::default()
+    };
+    (message, batch.coalesce_key())
+}
+
+#[tokio::test]
+async fn fork_smoke_a_page_error_notice_supersedes_the_waiting_one_for_its_tab() {
+    let dir = std::env::temp_dir().join(format!("herdr-quiet-coalesce-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (mut app, _lead, fixer, _rx) = fixture();
+    app.quiet
+        .persist_for_test(dir.join("quiet_messages.json"), dir.join(PENDING_DIR));
+    let target = app.resolve_agent_target(&fixer).unwrap();
+    let now = crate::coordinator::now_unix();
+    // Another sender's quiet message is never touched.
+    let mut other = message("mother", "lead", "unrelated", now).message;
+    other.to_pane = fixer.clone();
+    app.store_quiet_message(&target, other, false, None, now)
+        .unwrap();
+    let (first, key) = page_error_notice(&fixer, "companion:t7", "first boom", now);
+    let first_id = first.id.clone().unwrap();
+    app.store_coalesced_quiet_message(&target, first, false, key.clone(), now)
+        .unwrap();
+    let (second, key2) = page_error_notice(&fixer, "companion:t7", "second boom", now + 1);
+    let second_id = second.id.clone().unwrap();
+    app.store_coalesced_quiet_message(&target, second, false, key2, now + 1)
+        .unwrap();
+    let ids: Vec<&str> = app.quiet.entries.iter().map(QuietMessage::id).collect();
+    assert_eq!(
+        ids,
+        ["mother", second_id.as_str()],
+        "one per tab, the latest"
+    );
+    // The log: the first's quiet line, its superseded update, the second's
+    // quiet line.
+    let page_lines: Vec<(String, bool, String)> = app
+        .quiet
+        .written
+        .iter()
+        .filter(|line| line.id.as_deref() != Some("mother"))
+        .map(|line| {
+            (
+                line.outcome.clone(),
+                line.is_update(),
+                line.id.clone().unwrap_or_default(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        page_lines,
+        [
+            (OUTCOME_QUIET.to_string(), false, first_id.clone()),
+            (OUTCOME_SUPERSEDED.to_string(), true, first_id.clone()),
+            (OUTCOME_QUIET.to_string(), false, second_id.clone()),
+        ]
+    );
+    let files = app.quiet.files_for_test.clone().unwrap();
+    let file: PendingFile = serde_json::from_slice(&files[&pending_file_name(&fixer)]).unwrap();
+    assert_eq!(file.count, 2, "the other message and one page notice");
+    assert_eq!(app.quiet.pending_view[0].count, 2);
+    // Another tab keeps its own.
+    let (other_tab, key3) = page_error_notice(&fixer, "companion:t8", "t8 boom", now + 2);
+    app.store_coalesced_quiet_message(&target, other_tab, false, key3, now + 2)
+        .unwrap();
+    assert_eq!(app.quiet.entries.len(), 3);
+    // Delivery and acknowledgement are unchanged: the latest text only.
+    let taken = take(&mut app, &fixer);
+    let context = taken["result"]["context"].as_str().unwrap();
+    assert!(
+        context.contains("second boom") && context.contains("t8 boom"),
+        "{context}"
+    );
+    assert!(!context.contains("first boom"), "{context}");
+    // An offered notice is in the hook's hands: a new one for its tab
+    // does not supersede it (no `superseded` for text the agent may have).
+    let (third, key4) = page_error_notice(&fixer, "companion:t7", "third boom", now + 3);
+    let third_id = third.id.clone().unwrap();
+    app.store_coalesced_quiet_message(&target, third, false, key4, now + 3)
+        .unwrap();
+    assert!(app
+        .quiet
+        .entries
+        .iter()
+        .any(|entry| entry.id() == second_id));
+    assert!(app.quiet.entries.iter().any(|entry| entry.id() == third_id));
+    ack(&mut app, &fixer, &taken["result"]["ids"]);
+    let ids: Vec<&str> = app.quiet.entries.iter().map(QuietMessage::id).collect();
+    assert_eq!(ids, [third_id.as_str()]);
+    let delivered: Vec<&str> = app
+        .quiet
+        .written
+        .iter()
+        .filter(|line| line.is_update() && line.outcome == OUTCOME_DELIVERED)
+        .filter_map(|line| line.id.as_deref())
+        .collect();
+    assert!(delivered.contains(&second_id.as_str()), "{delivered:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn fork_smoke_a_page_error_notice_replaces_its_tabs_one_at_the_per_agent_cap() {
+    let (mut app, _lead, fixer, _rx) = fixture();
+    let target = app.resolve_agent_target(&fixer).unwrap();
+    let now = crate::coordinator::now_unix();
+    let (first, key) = page_error_notice(&fixer, "companion:t1", "old", now);
+    app.store_coalesced_quiet_message(&target, first, false, key.clone(), now)
+        .unwrap();
+    for index in 1..MAX_QUIET_PER_TARGET as u64 {
+        let line = message(&format!("mc{index}"), "lead", "x", now).message;
+        app.store_quiet_message(&target, line, false, None, now)
+            .unwrap();
+    }
+    assert_eq!(
+        app.quiet.count_for(&target.terminal_id),
+        MAX_QUIET_PER_TARGET
+    );
+    let (newer, key) = page_error_notice(&fixer, "companion:t1", "new", now + 1);
+    app.store_coalesced_quiet_message(&target, newer, false, key, now + 1)
+        .expect("a replacement fits at the cap");
+    assert_eq!(
+        app.quiet.count_for(&target.terminal_id),
+        MAX_QUIET_PER_TARGET
+    );
+    // Another tab's notice at the cap is still refused.
+    let (other, key) = page_error_notice(&fixer, "companion:t2", "x", now + 2);
+    let refused = app.store_coalesced_quiet_message(&target, other, false, key, now + 2);
+    assert_eq!(refused.unwrap_err().0, "queue_full");
+}
+
+#[tokio::test]
+async fn fork_smoke_a_page_error_notice_says_it_replaces_an_unread_one() {
+    let (mut app, _lead, fixer, _rx) = fixture();
+    let now = crate::coordinator::now_unix();
+    let batch = |text: &str| crate::browser::page_errors::PageErrorBatch {
+        pane: fixer.clone(),
+        tab: "companion:t3".into(),
+        url: "http://localhost:5173/".into(),
+        title: "Dev".into(),
+        errors: vec![crate::browser::page_errors::PageError {
+            kind: "page_error".into(),
+            text: text.into(),
+        }],
+        more: 0,
+    };
+    let replaces = "Replaces an earlier unread notice for this tab; all errors with `herdr browser console --tab companion:t3`.";
+    assert!(app.store_page_error_batch(&batch("first"), now));
+    assert!(!app.quiet.entries[0].message.text.contains("Replaces"));
+    assert!(app.store_page_error_batch(&batch("second"), now + 1));
+    assert_eq!(app.quiet.entries.len(), 1);
+    let text = &app.quiet.entries[0].message.text;
+    assert!(
+        text.contains("second") && text.ends_with(replaces),
+        "{text}"
+    );
+    // Once offered, the next one replaces nothing and says nothing.
+    let taken = take(&mut app, &fixer);
+    assert_eq!(taken["result"]["shown"], 1, "{taken}");
+    assert!(app.store_page_error_batch(&batch("third"), now + 2));
+    let third = app
+        .quiet
+        .entries
+        .iter()
+        .find(|entry| entry.message.text.contains("third"))
+        .expect("stored");
+    assert!(
+        !third.message.text.contains("Replaces"),
+        "{}",
+        third.message.text
+    );
 }

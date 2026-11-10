@@ -1900,7 +1900,7 @@
           "key": "browser.page_errors",
           "type": "string",
           "default": "\"agent\"",
-          "description": "Fork (companion browser): uncaught page errors, console errors, failed loads and crashes of a tab an agent opened or used recently are stored quietly for that agent when it is a Claude agent (batched, deduplicated and capped; never typed in, never a wake-up); other agents read them with `herdr browser console`. `off` keeps them pull-only. An unknown value reports a config diagnostic and reads as `agent`."
+          "description": "Fork (companion browser): uncaught page errors, console errors, failed loads and crashes of a tab an agent opened or used recently are stored quietly for that agent when it is a Claude agent (batched, deduplicated and capped; never typed in, never a wake-up), only for a page the agent builds or tests: an HTML file it showed, a `file://` URL, or `localhost`, `*.localhost`, `127.0.0.1`, `0.0.0.0` or `[::1]`. A new notice replaces that agent's waiting one for the same tab. Errors of any other site, and every error for other agents, are read with `herdr browser console`. `off` keeps them pull-only. An unknown value reports a config diagnostic and reads as `agent`."
         },
         {
           "key": "browser.window",

@@ -1005,7 +1005,9 @@ impl BrowserHub {
     }
 
     /// Queue a page error for the agent that uses the tab (`[browser]
-    /// page_errors`); called with the ledger locked, never blocks.
+    /// page_errors`) when the page is one it builds or tests (an HTML view,
+    /// [`crate::browser::page_errors::notice_worthy`]); called with the
+    /// ledger locked, never blocks.
     pub(super) fn queue_page_error(
         &self,
         state: &crate::browser::state::BrowserState,
@@ -1025,16 +1027,7 @@ impl BrowserHub {
         let Some(record) = state.tabs.get(&key).filter(|record| record.is_open()) else {
             return;
         };
-        // The opener of an HTML view; else whoever used the tab lately,
-        // else its opener.
-        let recent = record
-            .last_actor
-            .pane_id()
-            .filter(|_| now_unix.saturating_sub(record.last_at) <= active_seconds)
-            .filter(|_| !self.inner.html_views.lock().unwrap().contains(&key));
-        let Some(pane) = recent.or_else(|| record.opened_by.pane_id()) else {
-            return;
-        };
+        let html_view = self.inner.html_views.lock().unwrap().contains(&key);
         let text = event
             .text
             .clone()
@@ -1044,6 +1037,23 @@ impl BrowserHub {
                 "load_failed" => "the page failed to load".into(),
                 _ => "(no message)".into(),
             });
+        // Only a page the agent builds or tests: an HTML view, a file or a
+        // loopback host. Another site's errors stay in its console.
+        if !html_view
+            && !crate::browser::page_errors::notice_worthy(&record.url, &event.kind, &text)
+        {
+            return;
+        }
+        // The opener of an HTML view; else whoever used the tab lately,
+        // else its opener.
+        let recent = record
+            .last_actor
+            .pane_id()
+            .filter(|_| now_unix.saturating_sub(record.last_at) <= active_seconds)
+            .filter(|_| !html_view);
+        let Some(pane) = recent.or_else(|| record.opened_by.pane_id()) else {
+            return;
+        };
         self.inner.page_errors.lock().unwrap().note(
             pane,
             &key,
