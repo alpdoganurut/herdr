@@ -898,7 +898,7 @@ try {
     );
   }
 
-  // herdr's cycle key, pressed in a page (send_key: the view's own
+  // herdr's cycle key and the tab cycling keys, pressed in a page (send_key: the view's own
   // input pipeline, as a keyboard reaches before-input-event; CDP key events skip it)
   {
     const kt = await api('mock.create_tab', { label: 'keys' });
@@ -949,6 +949,29 @@ try {
     check('herdr turns the key off: the page gets it again, no browser.view_cycle', (await waitFor(async () => ((await pageKeys(kp[2])).includes('saKeyK') ? true : null), 3000)) && mock.state.viewCycles.length === 3, { keys: await pageKeys(kp[2]), cycles: mock.state.viewCycles.length });
     mock.state.viewCycleKeys = null;
     await sleep(2500);
+    // ctrl+tab: the next tab, wrapping, through the bar's select path (herdr told)
+    const reportsBefore = mock.state.reports.length;
+    await key(v3, 'Tab', ['control']);
+    check('ctrl+tab on the last tab wraps to the first', await activeIs(0), await activeView());
+    const sel = await waitFor(() => mock.state.reports.slice(reportsBefore).find((r) => r.action === 'select' && r.view_id === ko[0].view_id), 4000);
+    check('and herdr hears the select, as from a click in the bar', sel, sel);
+    await key(v3, 'X', ['control']);
+    await waitFor(async () => ((await pageKeys(kp[2])).filter((k) => k === 'cKeyX').length >= 2 ? true : null), 3000);
+    check('the page never sees ctrl+tab', !(await pageKeys(kp[2])).includes('cTab'), await pageKeys(kp[2]));
+    await key({ view_id: ko[0].view_id }, 'Tab', ['control', 'shift']);
+    check('ctrl+shift+tab on the first wraps to the last', await activeIs(2), await activeView());
+    await key(v3, 'Tab', ['control', 'shift']);
+    check('ctrl+shift+tab steps back', await activeIs(1), await activeView());
+    await key({ view_id: ko[1].view_id }, 'Tab', ['control']);
+    check('ctrl+tab steps forward', await activeIs(2), await activeView());
+    await key({ surface: 'bar' }, 'Tab', ['control']);
+    check('ctrl+tab in the floating bar too', await activeIs(0), await activeView());
+    if (process.platform === 'darwin') {
+      await key({ view_id: ko[0].view_id }, ']', ['meta', 'shift']);
+      check('⌘⇧] is the next tab', await activeIs(1), await activeView());
+      await key({ view_id: ko[1].view_id }, '[', ['meta', 'shift']);
+      check('⌘⇧[ is the previous tab', await activeIs(0), await activeView());
+    }
     await api('mock.focus_tab', { tab_id: 'w1:t1' });
     await sleep(300);
     await api('mock.close_tab', { tab_id: kt.tab_id });

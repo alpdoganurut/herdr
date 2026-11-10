@@ -1,5 +1,6 @@
 // Keys the companion takes before a page sees them (main process; node --test requires it):
-// herdr's browser-view cycle key (the lease's `view_cycle_keys`, herdr's `keys.cycle_browser`).
+// herdr's browser-view cycle key (the lease's `view_cycle_keys`, herdr's `keys.cycle_browser`)
+// and the tab cycling keys (Ctrl+Tab / Ctrl+Shift+Tab, ⌘⇧] / ⌘⇧[ on macOS).
 'use strict';
 
 const MODIFIERS = ['ctrl', 'alt', 'shift', 'super'];
@@ -86,4 +87,26 @@ function isCycleKey(specs, input) {
   return (specs || []).some((s) => matches(s, input));
 }
 
-module.exports = { parseLabel, parseLabels, inputKey, isCycleKey };
+// +1 (next tab), -1 (previous tab) or 0 for a keyDown input: Ctrl+Tab / Ctrl+Shift+Tab
+// everywhere, ⌘⇧] / ⌘⇧[ on macOS.
+function tabCycleStep(input, platform = process.platform) {
+  if (!input || input.type !== 'keyDown' || input.alt) return 0;
+  const code = String(input.code || '');
+  const key = String(input.key || '');
+  if (input.control && !input.meta && (code === 'Tab' || key === 'Tab')) return input.shift ? -1 : 1;
+  if (platform === 'darwin' && input.meta && input.shift && !input.control) {
+    if (code === 'BracketRight' || key === '}') return 1;
+    if (code === 'BracketLeft' || key === '{') return -1;
+  }
+  return 0;
+}
+
+// The index `step` away from `index` in a list of `count`, wrapping around; an index not in
+// the list (no active tab) starts from the first (next) or the last (previous).
+function wrapIndex(index, step, count) {
+  if (!(count > 0)) return -1;
+  if (!(index >= 0 && index < count)) return step < 0 ? count - 1 : 0;
+  return (((index + step) % count) + count) % count;
+}
+
+module.exports = { parseLabel, parseLabels, inputKey, isCycleKey, tabCycleStep, wrapIndex };

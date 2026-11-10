@@ -84,7 +84,10 @@ answers `unknown_method` and the strip says "this herdr is too old for the compa
   it) and close ask herdr's client through `browser.placement_action`, only when herdr
   advertises `placement_actions` and the herdr client owning the placement takes them
   (`browser.placements` `placement_actions`). ⌘T new tab, ⌘W close, ⌘L address, ⌘R reload, ⌘[ / ⌘] history,
-  ⌘⇧S send. ⌘-click / `target=_blank` opens a tab in the same session.
+  ⌘⇧S send, Ctrl+Tab / Ctrl+⇧Tab (⌘⇧] / ⌘⇧[ on macOS) the next / previous tab of the shown
+  session, wrapping (taken in every view's `before-input-event`, so a focused page never gets
+  them; the menu's Next / Previous Tab do the same; the bar's select path, so herdr hears the
+  `select`). ⌘-click / `target=_blank` opens a tab in the same session.
 * herdr's browser-view cycle key (`keys.cycle_browser`, default ⌃⇧B) works in every view (pages,
   both bars, the dialog card; `before-input-event`, src/keys.js): the companion takes the lease's
   `view_cycle_keys` (direct bindings only) when herdr advertises `view_cycle` and sends

@@ -348,6 +348,10 @@ class Companion {
         submenu: [
           { label: 'New Tab', accelerator: 'CmdOrCtrl+T', click: run('t') },
           { label: 'Close Tab', accelerator: 'CmdOrCtrl+W', click: run('w') },
+          // Ctrl+Tab / Ctrl+Shift+Tab (and ⌘⇧] / ⌘⇧[) are also taken in every view's
+          // before-input-event (appKey), which a focused page would otherwise get first.
+          { label: 'Next Tab', accelerator: process.platform === 'darwin' ? 'Cmd+Shift+]' : 'Ctrl+Tab', click: run('next_tab') },
+          { label: 'Previous Tab', accelerator: process.platform === 'darwin' ? 'Cmd+Shift+[' : 'Ctrl+Shift+Tab', click: run('prev_tab') },
           { label: 'Open Location…', accelerator: 'CmdOrCtrl+L', click: run('l') },
           { type: 'separator' },
           { label: 'Send Page to Agent…', accelerator: 'CmdOrCtrl+Shift+S', click: run('send') },
@@ -736,12 +740,17 @@ class Companion {
   }
 
   // Every view's keys before the page gets them (pages, both bars, the dialog card): herdr's
-  // cycle key, then the dock's own. True: taken (the page never sees it).
+  // cycle key, the tab cycling keys, then the dock's own. True: taken (the page never sees it).
   appKey(input) {
     if (!input || input.type !== 'keyDown') return false;
     if (keys.isCycleKey(this.viewCycleKeys, input)) {
       // a held key steps once (herdr drops its autorepeat too)
       if (!input.isAutoRepeat) this.cycleView();
+      return true;
+    }
+    const step = keys.tabCycleStep(input);
+    if (step) {
+      this.cycleTab(step);
       return true;
     }
     return this.dockKey(input);
@@ -762,6 +771,29 @@ class Companion {
       log('view_cycle refused', e.code || e.message);
       if (e.code === 'unsupported') this.say('warn', e.message);
     }
+  }
+
+  // The shown group's next (+1) or previous (-1) tab, wrapping, as a click on it in the bar.
+  cycleTab(step) {
+    const g = this.shownGroup();
+    if (!g || g.entries.length < 2) return;
+    const i = g.entries.findIndex((x) => x.view_id === g.active);
+    const next = g.entries[keys.wrapIndex(i, step, g.entries.length)];
+    if (next && next.view_id !== g.active) this.userSelect(next.view_id);
+  }
+
+  // The user picked a tab (the bar's click, Ctrl+Tab): selected, and herdr told so.
+  userSelect(viewId) {
+    const hit = this.selectView(viewId);
+    if (hit) {
+      hit.entry.attention = false;
+      this.report('user_action', 'select', hit.entry, hit.group);
+      // the user looks at it: herdr clears the group's needs-you (an agent's focus() on
+      // the tab herdr already shows sends no follow `shown`)
+      this.report('user_action', 'shown', hit.entry, hit.group);
+      this.pushStrip();
+    }
+    return hit;
   }
 
   // Keys while the dock (or one of its pages) has the keyboard: ⌘⎋ gives it back to the
@@ -1422,6 +1454,10 @@ class Companion {
       }
       case 'go':
         return this.goToTab();
+      case 'next_tab':
+        return this.cycleTab(1);
+      case 'prev_tab':
+        return this.cycleTab(-1);
       case 'pin': {
         // ⌘⇧. : the shown bar's pin
         const dock = !!(this.docked && this.dockBarView());
@@ -1512,18 +1548,9 @@ class Companion {
         return a && this.setBarPin(String(a.mode || ''), a.pinned === true);
       case 'sessions_menu':
         return this.openSessionsMenu(dock);
-      case 'select': {
-        const hit = this.selectView(a);
-        if (hit) {
-          hit.entry.attention = false;
-          this.report('user_action', 'select', hit.entry, hit.group);
-          // the user looks at it: herdr clears the group's needs-you (an agent's focus() on
-          // the tab herdr already shows sends no follow `shown`)
-          this.report('user_action', 'shown', hit.entry, hit.group);
-          this.pushStrip();
-        }
+      case 'select':
+        this.userSelect(a);
         return;
-      }
       case 'close': {
         const hit = this.store.findView(a);
         if (hit) {

@@ -37,3 +37,27 @@ test('the cycle key matches by the physical key and the exact modifiers', () => 
   assert.ok(keys.isCycleKey(more, down({ control: true, key: ']', code: 'BracketRight' })));
   assert.ok(keys.isCycleKey(more, down({ control: true, alt: true, key: '¶', code: 'Digit7' })));
 });
+
+test('Ctrl+Tab steps forward, Ctrl+Shift+Tab back; ⌘⇧] / ⌘⇧[ on macOS only', () => {
+  assert.equal(keys.tabCycleStep(down({ control: true, key: 'Tab', code: 'Tab' }), 'darwin'), 1);
+  assert.equal(keys.tabCycleStep(down({ control: true, shift: true, key: 'Tab', code: 'Tab' }), 'linux'), -1);
+  assert.equal(keys.tabCycleStep(down({ meta: true, shift: true, key: '}', code: 'BracketRight' }), 'darwin'), 1);
+  assert.equal(keys.tabCycleStep(down({ meta: true, shift: true, key: '{', code: 'BracketLeft' }), 'darwin'), -1);
+  assert.equal(keys.tabCycleStep(down({ meta: true, shift: true, key: '}', code: 'BracketRight' }), 'linux'), 0);
+  // ⌘] is Forward, plain Tab is the page's, alt and keyUp are not ours
+  assert.equal(keys.tabCycleStep(down({ meta: true, key: ']', code: 'BracketRight' }), 'darwin'), 0);
+  assert.equal(keys.tabCycleStep(down({ key: 'Tab', code: 'Tab' }), 'darwin'), 0);
+  assert.equal(keys.tabCycleStep(down({ control: true, alt: true, key: 'Tab', code: 'Tab' }), 'darwin'), 0);
+  assert.equal(keys.tabCycleStep({ ...down({ control: true, key: 'Tab', code: 'Tab' }), type: 'keyUp' }, 'darwin'), 0);
+});
+
+test('tab cycling wraps around both ways', () => {
+  assert.equal(keys.wrapIndex(0, 1, 3), 1);
+  assert.equal(keys.wrapIndex(2, 1, 3), 0);
+  assert.equal(keys.wrapIndex(0, -1, 3), 2);
+  assert.equal(keys.wrapIndex(1, -1, 3), 0);
+  assert.equal(keys.wrapIndex(-1, 1, 3), 0, 'no active tab: the first');
+  assert.equal(keys.wrapIndex(-1, -1, 3), 2, 'or the last');
+  assert.equal(keys.wrapIndex(0, 1, 1), 0);
+  assert.equal(keys.wrapIndex(0, 1, 0), -1);
+});
