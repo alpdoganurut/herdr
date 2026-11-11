@@ -126,6 +126,7 @@ scripts/test_browser_companion_host.mjs
 scripts/test_browser_overlay.mjs
 scripts/test_browser_screenshot_live.mjs
 scripts/test_browser_tools.mjs
+scripts/test_browser_view_reload.mjs
 scripts/test_fork_sync.py
 scripts/test_install_plus_skills.py
 scripts/test_news_run.py
@@ -3414,6 +3415,7 @@ browser::page_errors::tests::fork_smoke_page_error_notices_are_for_files_and_loo
 browser::tests::fork_smoke_page_errors_notify_only_for_pages_the_agent_builds
 browser::tests::fork_smoke_a_failed_external_load_from_a_local_tab_sends_no_notice
 browser::page_errors::tests::fork_smoke_a_failed_load_is_decided_by_its_request_url
+integration::browser_assets::tests::fork_smoke_a_rewritten_shown_page_keeps_the_readers_place
 app::quiet_messages::tests::fork_smoke_a_page_error_notice_says_it_replaces_an_unread_one
 coordinator::messages::tests::fork_smoke_a_waiter_never_gets_a_superseded_page_error_notice
 ## 11. Fork changelog (moved out of docs/next/CHANGELOG.md)

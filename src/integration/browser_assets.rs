@@ -391,6 +391,16 @@ mod tests {
         run_node_check("scripts/test_browser_companion_host.mjs");
     }
 
+    /// Fork (companion browser): a shown page rewritten by an agent reloads
+    /// keeping the reader's place (scroll anchor, inner scroll areas, fields,
+    /// details, focus, selection) in a headless Chromium through the sidecar
+    /// (scripts/test_browser_view_reload.mjs; skipped without playwright-core
+    /// or a browser binary).
+    #[test]
+    fn fork_smoke_a_rewritten_shown_page_keeps_the_readers_place() {
+        run_node_check("scripts/test_browser_view_reload.mjs");
+    }
+
     /// The act's change report (an in-page modal, the title, the focus) and
     /// its action_timeout message (scripts/test_browser_tools.mjs; its
     /// headless-browser part runs by hand, not here).

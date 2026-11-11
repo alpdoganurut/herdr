@@ -14,7 +14,7 @@ import { createRequire } from 'node:module';
 import readline from 'node:readline';
 import fs from 'node:fs';
 import { EXTRACT_SOURCE, LINKS_SOURCE } from './extract.mjs';
-import { Overlay, Companion, NUDGE_URL, dismissPanes, CaptureLane, laneShot, shotParams, firstShot, cleanCapture, clearClipEmulation, SELECT_BUDGET_MS, describe, probePages, ControlPage, ViewWatches, viewRefs, cssRefs, isFurnitureUrl, VIEW_MARKER, CompanionDialog, reconcileDialogs, pruneAnswered, DIALOG_BINDING } from './activity.mjs';
+import { Overlay, Companion, NUDGE_URL, dismissPanes, CaptureLane, laneShot, shotParams, firstShot, cleanCapture, clearClipEmulation, SELECT_BUDGET_MS, describe, probePages, ControlPage, ViewWatches, viewRefs, cssRefs, reloadKeepingState, isFurnitureUrl, VIEW_MARKER, CompanionDialog, reconcileDialogs, pruneAnswered, DIALOG_BINDING } from './activity.mjs';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import nodePath from 'node:path';
 // the act's change probe and timeout message (on a line of their own)
@@ -458,20 +458,23 @@ async function blockNetwork(state) {
   if (typeof state.page.routeWebSocket === 'function') await state.page.routeWebSocket(/.*/, (ws) => ws.close()).catch(() => {});
 }
 
-/** A shown page's reload (its file or one it references changed); answers the
- *  local files it references now. */
+/** A shown page's reload (its file or one it references changed), keeping the
+ *  reader's place (scroll, inner scroll areas, selection, form input, open
+ *  <details>, focus: reloadKeepingState); answers the local files it
+ *  references now. */
 async function reloadView(name, target) {
   const profile = profiles.get(name);
   const state = profile && profile.pages.get(target);
   if (!state || state.closed) { watches.disarm(target); return undefined; }
-  await state.page.reload({ waitUntil: 'domcontentloaded' });
-  return viewRefPaths(state.page);
+  const kept = await reloadKeepingState(state.page, { log: (text) => log('debug', `view ${target}: ${text}`) });
+  if (kept) log('debug', `view ${target}: reloaded, scroll ${kept.scroll || 'none'} (${kept.settled || 'no settle'}${kept.y ? ` ${kept.y.join('->')}` : ''}), ${kept.scrollers} scroll areas, ${kept.fields} fields, ${kept.details} details, selection ${kept.selection}, focus ${kept.focus}, ${kept.skipped} gone`);
+  return viewRefPaths(state.page, 0);
 }
 
 /** The local files a shown page references (absolute paths), once it loaded
  *  (at most `loadMs`); [] when the page does not answer. */
 async function viewRefPaths(page, loadMs = 1500) {
-  await page.waitForLoadState('load', { timeout: loadMs }).catch(() => {});
+  if (loadMs > 0) await page.waitForLoadState('load', { timeout: loadMs }).catch(() => {});
   const urls = await withTimeout(page.evaluate(viewRefs), 1000, 'browser_timeout', 'refs').catch(() => []);
   const paths = new Set();
   for (const u of Array.isArray(urls) ? urls : []) { try { paths.add(fileURLToPath(u)); } catch {} }

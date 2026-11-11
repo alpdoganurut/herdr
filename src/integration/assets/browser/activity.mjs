@@ -1218,7 +1218,8 @@ function joinPath(dir, name) {
  *  local file the page references (`setRefs`, or the paths `reload()`
  *  resolves to; at most `maxDirs` extra directories), not recursive. Only an
  *  event for the page or a referenced file counts (an event without a file
- *  name counts only when the page's size or mtime moved since its last load);
+ *  name is taken for the page), and only when that file's size or mtime moved
+ *  since the last load (a late or repeated event reloads nothing);
  *  side files (images being generated next to the page) do not. After one,
  *  the changed files must keep their size and mtime for `stableMs` (and no
  *  event come for `debounceMs`); a page whose last load ended with `</html>`
@@ -1250,14 +1251,14 @@ export class ViewWatches {
     const entry = {
       target, file, dir: dirOf(file), reload, closed: false,
       watchers: [], dirs: new Map(), // extra directory -> watcher
-      refs: new Set(), pending: new Set(), definite: false,
+      refs: new Set(), pending: new Set(), loaded: new Map(), // path -> size:mtime at the last load
       firstAt: 0, lastAt: 0, sig: null, sigSince: 0, timer: null, checking: false, running: false,
-      endedHtml: false, loadedSig: null,
+      endedHtml: false,
     };
     const watch = (path, onEvent) => {
       try { return this.watchFn(path, onEvent); } catch (err) { this.log(`watch ${path}: ${err && err.message}`); return null; }
     };
-    for (const [path, onEvent] of [[file, () => this.changed(entry, file, true)], [entry.dir, this.dirListener(entry, entry.dir)]]) {
+    for (const [path, onEvent] of [[file, () => this.changed(entry, file)], [entry.dir, this.dirListener(entry, entry.dir)]]) {
       const w = watch(path, onEvent);
       if (w) entry.watchers.push(w);
     }
@@ -1267,9 +1268,9 @@ export class ViewWatches {
   }
   dirListener(entry, dir) {
     return (_type, name) => {
-      if (name == null || name === '') { this.changed(entry, entry.file, false); return; }
+      if (name == null || name === '') { this.changed(entry, entry.file); return; }
       const path = joinPath(dir, String(name));
-      if (path === entry.file || entry.refs.has(path)) this.changed(entry, path, true);
+      if (path === entry.file || entry.refs.has(path)) this.changed(entry, path);
     };
   }
   /** The local files the page references (absolute paths): their changes reload it too. */
@@ -1303,11 +1304,10 @@ export class ViewWatches {
     const entry = this.watches.get(target);
     return entry ? [entry.dir, ...entry.dirs.keys()] : [];
   }
-  changed(entry, path, definite) {
+  changed(entry, path) {
     if (entry.closed) return;
     const now = Date.now();
     entry.pending.add(path);
-    if (definite) entry.definite = true;
     if (!entry.firstAt) entry.firstAt = now;
     entry.lastAt = now;
     if (!entry.running && !entry.checking && !entry.timer) this.schedule(entry, this.debounceMs);
@@ -1325,13 +1325,15 @@ export class ViewWatches {
         });
     }, ms);
   }
+  /** The size and mtime of each path (`missing` when one is gone). */
   async signature(paths) {
-    if (!this.statFn) return { sig: '', missing: false };
+    const each = new Map();
+    if (!this.statFn) return { sig: '', missing: false, each };
     let missing = false;
-    const parts = await Promise.all([...paths].sort().map(async (p) => {
-      try { const s = await this.statFn(p); return `${p}=${s.size}:${s.mtimeMs}`; } catch { missing = true; return `${p}=missing`; }
+    await Promise.all([...paths].map(async (p) => {
+      try { const s = await this.statFn(p); each.set(p, `${s.size}:${s.mtimeMs}`); } catch { missing = true; each.set(p, 'missing'); }
     }));
-    return { sig: parts.join('|'), missing };
+    return { sig: [...each].sort().map(([p, v]) => `${p}=${v}`).join('|'), missing, each };
   }
   async pageSig(entry) {
     if (!this.statFn) return null;
@@ -1340,7 +1342,7 @@ export class ViewWatches {
   async check(entry) {
     if (entry.closed || !entry.pending.size) return;
     const now = Date.now();
-    const { sig, missing } = await this.signature(entry.pending);
+    const { sig, missing, each } = await this.signature(entry.pending);
     if (entry.closed) return;
     if (sig !== entry.sig) { entry.sig = sig; entry.sigSince = now; }
     const overdue = now - entry.firstAt >= this.maxWaitMs;
@@ -1353,12 +1355,12 @@ export class ViewWatches {
       if (!overdue && entry.endedHtml && text !== null && !endsHtml(text)) { this.schedule(entry, this.pollMs); return; }
     }
     const page = await this.pageSig(entry);
-    const definite = entry.definite;
     entry.pending.clear();
-    entry.definite = false;
     entry.firstAt = 0;
     entry.sig = null;
-    if (!definite && page !== null && page === entry.loadedSig) return; // a nameless event, the page unchanged
+    // nothing changed since the last load (a late or nameless event, a touch): no reload
+    if (each.size && [...each].every(([p, v]) => v !== 'missing' && entry.loaded.get(p) === v)) return;
+    for (const [p, v] of each) entry.loaded.set(p, v);
     entry.running = true;
     try {
       const refs = await entry.reload();
@@ -1375,8 +1377,8 @@ export class ViewWatches {
   noteLoaded(entry, text, page = undefined) {
     if (text !== null && text !== undefined) entry.endedHtml = endsHtml(text);
     else if (this.readFn) Promise.resolve().then(() => this.readFn(entry.file)).then((t) => { entry.endedHtml = endsHtml(t); }, () => {});
-    if (page !== undefined && page !== null) entry.loadedSig = page;
-    else this.pageSig(entry).then((p) => { entry.loadedSig = p; }, () => {});
+    if (page !== undefined && page !== null) entry.loaded.set(entry.file, page);
+    else if (page === undefined) this.pageSig(entry).then((p) => { if (p !== null) entry.loaded.set(entry.file, p); }, () => {});
   }
   disarm(target) {
     const entry = this.watches.get(target);
@@ -1388,4 +1390,289 @@ export class ViewWatches {
     return true;
   }
   has(target) { return this.watches.has(target); }
+}
+
+/** In the page (page.evaluate; self-contained): what a reload of a shown page
+ *  should give back. The window scroll as an anchor (the element at the top
+ *  of the viewport by a CSS path, its tag, a text fingerprint and its offset)
+ *  with the raw scroll, the scroll ratio and the document height as fallbacks;
+ *  inner scroll areas off their origin; the selection (inside the body); form
+ *  fields that differ from their defaults (never password, file or hidden
+ *  inputs), by id, else name, else path; open <details>; the focused element
+ *  (and its text selection). Paths start at the nearest ancestor with a unique
+ *  id. When it took the window scroll and the page leaves scroll restoration
+ *  to the browser, it sets `history.scrollRestoration = 'manual'` (the reload
+ *  keeps it) so the browser's own restore does not race this one;
+ *  restoreViewState sets it back. `manual` says the page restores its own
+ *  scroll: the window scroll is left alone then. */
+export function captureViewState() {
+  const MAX = 200;
+  const body = document.body;
+  if (!body) return null;
+  const unique = (id) => { try { return document.querySelectorAll('#' + CSS.escape(id)).length === 1; } catch { return false; } };
+  const pathOf = (el) => {
+    const parts = [];
+    for (let e = el; e && e.nodeType === 1; e = e.parentElement) {
+      if (e === document.documentElement) { parts.unshift(':root'); break; }
+      if (e.id && unique(e.id)) { parts.unshift('#' + CSS.escape(e.id)); break; }
+      let n = 1;
+      for (let s = e.previousElementSibling; s; s = s.previousElementSibling) if (s.localName === e.localName) n++;
+      parts.unshift(`${CSS.escape(e.localName)}:nth-of-type(${n})`);
+    }
+    return parts.join(' > ');
+  };
+  const print = (el) => String(el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+  const nodeRef = (node, offset) => {
+    if (!node) return null;
+    if (node.nodeType === 1) return { el: pathOf(node), offset };
+    const parent = node.parentElement;
+    if (!parent) return null;
+    return { el: pathOf(parent), child: Array.prototype.indexOf.call(parent.childNodes, node), offset };
+  };
+  const pinned = (el) => {
+    for (let e = el; e && e !== body; e = e.parentElement) {
+      const pos = getComputedStyle(e).position;
+      if (pos === 'fixed' || pos === 'sticky') return true;
+    }
+    return false;
+  };
+  const se = document.scrollingElement || document.documentElement;
+  const manual = history.scrollRestoration === 'manual';
+  let scroll = null;
+  if (scrollX || scrollY) {
+    let anchor = null;
+    const w = innerWidth;
+    const h = innerHeight;
+    search: for (const y of [2, h * 0.1, h * 0.2, h * 0.35, h * 0.5]) {
+      for (const x of [w * 0.5, w * 0.25, w * 0.75, 8]) {
+        let el = document.elementFromPoint(x, y);
+        if (!el || el === body || el === document.documentElement || !body.contains(el) || pinned(el)) continue;
+        while (el.parentElement && el.parentElement !== body && getComputedStyle(el).display.startsWith('inline')) el = el.parentElement;
+        anchor = { path: pathOf(el), tag: el.localName, text: print(el), top: el.getBoundingClientRect().top };
+        break search;
+      }
+    }
+    scroll = { x: scrollX, y: scrollY, height: se.scrollHeight, ratio: scrollY / Math.max(1, se.scrollHeight - innerHeight), anchor };
+  }
+  const scrollers = [];
+  for (const el of body.querySelectorAll('*')) {
+    if (scrollers.length >= MAX) break;
+    if (el.scrollTop > 0 || el.scrollLeft > 0) scrollers.push({ path: pathOf(el), top: el.scrollTop, left: el.scrollLeft });
+  }
+  const keyOf = (el) => {
+    if (el.id && unique(el.id)) return { id: el.id };
+    const name = el.getAttribute('name');
+    if (name) {
+      const type = (el.type || '').toLowerCase();
+      const same = Array.prototype.filter.call(document.getElementsByName(name), (e) => e.localName === el.localName);
+      if (type === 'radio' || type === 'checkbox') return { name, value: el.value };
+      return { name, index: same.indexOf(el) };
+    }
+    return { path: pathOf(el) };
+  };
+  const SKIP = new Set(['password', 'file', 'hidden', 'submit', 'button', 'reset', 'image']);
+  const fields = [];
+  for (const el of document.querySelectorAll('input, textarea, select')) {
+    if (fields.length >= MAX) break;
+    const type = (el.type || '').toLowerCase();
+    if (SKIP.has(type) || /password/i.test(el.getAttribute('autocomplete') || '')) continue;
+    if (el.localName === 'select') {
+      const opts = Array.from(el.options);
+      // what the select shows untouched: its defaultSelected options, else (single) its first
+      const none = !opts.some((o) => o.defaultSelected);
+      const dflt = (o, i) => o.defaultSelected || (none && !el.multiple && i === 0);
+      if (opts.some((o, i) => o.selected !== dflt(o, i))) fields.push({ key: keyOf(el), selected: opts.filter((o) => o.selected).map((o) => o.value) });
+    } else if (type === 'checkbox' || type === 'radio') {
+      if (el.checked !== el.defaultChecked) fields.push({ key: keyOf(el), checked: el.checked });
+    } else if (el.value !== el.defaultValue) {
+      fields.push({ key: keyOf(el), value: String(el.value).slice(0, 100000) });
+    }
+  }
+  let selection = null;
+  const sel = getSelection();
+  if (sel && sel.rangeCount && !sel.isCollapsed && body.contains(sel.anchorNode) && body.contains(sel.focusNode)) {
+    const a = nodeRef(sel.anchorNode, sel.anchorOffset);
+    const f = nodeRef(sel.focusNode, sel.focusOffset);
+    if (a && f) selection = { anchor: a, focus: f };
+  }
+  let focus = null;
+  const active = document.activeElement;
+  if (active && active !== body && active !== document.documentElement && body.contains(active)) {
+    focus = { path: pathOf(active) };
+    try { if (typeof active.selectionStart === 'number') { focus.start = active.selectionStart; focus.end = active.selectionEnd; focus.dir = active.selectionDirection; } } catch {}
+  }
+  const details = Array.from(document.querySelectorAll('details[open]')).slice(0, MAX).map(pathOf);
+  const setManual = Boolean(scroll) && !manual;
+  if (setManual) history.scrollRestoration = 'manual';
+  return { scroll, manual, setManual, scrollers, fields, selection, focus, details };
+}
+
+/** In the page (page.evaluate; self-contained): puts back what
+ *  captureViewState took, right after the reload's DOMContentLoaded, then
+ *  once more when the page has loaded (images settled) or after `settleMs`,
+ *  whichever comes first: the window anchor and the inner scroll areas again,
+ *  unless the user scrolled, typed or clicked in between, or something else
+ *  (the page itself) moved them since (the window: more than 48 px away from
+ *  where it was put). Anything whose element is gone is
+ *  skipped. Answers what it did, for logs and checks. */
+export function restoreViewState({ state, settleMs = 1500 }) {
+  const out = { scroll: null, scrollers: 0, fields: 0, details: 0, selection: false, focus: false, skipped: 0, settled: null };
+  if (!state) return out;
+  const body = document.body;
+  // back to the browser's own restore once the page has loaded (earlier, Chromium restores the
+  // old offset at load itself, over the page's own scroll and this one)
+  // (not when the new page's own inline script sets it: the reload kept 'manual', it set it again)
+  const ownsRestoration = () => Array.from(document.scripts).some((el) => !el.src && /scrollRestoration/.test(el.textContent || ''));
+  const giveBack = () => { if (state.setManual && !ownsRestoration()) { try { history.scrollRestoration = 'auto'; } catch {} } };
+  const giveBackAfterLoad = () => {
+    if (document.readyState === 'complete') setTimeout(giveBack, 0);
+    else addEventListener('load', () => setTimeout(giveBack, 0), { once: true });
+  };
+  if (!body) { giveBackAfterLoad(); return out; }
+  const find = (path) => { try { return path ? document.querySelector(path) : null; } catch { return null; } };
+  const print = (el) => String(el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+  const node = (ref) => {
+    const el = ref && find(ref.el);
+    if (!el) return null;
+    const n = ref.child === undefined ? el : el.childNodes[ref.child];
+    if (!n) return null;
+    const max = n.nodeType === 1 ? n.childNodes.length : String(n.nodeValue || '').length;
+    return [n, Math.min(Math.max(0, ref.offset || 0), max)];
+  };
+  for (const path of state.details || []) {
+    const el = find(path);
+    if (el && el.localName === 'details') { el.open = true; out.details++; } else out.skipped++;
+  }
+  for (const f of state.fields || []) {
+    const k = f.key || {};
+    let el = null;
+    if (k.id) el = document.getElementById(k.id);
+    else if (k.name) {
+      const same = Array.from(document.getElementsByName(k.name));
+      el = k.value !== undefined ? same.find((e) => e.value === k.value && (e.type === 'radio' || e.type === 'checkbox')) : same.filter((e) => /^(input|textarea|select)$/.test(e.localName))[k.index || 0];
+    } else el = find(k.path);
+    if (!el || !/^(input|textarea|select)$/.test(el.localName) || (el.type || '').toLowerCase() === 'password') { out.skipped++; continue; }
+    if (f.selected) { for (const o of Array.from(el.options || [])) o.selected = f.selected.includes(o.value); }
+    else if (f.checked !== undefined) el.checked = f.checked;
+    else if (f.value !== undefined) { try { el.value = f.value; } catch { out.skipped++; continue; } }
+    out.fields++;
+  }
+  if (state.focus) {
+    const el = find(state.focus.path);
+    if (el && typeof el.focus === 'function') {
+      el.focus({ preventScroll: true });
+      out.focus = document.activeElement === el;
+      if (out.focus && state.focus.start !== undefined) { try { el.setSelectionRange(state.focus.start, state.focus.end, state.focus.dir || 'none'); } catch {} }
+    } else out.skipped++;
+  }
+  const textFocus = out.focus && typeof document.activeElement.selectionStart === 'number';
+  if (state.selection && !textFocus) {
+    const a = node(state.selection.anchor);
+    const f = node(state.selection.focus);
+    if (a && f) { try { getSelection().setBaseAndExtent(a[0], a[1], f[0], f[1]); out.selection = true; } catch { out.skipped++; } } else out.skipped++;
+  }
+  const setScrollers = new Map(); // element -> [top, left] after the first pass
+  const applyScrollers = (again) => {
+    for (const s of state.scrollers || []) {
+      const el = find(s.path);
+      if (!el) { if (!again) out.skipped++; continue; }
+      if (again) {
+        const was = setScrollers.get(el);
+        if (!was || el.scrollTop !== was[0] || el.scrollLeft !== was[1]) continue; // moved since: not ours to fight
+      }
+      el.scrollTop = s.top;
+      el.scrollLeft = s.left;
+      setScrollers.set(el, [el.scrollTop, el.scrollLeft]);
+      if (!again) out.scrollers++;
+    }
+  };
+  applyScrollers(false);
+  // the page scrolled itself before this ran (the browser's restore is off: it starts at 0)
+  const own = Boolean(state.scroll && !state.manual && (scrollX || scrollY));
+  const sc = state.scroll && !state.manual && !own ? state.scroll : null;
+  const se = document.scrollingElement || document.documentElement;
+  const anchorEl = () => {
+    const a = sc.anchor;
+    if (!a) return null;
+    const el = find(a.path);
+    if (el && el.localName === a.tag && print(el) === a.text) return el;
+    // the path moved (content above it changed): the same tag with the same text
+    if (a.text) {
+      const alt = Array.prototype.find.call(document.getElementsByTagName(a.tag), (e) => print(e) === a.text);
+      if (alt) return alt;
+    }
+    return el && el.localName === a.tag ? el : null;
+  };
+  let ourY = null;
+  const JITTER = 48;
+  const applyWindow = () => {
+    const el = anchorEl();
+    let how;
+    if (el) { scrollTo(sc.x, scrollY + el.getBoundingClientRect().top - sc.anchor.top); how = 'anchor'; }
+    else if (sc.height && Math.abs(se.scrollHeight - sc.height) > sc.height * 0.25) { scrollTo(sc.x, sc.ratio * Math.max(0, se.scrollHeight - innerHeight)); how = 'ratio'; }
+    else { scrollTo(sc.x, sc.y); how = 'raw'; }
+    ourY = scrollY;
+    return how;
+  };
+  if (sc) out.scroll = applyWindow();
+  else if (state.scroll && state.manual) out.scroll = 'manual';
+  else if (own) out.scroll = 'page';
+  if (!sc && !setScrollers.size) { giveBackAfterLoad(); return out; }
+  return new Promise((resolve) => {
+    let moved = false;
+    const EVENTS = ['wheel', 'touchstart', 'keydown', 'pointerdown', 'mousedown'];
+    const onInput = (e) => { if (e.isTrusted) moved = true; };
+    for (const ev of EVENTS) addEventListener(ev, onInput, { capture: true, passive: true });
+    let finished = false;
+    let timer = null;
+    const finish = (why) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      removeEventListener('load', onLoad);
+      for (const ev of EVENTS) removeEventListener(ev, onInput, { capture: true });
+      if (moved) out.settled = 'user';
+      else {
+        applyScrollers(true);
+        if (sc) {
+          const el = anchorEl();
+          if (el && Math.abs(el.getBoundingClientRect().top - sc.anchor.top) <= 1) out.settled = 'kept';
+          // a jump away from where it was put is the page's own scroll (a few pixels are layout)
+          else if (Math.abs(scrollY - ourY) > JITTER) { out.settled = 'page'; out.y = [ourY, Math.round(scrollY)]; }
+          else { applyWindow(); out.settled = 'reapplied'; }
+          out.y = [ourY, Math.round(scrollY)];
+        } else out.settled = 'kept';
+      }
+      out.settled_on = why;
+      giveBackAfterLoad();
+      if (sc && !out.y) out.y = [ourY, Math.round(scrollY)];
+      resolve(out);
+    };
+    const onLoad = () => requestAnimationFrame(() => finish('load'));
+    if (document.readyState === 'complete') requestAnimationFrame(() => finish('load'));
+    else addEventListener('load', onLoad);
+    timer = setTimeout(() => finish('timeout'), settleMs);
+  });
+}
+
+/** Reloads a shown page (Playwright page) keeping the reader's place:
+ *  captureViewState before, restoreViewState after. A page that does not
+ *  answer the capture in `captureMs` (a dialog, a busy page) is reloaded
+ *  plainly. Answers restoreViewState's report (null without a capture). */
+export async function reloadKeepingState(page, { log = () => {}, settleMs = 1500, captureMs = 1000 } = {}) {
+  const race = (promise, ms) => {
+    let timer;
+    return Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`no answer in ${ms} ms`)), ms); })]).finally(() => clearTimeout(timer));
+  };
+  let state = null;
+  try { state = await race(page.evaluate(captureViewState), captureMs); }
+  catch (err) { log(`view state: capture: ${err && err.message}`); }
+  try { await page.reload({ waitUntil: 'domcontentloaded' }); }
+  catch (err) {
+    if (state && state.setManual) await race(page.evaluate(() => { history.scrollRestoration = 'auto'; }), captureMs).catch(() => {});
+    throw err;
+  }
+  if (!state) return null;
+  try { return await race(page.evaluate(restoreViewState, { state, settleMs }), settleMs + 2000); }
+  catch (err) { log(`view state: restore: ${err && err.message}`); return null; }
 }

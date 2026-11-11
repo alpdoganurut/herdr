@@ -154,6 +154,9 @@ put(PAGE, DOC('two'));
 for (let i = 0; i < 5; i++) (i % 2 ? dirW.cb('change', 'report.html') : fileW.cb('change', 'report.html'));
 await sleep(200);
 check(reloads.length === 1, `a burst of changes (file and directory watchers) is one reload (${reloads.length})`);
+fileW.cb('change', 'report.html'); dirW.cb('change', 'report.html');
+await sleep(200);
+check(reloads.length === 1, `a late event for a change already loaded reloads nothing (${reloads.length})`);
 
 // a side file next to the page (an image an agent generates) does not reload it
 reloads.length = 0;
