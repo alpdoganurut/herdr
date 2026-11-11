@@ -1165,40 +1165,225 @@ export function reconcileDialogs(current, list, answered = new Set()) {
   return { open, close };
 }
 
-/** File watches for HTML views: the file and its directory (not
- *  recursive), debounced, then `reload()`. At most `max` views. `watchFn`
- *  is `fs.watch`. */
+/** In the page (page.evaluate; self-contained): the absolute file: URLs the
+ *  document references — src, srcset, poster, stylesheet and icon links, SVG
+ *  image/use hrefs, CSS url() in <style> and style attributes. Not <a> links,
+ *  and not what a stylesheet references (a file: page cannot read its rules:
+ *  `cssRefs` on the sidecar side). */
+export function viewRefs() {
+  const urls = new Set();
+  const add = (u) => {
+    if (!u || urls.size >= 1000) return;
+    try { const x = new URL(String(u).trim(), document.baseURI); if (x.protocol === 'file:') { x.hash = ''; x.search = ''; urls.add(x.href); } } catch {}
+  };
+  for (const el of document.querySelectorAll('[src]')) add(el.getAttribute('src'));
+  for (const el of document.querySelectorAll('link[href]')) add(el.getAttribute('href'));
+  for (const el of document.querySelectorAll('[srcset]')) for (const part of String(el.getAttribute('srcset')).split(',')) add(part.trim().split(/\s+/)[0]);
+  for (const el of document.querySelectorAll('[poster]')) add(el.getAttribute('poster'));
+  for (const el of document.querySelectorAll('object[data]')) add(el.getAttribute('data'));
+  for (const el of document.querySelectorAll('image, use, feImage')) add(el.getAttribute('href') || el.getAttribute('xlink:href'));
+  const re = /url\(\s*(['"]?)([^'")]+)\1\s*\)/g;
+  for (const el of document.querySelectorAll('style, [style]')) {
+    const text = el.localName === 'style' ? el.textContent : el.getAttribute('style');
+    for (const m of String(text || '').matchAll(re)) add(m[2]);
+  }
+  return [...urls];
+}
+
+/** The references in a stylesheet's text: url() values and @import strings, as written. */
+export function cssRefs(text) {
+  const out = [];
+  const source = String(text || '').replace(/\/\*[\s\S]*?\*\//g, '');
+  for (const m of source.matchAll(/url\(\s*(['"]?)([^'")]+)\1\s*\)/g)) out.push(m[2].trim());
+  for (const m of source.matchAll(/@import\s+(['"])([^'"]+)\1/g)) out.push(m[2].trim());
+  return out.filter((u) => u && !/^(data|https?|blob|about):/i.test(u));
+}
+
+/** Whether an HTML text ends like a whole document (`</html>`, trailing space allowed). */
+export function endsHtml(text) {
+  return /<\/html\s*>\s*$/i.test(String(text == null ? '' : text));
+}
+/** The directory of an absolute path ('/' or '\\' separated). */
+export function dirOf(path) {
+  const slash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+  return slash > 0 ? path.slice(0, slash) : slash === 0 ? path.slice(0, 1) : '.';
+}
+function joinPath(dir, name) {
+  const sep = dir.includes('\\') && !dir.includes('/') ? '\\' : '/';
+  return dir.endsWith(sep) ? dir + name : dir + sep + name;
+}
+
+/** File watches for HTML views. Each view watches its file and its directory
+ *  (an atomic save renames a new file over it), plus the directory of every
+ *  local file the page references (`setRefs`, or the paths `reload()`
+ *  resolves to; at most `maxDirs` extra directories), not recursive. Only an
+ *  event for the page or a referenced file counts (an event without a file
+ *  name counts only when the page's size or mtime moved since its last load);
+ *  side files (images being generated next to the page) do not. After one,
+ *  the changed files must keep their size and mtime for `stableMs` (and no
+ *  event come for `debounceMs`); a page whose last load ended with `</html>`
+ *  waits until the new text does too. After `maxWaitMs` it reloads anyway.
+ *  One reload runs at a time per view; changes during it start the next.
+ *  At most `max` views. `watchFn` is `fs.watch`; `statFn(path)` resolves to
+ *  `{ size, mtimeMs }` (rejects for a missing file) and `readFn(path)` to the
+ *  text; without them every change counts as complete. */
 export class ViewWatches {
-  constructor({ watchFn, debounceMs = 200, max = 32, log = () => {} }) {
+  constructor({ watchFn, statFn = null, readFn = null, debounceMs = 100, stableMs = 300, maxWaitMs = 3000, pollMs = 100, max = 32, maxDirs = 8, maxRefs = 512, log = () => {} }) {
     this.watchFn = watchFn;
+    this.statFn = statFn;
+    this.readFn = readFn;
     this.debounceMs = debounceMs;
+    this.stableMs = stableMs;
+    this.maxWaitMs = maxWaitMs;
+    this.pollMs = pollMs;
     this.max = max;
+    this.maxDirs = maxDirs;
+    this.maxRefs = maxRefs;
     this.log = log;
-    this.watches = new Map(); // target -> { watchers, timer }
+    this.watches = new Map(); // target -> entry
   }
   arm(target, file, reload) {
     if (!this.watches.has(target) && this.watches.size >= this.max) {
       throw Object.assign(new Error(`at most ${this.max} views are watched; close some`), { herdr: true, code: 'too_many_watches' });
     }
     this.disarm(target);
-    const entry = { watchers: [], timer: null };
-    const fire = () => {
-      clearTimeout(entry.timer);
-      entry.timer = setTimeout(() => { Promise.resolve().then(reload).catch((err) => this.log(`reload: ${err && err.message}`)); }, this.debounceMs);
+    const entry = {
+      target, file, dir: dirOf(file), reload, closed: false,
+      watchers: [], dirs: new Map(), // extra directory -> watcher
+      refs: new Set(), pending: new Set(), definite: false,
+      firstAt: 0, lastAt: 0, sig: null, sigSince: 0, timer: null, checking: false, running: false,
+      endedHtml: false, loadedSig: null,
     };
-    const slash = Math.max(file.lastIndexOf('/'), file.lastIndexOf('\\'));
-    const dir = slash > 0 ? file.slice(0, slash) : '.';
-    for (const path of [file, dir]) {
-      try { entry.watchers.push(this.watchFn(path, fire)); } catch (err) { this.log(`watch ${path}: ${err && err.message}`); }
+    const watch = (path, onEvent) => {
+      try { return this.watchFn(path, onEvent); } catch (err) { this.log(`watch ${path}: ${err && err.message}`); return null; }
+    };
+    for (const [path, onEvent] of [[file, () => this.changed(entry, file, true)], [entry.dir, this.dirListener(entry, entry.dir)]]) {
+      const w = watch(path, onEvent);
+      if (w) entry.watchers.push(w);
     }
     this.watches.set(target, entry);
+    this.noteLoaded(entry, null);
     return entry.watchers.length > 0;
+  }
+  dirListener(entry, dir) {
+    return (_type, name) => {
+      if (name == null || name === '') { this.changed(entry, entry.file, false); return; }
+      const path = joinPath(dir, String(name));
+      if (path === entry.file || entry.refs.has(path)) this.changed(entry, path, true);
+    };
+  }
+  /** The local files the page references (absolute paths): their changes reload it too. */
+  setRefs(target, paths) {
+    const entry = this.watches.get(target);
+    if (!entry || entry.closed) return false;
+    const refs = new Set();
+    for (const p of Array.isArray(paths) ? paths : []) {
+      if (refs.size >= this.maxRefs) break;
+      if (typeof p === 'string' && p && p !== entry.file && (p.startsWith('/') || /^[A-Za-z]:[\\/]/.test(p) || p.startsWith('\\\\'))) refs.add(p);
+    }
+    entry.refs = refs;
+    const want = [];
+    for (const p of refs) {
+      const d = dirOf(p);
+      if (d !== entry.dir && !want.includes(d)) want.push(d);
+    }
+    if (want.length > this.maxDirs) this.log(`view ${target}: ${want.length} referenced directories, watching ${this.maxDirs}`);
+    const keep = new Set(want.slice(0, this.maxDirs));
+    for (const [d, w] of entry.dirs) {
+      if (!keep.has(d)) { try { w.close(); } catch {} entry.dirs.delete(d); }
+    }
+    for (const d of keep) {
+      if (entry.dirs.has(d)) continue;
+      try { entry.dirs.set(d, this.watchFn(d, this.dirListener(entry, d))); } catch (err) { this.log(`watch ${d}: ${err && err.message}`); }
+    }
+    return true;
+  }
+  /** The directories watched for a view (tests, logs). */
+  watched(target) {
+    const entry = this.watches.get(target);
+    return entry ? [entry.dir, ...entry.dirs.keys()] : [];
+  }
+  changed(entry, path, definite) {
+    if (entry.closed) return;
+    const now = Date.now();
+    entry.pending.add(path);
+    if (definite) entry.definite = true;
+    if (!entry.firstAt) entry.firstAt = now;
+    entry.lastAt = now;
+    if (!entry.running && !entry.checking && !entry.timer) this.schedule(entry, this.debounceMs);
+  }
+  schedule(entry, ms) {
+    clearTimeout(entry.timer);
+    entry.timer = setTimeout(() => {
+      entry.timer = null;
+      entry.checking = true;
+      this.check(entry)
+        .catch((err) => this.log(`view check: ${err && err.message}`))
+        .finally(() => {
+          entry.checking = false;
+          if (!entry.closed && !entry.running && !entry.timer && entry.pending.size) this.schedule(entry, this.debounceMs);
+        });
+    }, ms);
+  }
+  async signature(paths) {
+    if (!this.statFn) return { sig: '', missing: false };
+    let missing = false;
+    const parts = await Promise.all([...paths].sort().map(async (p) => {
+      try { const s = await this.statFn(p); return `${p}=${s.size}:${s.mtimeMs}`; } catch { missing = true; return `${p}=missing`; }
+    }));
+    return { sig: parts.join('|'), missing };
+  }
+  async pageSig(entry) {
+    if (!this.statFn) return null;
+    try { const s = await this.statFn(entry.file); return `${s.size}:${s.mtimeMs}`; } catch { return null; }
+  }
+  async check(entry) {
+    if (entry.closed || !entry.pending.size) return;
+    const now = Date.now();
+    const { sig, missing } = await this.signature(entry.pending);
+    if (entry.closed) return;
+    if (sig !== entry.sig) { entry.sig = sig; entry.sigSince = now; }
+    const overdue = now - entry.firstAt >= this.maxWaitMs;
+    const quiet = now - entry.lastAt >= this.debounceMs && now - entry.sigSince >= this.stableMs && !missing;
+    if (!overdue && !quiet) { this.schedule(entry, this.pollMs); return; }
+    let text = null;
+    if (entry.pending.has(entry.file) && this.readFn) {
+      try { text = String(await this.readFn(entry.file)); } catch { text = null; }
+      if (entry.closed) return;
+      if (!overdue && entry.endedHtml && text !== null && !endsHtml(text)) { this.schedule(entry, this.pollMs); return; }
+    }
+    const page = await this.pageSig(entry);
+    const definite = entry.definite;
+    entry.pending.clear();
+    entry.definite = false;
+    entry.firstAt = 0;
+    entry.sig = null;
+    if (!definite && page !== null && page === entry.loadedSig) return; // a nameless event, the page unchanged
+    entry.running = true;
+    try {
+      const refs = await entry.reload();
+      if (Array.isArray(refs)) this.setRefs(entry.target, refs);
+    } catch (err) {
+      this.log(`reload: ${err && err.message}`);
+    } finally {
+      entry.running = false;
+    }
+    if (entry.closed) return;
+    this.noteLoaded(entry, text, page);
+  }
+  /** What the loaded page's file looked like: whether it ended with `</html>`, its size and mtime. */
+  noteLoaded(entry, text, page = undefined) {
+    if (text !== null && text !== undefined) entry.endedHtml = endsHtml(text);
+    else if (this.readFn) Promise.resolve().then(() => this.readFn(entry.file)).then((t) => { entry.endedHtml = endsHtml(t); }, () => {});
+    if (page !== undefined && page !== null) entry.loadedSig = page;
+    else this.pageSig(entry).then((p) => { entry.loadedSig = p; }, () => {});
   }
   disarm(target) {
     const entry = this.watches.get(target);
     if (!entry) return false;
+    entry.closed = true;
     clearTimeout(entry.timer);
-    for (const watcher of entry.watchers) { try { watcher.close(); } catch {} }
+    for (const watcher of [...entry.watchers, ...entry.dirs.values()]) { try { watcher.close(); } catch {} }
     this.watches.delete(target);
     return true;
   }

@@ -2,7 +2,9 @@
 // HTML view watches, against a fake control page (no Electron, no
 // Chromium): the nonce check, view calls and their error codes, the
 // target -> view map, focus and raise against old and current companions,
-// furniture URLs, debounced reloads and the watch cap, the companion's page
+// furniture URLs, the view watches (only the page and the files it
+// references reload it, a half-written, growing or mid-rename page waits for
+// its complete file, one reload at a time, the watch cap), the companion's page
 // dialogs (a Playwright-like Dialog over the control page, push reconcile).
 // Run: node scripts/test_browser_companion_host.mjs   (also run by
 // integration::browser_assets::tests when node is on PATH)
@@ -129,20 +131,163 @@ console.log('ok: furniture URLs');
 // Watches: file and directory, debounced into one reload, capped, disarmed.
 const watchers = [];
 const watchFn = (path, cb) => { const w = { path, cb, closed: false, close() { this.closed = true; } }; watchers.push(w); return w; };
-const watches = new ViewWatches({ watchFn, debounceMs: 30, max: 2 });
-let reloads = 0;
-check(watches.arm('T1', '/tmp/views/report.html', () => { reloads++; }), 'armed');
+// an in-memory file system: path -> { text, mtimeMs }
+const disk = new Map();
+let clock = 1;
+const put = (path, text) => disk.set(path, { text, mtimeMs: clock++ });
+const statFn = async (path) => { const f = disk.get(path); if (!f) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }); return { size: f.text.length, mtimeMs: f.mtimeMs }; };
+const readFn = async (path) => { const f = disk.get(path); if (!f) throw new Error('ENOENT'); return f.text; };
+const timing = { debounceMs: 20, stableMs: 60, pollMs: 15, maxWaitMs: 500 };
+const watches = new ViewWatches({ watchFn, statFn, readFn, ...timing, max: 2 });
+const PAGE = '/tmp/views/report.html';
+const DOC = (body) => `<!doctype html><html><body>${body}</body></html>\n`;
+put(PAGE, DOC('one'));
+const reloads = []; // the page text each reload saw
+let refsAfterReload;
+const reloadFn = async () => { reloads.push((disk.get(PAGE) || {}).text); return refsAfterReload; };
+check(watches.arm('T1', PAGE, reloadFn), 'armed');
 check(watchers.map((w) => w.path).join(',') === '/tmp/views/report.html,/tmp/views', 'the file and its directory are watched');
-for (let i = 0; i < 5; i++) watchers[i % 2].cb('change', 'report.html');
-await sleep(80);
-check(reloads === 1, `a burst of changes is one reload (${reloads})`);
+await sleep(20); // the armed page's shape is read in the background
+const fileW = watchers[0];
+const dirW = watchers[1];
+put(PAGE, DOC('two'));
+for (let i = 0; i < 5; i++) (i % 2 ? dirW.cb('change', 'report.html') : fileW.cb('change', 'report.html'));
+await sleep(200);
+check(reloads.length === 1, `a burst of changes (file and directory watchers) is one reload (${reloads.length})`);
+
+// a side file next to the page (an image an agent generates) does not reload it
+reloads.length = 0;
+put('/tmp/views/chart.png', 'png');
+dirW.cb('rename', 'chart.png'); dirW.cb('change', 'chart.png'); dirW.cb('change', 'report.html.swp');
+await sleep(200);
+check(reloads.length === 0, `a side file in the page's directory does not reload it (${reloads.length})`);
+
+// a referenced file does; one in a subdirectory gets that directory watched; a side file there does not
+check(watches.setRefs('T1', ['/tmp/views/chart.png', '/tmp/views/img/logo.svg', '/tmp/views/img/2x/logo.svg', 'relative.png', PAGE]), 'refs set');
+check(watches.watched('T1').join(',') === '/tmp/views,/tmp/views/img,/tmp/views/img/2x', `the referenced subdirectories are watched (${watches.watched('T1')})`);
+dirW.cb('change', 'chart.png');
+await sleep(200);
+check(reloads.length === 1, `a referenced image next to the page reloads it (${reloads.length})`);
+const imgW = watchers.find((w) => w.path === '/tmp/views/img' && !w.closed);
+put('/tmp/views/img/other.png', 'x');
+imgW.cb('rename', 'other.png');
+await sleep(200);
+check(reloads.length === 1, `a side file in a referenced subdirectory does not (${reloads.length})`);
+put('/tmp/views/img/logo.svg', '<svg/>');
+imgW.cb('change', 'logo.svg');
+await sleep(200);
+check(reloads.length === 2, `a referenced file in the subdirectory does (${reloads.length})`);
+// the refs a reload answers replace the old ones: the subdirectory goes, its watcher closes
+refsAfterReload = ['/tmp/views/style.css'];
+put(PAGE, DOC('three'));
+fileW.cb('change', 'report.html');
+await sleep(200);
+check(reloads.length === 3 && watches.watched('T1').join(',') === '/tmp/views' && imgW.closed, `a reload's refs replace the old ones (${watches.watched('T1')})`);
+reloads.length = 0;
+dirW.cb('change', 'chart.png');
+await sleep(150);
+check(reloads.length === 0, 'a file no longer referenced does not reload it');
+put('/tmp/views/style.css', 'body{}');
+dirW.cb('change', 'style.css');
+await sleep(200);
+check(reloads.length === 1, 'the newly referenced stylesheet does');
+// the extra directories are capped
+const capped = new ViewWatches({ watchFn: () => ({ close() {} }), maxDirs: 2 });
+capped.arm('C', '/a/p.html', () => {});
+capped.setRefs('C', ['/b/1.png', '/c/2.png', '/d/3.png']);
+check(capped.watched('C').join(',') === '/a,/b,/c', `at most maxDirs extra directories (${capped.watched('C')})`);
+capped.disarm('C');
+console.log('ok: only the page and the files it references reload it');
+
+// a chunked write: no reload until the page ends with </html> again, then one of the final text
+reloads.length = 0;
+put(PAGE, '<!doctype html><html><body>four, part');
+fileW.cb('change', 'report.html');
+await sleep(150);
+put(PAGE, '<!doctype html><html><body>four, part one, part');
+fileW.cb('change', 'report.html');
+await sleep(150);
+check(reloads.length === 0, `a half-written page (no </html> yet) is not loaded (${reloads.length})`);
+put(PAGE, DOC('four, part one, part two'));
+fileW.cb('change', 'report.html');
+await sleep(200);
+check(reloads.length === 1 && reloads[0] === DOC('four, part one, part two'), `the finished file is loaded once (${JSON.stringify(reloads)})`);
+// a file whose size keeps moving is waited for; then one reload
+reloads.length = 0;
+for (let i = 0; i < 6; i++) { put(PAGE, DOC('five ' + 'x'.repeat(i))); fileW.cb('change', 'report.html'); await sleep(35); }
+check(reloads.length === 0, `a file still growing is not loaded (${reloads.length})`);
+await sleep(200);
+check(reloads.length === 1 && reloads[0] === DOC('five xxxxx'), `then once, its last text (${JSON.stringify(reloads)})`);
+// a page that never ends with </html> again loads after maxWaitMs anyway
+reloads.length = 0;
+put(PAGE, '<p>no closing tag');
+fileW.cb('change', 'report.html');
+await sleep(300);
+check(reloads.length === 0, 'an unfinished page waits');
+await sleep(400);
+check(reloads.length === 1, `and is loaded after maxWaitMs (${reloads.length})`);
+// a page that never ended with </html> does not wait for one
+reloads.length = 0;
+put(PAGE, '<p>still no closing tag, edited');
+fileW.cb('change', 'report.html');
+await sleep(200);
+check(reloads.length === 1, `a page without </html> before is loaded once stable (${reloads.length})`);
+put(PAGE, DOC('six'));
+fileW.cb('change', 'report.html');
+await sleep(200);
+console.log('ok: a half-written or growing page waits for its complete file');
+
+// an atomic save: the temp file (a side file) is written, then renamed over the page; the
+// page is missing in between
+reloads.length = 0;
+put('/tmp/views/.report.html.tmp', DOC('seven'));
+dirW.cb('rename', '.report.html.tmp'); dirW.cb('change', '.report.html.tmp');
+disk.delete(PAGE);
+fileW.cb('rename', 'report.html'); dirW.cb('rename', 'report.html');
+await sleep(150);
+check(reloads.length === 0, `a page missing mid-save is not loaded (${reloads.length})`);
+disk.set(PAGE, disk.get('/tmp/views/.report.html.tmp')); disk.delete('/tmp/views/.report.html.tmp');
+dirW.cb('rename', '.report.html.tmp'); dirW.cb('rename', 'report.html');
+await sleep(200);
+check(reloads.length === 1 && reloads[0] === DOC('seven'), `an atomic rename save reloads once, the new text (${JSON.stringify(reloads)})`);
+// an event without a file name reloads only when the page changed since its last load
+reloads.length = 0;
+dirW.cb('change', null);
+await sleep(200);
+check(reloads.length === 0, 'a nameless event with the page unchanged does not reload');
+put(PAGE, DOC('eight'));
+dirW.cb('change', null);
+await sleep(200);
+check(reloads.length === 1, `a nameless event after the page changed does (${reloads.length})`);
+console.log('ok: atomic saves and nameless events');
+
+// one reload at a time: changes during a slow reload start one more after it
+let running = 0; let overlap = false; let slow = 0;
+const slowReload = async () => { running++; if (running > 1) overlap = true; slow++; await sleep(120); running--; };
+watches.arm('T1', PAGE, slowReload);
+const fileW2 = watchers.at(-2);
+await sleep(20);
+put(PAGE, DOC('nine')); fileW2.cb('change', 'report.html');
+await sleep(110);
+put(PAGE, DOC('ten')); fileW2.cb('change', 'report.html');
+await sleep(40);
+put(PAGE, DOC('eleven')); fileW2.cb('change', 'report.html');
+await sleep(500);
+check(!overlap && slow === 2, `changes during a reload make one more, never two at once (${slow}, overlap ${overlap})`);
+
+const seen = watchers.length;
 watches.arm('T2', '/tmp/views/b.html', () => {});
 failed = null;
 try { watches.arm('T3', '/tmp/views/c.html', () => {}); } catch (err) { failed = err; }
 check(failed && failed.code === 'too_many_watches', 'the cap holds');
-check(watches.arm('T1', '/tmp/views/report.html', () => { reloads++; }), 're-arming a watched view is not over the cap');
-check(watchers.slice(0, 2).every((w) => w.closed), 're-arming closes the old watchers');
+check(watches.arm('T1', PAGE, reloadFn), 're-arming a watched view is not over the cap');
+check(watchers.slice(seen - 2, seen).every((w) => w.closed), 're-arming closes the old watchers');
 check(watches.disarm('T1') && !watches.has('T1') && !watches.disarm('T1'), 'disarm once');
+reloads.length = 0;
+fileW.cb('change', 'report.html');
+await sleep(120);
+check(reloads.length === 0, 'a disarmed view never reloads');
+watches.disarm('T2');
 console.log('ok: html view watches debounce, cap and disarm');
 
 // Fork (companion dialogs): alert / confirm / prompt live in the companion; the sidecar's

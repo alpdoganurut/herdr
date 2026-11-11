@@ -14,8 +14,8 @@ import { createRequire } from 'node:module';
 import readline from 'node:readline';
 import fs from 'node:fs';
 import { EXTRACT_SOURCE, LINKS_SOURCE } from './extract.mjs';
-import { Overlay, Companion, NUDGE_URL, dismissPanes, CaptureLane, laneShot, shotParams, firstShot, cleanCapture, clearClipEmulation, SELECT_BUDGET_MS, describe, probePages, ControlPage, ViewWatches, isFurnitureUrl, VIEW_MARKER, CompanionDialog, reconcileDialogs, pruneAnswered, DIALOG_BINDING } from './activity.mjs';
-import { pathToFileURL } from 'node:url';
+import { Overlay, Companion, NUDGE_URL, dismissPanes, CaptureLane, laneShot, shotParams, firstShot, cleanCapture, clearClipEmulation, SELECT_BUDGET_MS, describe, probePages, ControlPage, ViewWatches, viewRefs, cssRefs, isFurnitureUrl, VIEW_MARKER, CompanionDialog, reconcileDialogs, pruneAnswered, DIALOG_BINDING } from './activity.mjs';
+import { pathToFileURL, fileURLToPath } from 'node:url';
 import nodePath from 'node:path';
 // the act's change probe and timeout message (on a line of their own)
 import { MODALS_SOURCE, actChanges, actTimeoutMessage, redactActText } from './extract.mjs';
@@ -38,7 +38,12 @@ const SCREENSHOT_STALL_MS = 5000;
 
 const profiles = new Map(); // name -> Profile
 // Fork (companion browser): file watches of HTML views (`show`, `watch`).
-const watches = new ViewWatches({ watchFn: (path, cb) => fs.watch(path, cb), log: (text) => log('debug', text) });
+const watches = new ViewWatches({
+  watchFn: (path, cb) => fs.watch(path, cb),
+  statFn: (path) => fs.promises.stat(path),
+  readFn: (path) => fs.promises.readFile(path, 'utf8'),
+  log: (text) => log('debug', text),
+});
 /** An error message for a tab event: one line, capped. */
 const eventText = (text) => String(text == null ? '' : text).split('\n')[0].slice(0, 300);
 
@@ -453,11 +458,44 @@ async function blockNetwork(state) {
   if (typeof state.page.routeWebSocket === 'function') await state.page.routeWebSocket(/.*/, (ws) => ws.close()).catch(() => {});
 }
 
+/** A shown page's reload (its file or one it references changed); answers the
+ *  local files it references now. */
 async function reloadView(name, target) {
   const profile = profiles.get(name);
   const state = profile && profile.pages.get(target);
-  if (!state || state.closed) { watches.disarm(target); return; }
+  if (!state || state.closed) { watches.disarm(target); return undefined; }
   await state.page.reload({ waitUntil: 'domcontentloaded' });
+  return viewRefPaths(state.page);
+}
+
+/** The local files a shown page references (absolute paths), once it loaded
+ *  (at most `loadMs`); [] when the page does not answer. */
+async function viewRefPaths(page, loadMs = 1500) {
+  await page.waitForLoadState('load', { timeout: loadMs }).catch(() => {});
+  const urls = await withTimeout(page.evaluate(viewRefs), 1000, 'browser_timeout', 'refs').catch(() => []);
+  const paths = new Set();
+  for (const u of Array.isArray(urls) ? urls : []) { try { paths.add(fileURLToPath(u)); } catch {} }
+  // what the stylesheets reference (their url()s and imports, relative to each sheet), 20 sheets at most
+  const sheets = [...paths].filter((p) => /\.css$/i.test(p));
+  for (let i = 0; i < sheets.length && i < 20; i++) {
+    let text;
+    try { text = (await fs.promises.readFile(sheets[i], 'utf8')).slice(0, 1024 * 1024); } catch { continue; }
+    for (const ref of cssRefs(text)) {
+      let path;
+      try { path = ref.startsWith('file:') ? fileURLToPath(ref) : nodePath.resolve(nodePath.dirname(sheets[i]), decodeURIComponent(ref.split(/[?#]/)[0])); } catch { continue; }
+      if (paths.has(path)) continue;
+      paths.add(path);
+      if (/\.css$/i.test(path)) sheets.push(path);
+    }
+  }
+  return [...paths];
+}
+
+/** Arms a shown page's watch and, in the background, its referenced files. */
+function armView(name, target, file, state) {
+  const watching = watches.arm(target, file, () => reloadView(name, target));
+  if (watching && state) viewRefPaths(state.page).then((paths) => watches.setRefs(target, paths)).catch(() => {});
+  return watching;
 }
 
 async function tabs(profile) {
@@ -1197,7 +1235,8 @@ const ops = {
 
   // Fork (companion browser): a local HTML file in a sandboxed view (the
   // companion's, in the caller's group) or a window tab; http(s) and ws(s)
-  // blocked unless allowed; the file and its directory watched.
+  // blocked unless allowed; the file, its directory and the directories of
+  // the local files it references watched (ViewWatches).
   async show({ profile: name, args, deadline_ms }) {
     const profile = needProfile(name);
     const file = String(args.file || '');
@@ -1230,7 +1269,7 @@ const ops = {
     if (args.focus && profile.kind !== 'companion') await quietSelect(state);
     let watching = false;
     if (args.watch !== false) {
-      try { watching = watches.arm(targetId, file, () => reloadView(name, targetId)); }
+      try { watching = armView(name, targetId, file, state); }
       catch (err) { log('debug', `show: watch: ${err.message}`); }
     }
     return { result: { target: targetId, view_id: viewId, watching }, page: await pageInfo(state) };
@@ -1238,10 +1277,10 @@ const ops = {
 
   // A restored HTML view (herdr asks after the companion recreated it).
   async watch({ profile: name, target, args }) {
-    needPage(needProfile(name), target);
+    const state = needPage(needProfile(name), target);
     const file = String(args.file || '');
     if (!nodePath.isAbsolute(file)) fail('invalid_request', 'watch needs an absolute path');
-    return { watching: watches.arm(target, file, () => reloadView(name, target)) };
+    return { watching: armView(name, target, file, state) };
   },
   async unwatch({ target }) {
     return { removed: watches.disarm(String(target || '')) };
