@@ -1167,7 +1167,8 @@ export function reconcileDialogs(current, list, answered = new Set()) {
 
 /** In the page (page.evaluate; self-contained): the absolute file: URLs the
  *  document references — src, srcset, poster, stylesheet and icon links, SVG
- *  image/use hrefs, CSS url() in <style> and style attributes. Not <a> links,
+ *  image/use hrefs, CSS url() in <style> and style attributes, @import in
+ *  <style>. Not <a> links,
  *  and not what a stylesheet references (a file: page cannot read its rules:
  *  `cssRefs` on the sidecar side). */
 export function viewRefs() {
@@ -1183,9 +1184,11 @@ export function viewRefs() {
   for (const el of document.querySelectorAll('object[data]')) add(el.getAttribute('data'));
   for (const el of document.querySelectorAll('image, use, feImage')) add(el.getAttribute('href') || el.getAttribute('xlink:href'));
   const re = /url\(\s*(['"]?)([^'")]+)\1\s*\)/g;
+  const imports = /@import\s+(['"])([^'"]+)\1/g;
   for (const el of document.querySelectorAll('style, [style]')) {
-    const text = el.localName === 'style' ? el.textContent : el.getAttribute('style');
-    for (const m of String(text || '').matchAll(re)) add(m[2]);
+    const text = String((el.localName === 'style' ? el.textContent : el.getAttribute('style')) || '');
+    for (const m of text.matchAll(re)) add(m[2]);
+    if (el.localName === 'style') for (const m of text.matchAll(imports)) add(m[2]);
   }
   return [...urls];
 }
@@ -1197,6 +1200,27 @@ export function cssRefs(text) {
   for (const m of source.matchAll(/url\(\s*(['"]?)([^'")]+)\1\s*\)/g)) out.push(m[2].trim());
   for (const m of source.matchAll(/@import\s+(['"])([^'"]+)\1/g)) out.push(m[2].trim());
   return out.filter((u) => u && !/^(data|https?|blob|about):/i.test(u));
+}
+
+/** The referenced paths a view may watch: those whose real path (`realpath`;
+ *  for a file not there yet, its directory's) lies inside `rootReal`, kept as
+ *  written (the watches compare the paths as written). UNC paths are dropped. */
+export function refsInside(paths, rootReal, realpath) {
+  const sep = rootReal.includes('\\') && !rootReal.includes('/') ? '\\' : '/';
+  const inside = (p) => p === rootReal || p.startsWith(rootReal.endsWith(sep) ? rootReal : rootReal + sep);
+  const real = (p) => {
+    try { return realpath(p); } catch {}
+    const d = dirOf(p);
+    if (!d || d === p || d === '.') return null;
+    try { const rd = realpath(d); return rd + (rd.endsWith(sep) ? '' : sep) + p.slice(d.length + 1); } catch { return null; }
+  };
+  const out = [];
+  for (const p of Array.isArray(paths) ? paths : []) {
+    if (typeof p !== 'string' || !p || p.startsWith('\\\\') || p.startsWith('//')) continue;
+    const r = real(p);
+    if (r && inside(r)) out.push(p);
+  }
+  return out;
 }
 
 /** Whether an HTML text ends like a whole document (`</html>`, trailing space allowed). */
@@ -1223,7 +1247,8 @@ function joinPath(dir, name) {
  *  side files (images being generated next to the page) do not. After one,
  *  the changed files must keep their size and mtime for `stableMs` (and no
  *  event come for `debounceMs`); a page whose last load ended with `</html>`
- *  waits until the new text does too. After `maxWaitMs` it reloads anyway.
+ *  waits until the new text does too. After `maxWaitMs` it reloads anyway,
+ *  unless the page file is gone (then the next event for it starts again).
  *  One reload runs at a time per view; changes during it start the next.
  *  At most `max` views. `watchFn` is `fs.watch`; `statFn(path)` resolves to
  *  `{ size, mtimeMs }` (rejects for a missing file) and `readFn(path)` to the
@@ -1252,7 +1277,7 @@ export class ViewWatches {
       target, file, dir: dirOf(file), reload, closed: false,
       watchers: [], dirs: new Map(), // extra directory -> watcher
       refs: new Set(), pending: new Set(), loaded: new Map(), // path -> size:mtime at the last load
-      firstAt: 0, lastAt: 0, sig: null, sigSince: 0, timer: null, checking: false, running: false,
+      firstAt: 0, lastAt: 0, sig: null, sigSince: 0, timer: null, checking: false, running: false, events: 0,
       endedHtml: false,
     };
     const watch = (path, onEvent) => {
@@ -1308,6 +1333,7 @@ export class ViewWatches {
     if (entry.closed) return;
     const now = Date.now();
     entry.pending.add(path);
+    entry.events++;
     if (!entry.firstAt) entry.firstAt = now;
     entry.lastAt = now;
     if (!entry.running && !entry.checking && !entry.timer) this.schedule(entry, this.debounceMs);
@@ -1341,6 +1367,7 @@ export class ViewWatches {
   }
   async check(entry) {
     if (entry.closed || !entry.pending.size) return;
+    const events = entry.events; // an event during the awaits below must not be dropped
     const now = Date.now();
     const { sig, missing, each } = await this.signature(entry.pending);
     if (entry.closed) return;
@@ -1348,6 +1375,14 @@ export class ViewWatches {
     const overdue = now - entry.firstAt >= this.maxWaitMs;
     const quiet = now - entry.lastAt >= this.debounceMs && now - entry.sigSince >= this.stableMs && !missing;
     if (!overdue && !quiet) { this.schedule(entry, this.pollMs); return; }
+    // the page file still gone at the cap (deleted, or mid-save): nothing to load; its
+    // directory's event when it is back starts again
+    if (each.get(entry.file) === 'missing') {
+      entry.pending.clear();
+      entry.firstAt = 0;
+      entry.sig = null;
+      return;
+    }
     let text = null;
     if (entry.pending.has(entry.file) && this.readFn) {
       try { text = String(await this.readFn(entry.file)); } catch { text = null; }
@@ -1355,6 +1390,8 @@ export class ViewWatches {
       if (!overdue && entry.endedHtml && text !== null && !endsHtml(text)) { this.schedule(entry, this.pollMs); return; }
     }
     const page = await this.pageSig(entry);
+    if (entry.closed) return;
+    if (entry.events !== events) { this.schedule(entry, this.pollMs); return; }
     entry.pending.clear();
     entry.firstAt = 0;
     entry.sig = null;
@@ -1405,7 +1442,7 @@ export class ViewWatches {
  *  keeps it) so the browser's own restore does not race this one;
  *  restoreViewState sets it back. `manual` says the page restores its own
  *  scroll: the window scroll is left alone then. */
-export function captureViewState() {
+export function captureViewState(ours = false) {
   const MAX = 200;
   const body = document.body;
   if (!body) return null;
@@ -1437,7 +1474,8 @@ export function captureViewState() {
     return false;
   };
   const se = document.scrollingElement || document.documentElement;
-  const manual = history.scrollRestoration === 'manual';
+  // 'manual' set by an earlier capture of ours (`ours`, tracked by the sidecar) is not the page's
+  const manual = history.scrollRestoration === 'manual' && !ours;
   let scroll = null;
   if (scrollX || scrollY) {
     let anchor = null;
@@ -1481,11 +1519,11 @@ export function captureViewState() {
       // what the select shows untouched: its defaultSelected options, else (single) its first
       const none = !opts.some((o) => o.defaultSelected);
       const dflt = (o, i) => o.defaultSelected || (none && !el.multiple && i === 0);
-      if (opts.some((o, i) => o.selected !== dflt(o, i))) fields.push({ key: keyOf(el), selected: opts.filter((o) => o.selected).map((o) => o.value) });
+      if (opts.some((o, i) => o.selected !== dflt(o, i))) fields.push({ key: keyOf(el), tag: el.localName, type, selected: opts.filter((o) => o.selected).map((o) => o.value) });
     } else if (type === 'checkbox' || type === 'radio') {
-      if (el.checked !== el.defaultChecked) fields.push({ key: keyOf(el), checked: el.checked });
+      if (el.checked !== el.defaultChecked) fields.push({ key: keyOf(el), tag: el.localName, type, checked: el.checked });
     } else if (el.value !== el.defaultValue) {
-      fields.push({ key: keyOf(el), value: String(el.value).slice(0, 100000) });
+      fields.push({ key: keyOf(el), tag: el.localName, type, value: String(el.value).slice(0, 100000) });
     }
   }
   let selection = null;
@@ -1502,7 +1540,8 @@ export function captureViewState() {
     try { if (typeof active.selectionStart === 'number') { focus.start = active.selectionStart; focus.end = active.selectionEnd; focus.dir = active.selectionDirection; } } catch {}
   }
   const details = Array.from(document.querySelectorAll('details[open]')).slice(0, MAX).map(pathOf);
-  const setManual = Boolean(scroll) && !manual;
+  // ours and stuck (an earlier restore that failed): restoreViewState gives it back too
+  const setManual = (Boolean(scroll) || Boolean(ours)) && !manual;
   if (setManual) history.scrollRestoration = 'manual';
   return { scroll, manual, setManual, scrollers, fields, selection, focus, details };
 }
@@ -1516,7 +1555,7 @@ export function captureViewState() {
  *  where it was put). Anything whose element is gone is
  *  skipped. Answers what it did, for logs and checks. */
 export function restoreViewState({ state, settleMs = 1500 }) {
-  const out = { scroll: null, scrollers: 0, fields: 0, details: 0, selection: false, focus: false, skipped: 0, settled: null };
+  const out = { scroll: null, scrollers: 0, fields: 0, details: 0, selection: false, focus: false, skipped: 0, settled: null, manual_left: false };
   if (!state) return out;
   const body = document.body;
   // back to the browser's own restore once the page has loaded (earlier, Chromium restores the
@@ -1525,7 +1564,9 @@ export function restoreViewState({ state, settleMs = 1500 }) {
   const ownsRestoration = () => Array.from(document.scripts).some((el) => !el.src && /scrollRestoration/.test(el.textContent || ''));
   const giveBack = () => { if (state.setManual && !ownsRestoration()) { try { history.scrollRestoration = 'auto'; } catch {} } };
   const giveBackAfterLoad = () => {
-    if (document.readyState === 'complete') setTimeout(giveBack, 0);
+    // still ours until it is given back: the sidecar's next capture must not take it for the page's
+    out.manual_left = Boolean(state.setManual) && !ownsRestoration();
+    if (document.readyState === 'complete') { out.manual_left = false; setTimeout(giveBack, 0); }
     else addEventListener('load', () => setTimeout(giveBack, 0), { once: true });
   };
   if (!body) { giveBackAfterLoad(); return out; }
@@ -1551,7 +1592,10 @@ export function restoreViewState({ state, settleMs = 1500 }) {
       const same = Array.from(document.getElementsByName(k.name));
       el = k.value !== undefined ? same.find((e) => e.value === k.value && (e.type === 'radio' || e.type === 'checkbox')) : same.filter((e) => /^(input|textarea|select)$/.test(e.localName))[k.index || 0];
     } else el = find(k.path);
-    if (!el || !/^(input|textarea|select)$/.test(el.localName) || (el.type || '').toLowerCase() === 'password') { out.skipped++; continue; }
+    // the same kind of field (tag and type) as captured, never one capture skips
+    const type = el ? String(el.type || '').toLowerCase() : '';
+    const skip = ['password', 'file', 'hidden', 'submit', 'button', 'reset', 'image'];
+    if (!el || !/^(input|textarea|select)$/.test(el.localName) || el.localName !== f.tag || type !== f.type || skip.includes(type) || /password/i.test(el.getAttribute('autocomplete') || '')) { out.skipped++; continue; }
     if (f.selected) { for (const o of Array.from(el.options || [])) o.selected = f.selected.includes(o.value); }
     else if (f.checked !== undefined) el.checked = f.checked;
     else if (f.value !== undefined) { try { el.value = f.value; } catch { out.skipped++; continue; } }
@@ -1580,8 +1624,7 @@ export function restoreViewState({ state, settleMs = 1500 }) {
         const was = setScrollers.get(el);
         if (!was || el.scrollTop !== was[0] || el.scrollLeft !== was[1]) continue; // moved since: not ours to fight
       }
-      el.scrollTop = s.top;
-      el.scrollLeft = s.left;
+      el.scrollTo({ top: s.top, left: s.left, behavior: 'instant' }); // never a smooth animation
       setScrollers.set(el, [el.scrollTop, el.scrollLeft]);
       if (!again) out.scrollers++;
     }
@@ -1608,9 +1651,11 @@ export function restoreViewState({ state, settleMs = 1500 }) {
   const applyWindow = () => {
     const el = anchorEl();
     let how;
-    if (el) { scrollTo(sc.x, scrollY + el.getBoundingClientRect().top - sc.anchor.top); how = 'anchor'; }
-    else if (sc.height && Math.abs(se.scrollHeight - sc.height) > sc.height * 0.25) { scrollTo(sc.x, sc.ratio * Math.max(0, se.scrollHeight - innerHeight)); how = 'ratio'; }
-    else { scrollTo(sc.x, sc.y); how = 'raw'; }
+    // instant: a page's `scroll-behavior: smooth` would animate it (and scrollY would lag)
+    const to = (top) => scrollTo({ left: sc.x, top, behavior: 'instant' });
+    if (el) { to(scrollY + el.getBoundingClientRect().top - sc.anchor.top); how = 'anchor'; }
+    else if (sc.height && Math.abs(se.scrollHeight - sc.height) > sc.height * 0.25) { to(sc.ratio * Math.max(0, se.scrollHeight - innerHeight)); how = 'ratio'; }
+    else { to(sc.y); how = 'raw'; }
     ourY = scrollY;
     return how;
   };
@@ -1658,21 +1703,34 @@ export function restoreViewState({ state, settleMs = 1500 }) {
 /** Reloads a shown page (Playwright page) keeping the reader's place:
  *  captureViewState before, restoreViewState after. A page that does not
  *  answer the capture in `captureMs` (a dialog, a busy page) is reloaded
- *  plainly. Answers restoreViewState's report (null without a capture). */
-export async function reloadKeepingState(page, { log = () => {}, settleMs = 1500, captureMs = 1000 } = {}) {
-  const race = (promise, ms) => {
-    let timer;
-    return Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`no answer in ${ms} ms`)), ms); })]).finally(() => clearTimeout(timer));
-  };
+ *  plainly. `ours` says an earlier reload of this page may have left
+ *  `history.scrollRestoration = 'manual'` set (the caller keeps it per page
+ *  and passes it back): the capture does not take it for the page's own then.
+ *  Answers `{ report, ours }`: restoreViewState's report (null without a
+ *  restore) and whether 'manual' may still be ours after this reload. */
+export async function reloadKeepingState(page, { log = () => {}, settleMs = 1500, captureMs = 1000, ours = false } = {}) {
+  const reset = () => withTimeout(page.evaluate(() => { history.scrollRestoration = 'auto'; }), captureMs, 'scroll restoration reset').then(() => true, () => false);
   let state = null;
-  try { state = await race(page.evaluate(captureViewState), captureMs); }
-  catch (err) { log(`view state: capture: ${err && err.message}`); }
+  let left = Boolean(ours);
+  try {
+    state = await withTimeout(page.evaluate(captureViewState, Boolean(ours)), captureMs, 'view state capture');
+    if (state && state.setManual) left = true;
+  } catch (err) {
+    log(`view state: capture: ${err && err.message}`);
+    left = true; // the capture may still run late and set 'manual'
+  }
   try { await page.reload({ waitUntil: 'domcontentloaded' }); }
   catch (err) {
-    if (state && state.setManual) await race(page.evaluate(() => { history.scrollRestoration = 'auto'; }), captureMs).catch(() => {});
+    if (left && await reset()) left = false;
+    err.ours = left;
     throw err;
   }
-  if (!state) return null;
-  try { return await race(page.evaluate(restoreViewState, { state, settleMs }), settleMs + 2000); }
-  catch (err) { log(`view state: restore: ${err && err.message}`); return null; }
+  if (!state) return { report: null, ours: left && !(await reset()) };
+  try {
+    const report = await withTimeout(page.evaluate(restoreViewState, { state, settleMs }), settleMs + 2000, 'view state restore');
+    return { report, ours: Boolean(report && report.manual_left) };
+  } catch (err) {
+    log(`view state: restore: ${err && err.message}`);
+    return { report: null, ours: left && !(await reset()) };
+  }
 }

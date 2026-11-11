@@ -10,7 +10,8 @@
 // file written next to the page does not reload it.
 // Run: node scripts/test_browser_view_reload.mjs   (also run by
 // integration::browser_assets::tests when node is on PATH; skipped with exit
-// 0 when playwright-core or a browser binary is not found)
+// 0 when playwright-core or a browser binary is not found, a failure with
+// HERDR_REQUIRE_BROWSER_TESTS=1, as the fork gate runs it)
 //   HERDR_TEST_PLAYWRIGHT_CORE=<dir of playwright-core>  (default: apps/companion's)
 //   HERDR_TEST_CHROMIUM=<browser binary>  (default: playwright's, else its newest headless shell)
 // Never touches herdr's own browser, profiles or state.
@@ -28,11 +29,17 @@ const repo = join(here, '..');
 const assets = join(repo, 'src/integration/assets/browser');
 function check(cond, msg) { if (!cond) throw new Error(msg); }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// HERDR_REQUIRE_BROWSER_TESTS=1 (the fork gate): a missing playwright-core or browser fails
+const skip = (why) => {
+  if (process.env.HERDR_REQUIRE_BROWSER_TESTS === '1') { console.error(`FAIL: ${why} (HERDR_REQUIRE_BROWSER_TESTS=1)`); process.exit(1); }
+  console.log(`skip: ${why}`);
+  process.exit(0);
+};
 
 const require = createRequire(import.meta.url);
 const pwCandidates = [process.env.HERDR_TEST_PLAYWRIGHT_CORE, join(repo, 'apps/companion/node_modules/playwright-core'), join(repo, 'apps/companion/install/node_modules/playwright-core')].filter(Boolean);
 const pwDir = pwCandidates.find((dir) => existsSync(join(dir, 'package.json')));
-if (!pwDir) { console.log('skip: no playwright-core (set HERDR_TEST_PLAYWRIGHT_CORE)'); process.exit(0); }
+if (!pwDir) skip('no playwright-core (set HERDR_TEST_PLAYWRIGHT_CORE)');
 const { chromium } = require(pwDir);
 function browserBinary() {
   if (process.env.HERDR_TEST_CHROMIUM) return existsSync(process.env.HERDR_TEST_CHROMIUM) ? process.env.HERDR_TEST_CHROMIUM : null;
@@ -51,7 +58,7 @@ function browserBinary() {
   return null;
 }
 const binary = browserBinary();
-if (!binary) { console.log('skip: no Chromium binary (set HERDR_TEST_CHROMIUM)'); process.exit(0); }
+if (!binary) skip('no Chromium binary (set HERDR_TEST_CHROMIUM)');
 
 const tmp = mkdtempSync(join(os.tmpdir(), 'herdr-view-reload-'));
 const hostDir = join(tmp, 'host');
@@ -272,6 +279,61 @@ try {
   const p5 = await topOf(t1, 'p5');
   check(Math.abs(p5) <= 2 && await evalIn(t1, 'history.scrollRestoration') === 'manual', `a page that restores its own scroll is left to it (p5 at ${p5})`);
   console.log('ok: a page that scrolls itself is not overridden');
+
+  // --- 4b. smooth scrolling pages: the restore jumps (no animation), so a late image still re-anchors
+  const fileSmooth = join(views, 'smooth.html');
+  const smooth = '<style>html{scroll-behavior:smooth;overflow-anchor:none} .box{scroll-behavior:smooth}</style>';
+  writeFileSync(fileSmooth, page({ title: 'm1', extraHead: smooth }));
+  const tm = await show(fileSmooth, { allow_network: true });
+  await sleep(300);
+  await evalIn(tm, `scrollTo({ top: document.getElementById('p30').offsetTop, behavior: 'instant' }), document.querySelector('.box').scrollTo({ top: 300, behavior: 'instant' }), true`);
+  await sleep(200);
+  const beforeSmooth = await topOf(tm, 'p30');
+  writeFileSync(fileSmooth, page({ title: 'm2', extraHead: smooth, top: `<img src="${slowImg(5)}" alt="late">` }));
+  check(await reloaded(tm, 'm2'), 'the smooth page reloads');
+  const smoothAfter = await evalIn(tm, `({ p30: Math.round(document.getElementById('p30').getBoundingClientRect().top), box: document.querySelector('.box').scrollTop, img: document.querySelector('img').naturalHeight })`);
+  check(smoothAfter.img === 900 && Math.abs(smoothAfter.p30 - beforeSmooth) <= 2 && smoothAfter.box === 300, `a smooth-scrolling page keeps its place after a late image (${beforeSmooth} -> ${JSON.stringify(smoothAfter)}; ${logs.filter((l) => l.includes('reloaded')).slice(-1)})`);
+  await call('close', { profile: 't', target: tm });
+  console.log('ok: smooth scrolling pages are restored without an animation');
+
+  // --- 4c. a field is only filled back into the same kind of field
+  writeFileSync(file, page({ title: 'f1' }));
+  check(await reloaded(t1, 'f1'), 'f1 reloads');
+  await evalIn(t1, `document.getElementById('name').value = 'Ada', true`);
+  writeFileSync(file, page({ title: 'f2' }).replace('<input id="name" value="">', '<input type="hidden" id="name" value="">'));
+  check(await reloaded(t1, 'f2'), 'f2 reloads');
+  check(await evalIn(t1, `document.getElementById('name').type + ':' + document.getElementById('name').value`) === 'hidden:', 'text typed into a field never lands in a hidden input that took its id');
+  console.log('ok: fields keep their type');
+
+  // --- 4d. references: an inline @import counts; a file outside the page's directory never does.
+  //     Read from the sidecar's log line after the reload (how many files it watches), not from a
+  //     reload: macOS directory events can lag many seconds or stall on a busy machine (the watch
+  //     itself is covered by test_browser_companion_host.mjs).
+  const refCount = () => {
+    const l = logs.filter((x) => x.startsWith(`view ${t1}: `) && x.endsWith(' referenced files')).at(-1);
+    return l ? Number(l.slice(`view ${t1}: `.length).split(' ')[0]) : null;
+  };
+  writeFileSync(join(views, 'theme.css'), 'p { color: #111 }');
+  writeFileSync(join(tmp, 'outside.css'), 'p { color: #222 }');
+  writeFileSync(file, page({ title: 'r1', extraHead: '<style>@import "theme.css";</style><link rel="stylesheet" href="../outside.css">' }));
+  check(await reloaded(t1, 'r1'), 'r1 reloads');
+  check(refCount() === 1, `the page's references are theme.css (inline @import), not ../outside.css (${refCount()} referenced files)`);
+  console.log('ok: inline @import counts, files outside the root do not');
+
+  // --- 4e. a capture that times out (a busy page): its 'manual' scroll restoration does not stick,
+  //     the next reload still restores the scroll
+  const busy = `<script>window.__busy = () => { const t = Date.now() + 1600; while (Date.now() < t); };</script>`;
+  writeFileSync(file, page({ title: 'b1', script: busy }));
+  check(await reloaded(t1, 'b1'), 'b1 reloads');
+  await evalIn(t1, `document.getElementById('p30').scrollIntoView(), setTimeout(__busy, 50), true`);
+  writeFileSync(file, page({ title: 'b2', script: busy }));
+  check(await reloaded(t1, 'b2', 12000), 'b2 reloads (plainly: the capture timed out)');
+  await evalIn(t1, `document.getElementById('p20').scrollIntoView(), true`);
+  writeFileSync(file, page({ title: 'b3', script: busy }));
+  check(await reloaded(t1, 'b3'), 'b3 reloads');
+  const p20 = await topOf(t1, 'p20');
+  check(Math.abs(p20) <= 2, `after a timed-out capture the next reload restores the scroll again (p20 at ${p20}; ${logs.filter((l) => l.includes('view ')).slice(-2).join(' | ')})`);
+  console.log('ok: a timed-out capture leaves no stuck scroll restoration');
 
   // --- 5. a side file next to the page does not reload it
   await evalIn(t1, 'window.__mark = 1');

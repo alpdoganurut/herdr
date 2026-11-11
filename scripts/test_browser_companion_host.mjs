@@ -8,7 +8,7 @@
 // dialogs (a Playwright-like Dialog over the control page, push reconcile).
 // Run: node scripts/test_browser_companion_host.mjs   (also run by
 // integration::browser_assets::tests when node is on PATH)
-import { ControlPage, ViewWatches, isFurnitureUrl, CONTROL_URL_PREFIX, CompanionDialog, reconcileDialogs, pruneAnswered } from '../src/integration/assets/browser/activity.mjs';
+import { ControlPage, ViewWatches, refsInside, reloadKeepingState, captureViewState, restoreViewState, isFurnitureUrl, CONTROL_URL_PREFIX, CompanionDialog, reconcileDialogs, pruneAnswered } from '../src/integration/assets/browser/activity.mjs';
 
 function check(cond, msg) { if (!cond) { console.error(`FAIL: ${msg}`); process.exit(1); } }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -136,7 +136,8 @@ const disk = new Map();
 let clock = 1;
 const put = (path, text) => disk.set(path, { text, mtimeMs: clock++ });
 const statFn = async (path) => { const f = disk.get(path); if (!f) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }); return { size: f.text.length, mtimeMs: f.mtimeMs }; };
-const readFn = async (path) => { const f = disk.get(path); if (!f) throw new Error('ENOENT'); return f.text; };
+let onRead = null; // a one-shot hook: runs inside the check's read of the page, before it answers
+const readFn = async (path) => { const f = disk.get(path); if (!f) throw new Error('ENOENT'); const text = f.text; if (onRead) { const hook = onRead; onRead = null; hook(); } return text; };
 const timing = { debounceMs: 20, stableMs: 60, pollMs: 15, maxWaitMs: 500 };
 const watches = new ViewWatches({ watchFn, statFn, readFn, ...timing, max: 2 });
 const PAGE = '/tmp/views/report.html';
@@ -263,6 +264,78 @@ dirW.cb('change', null);
 await sleep(200);
 check(reloads.length === 1, `a nameless event after the page changed does (${reloads.length})`);
 console.log('ok: atomic saves and nameless events');
+
+// a write whose event comes in while a check is busy (here: reading the page) is never dropped,
+// even when that check finds nothing new to load
+reloads.length = 0;
+fileW.cb('change', 'report.html'); // a late event: the page is as loaded
+onRead = () => { put(PAGE, DOC('nine, written mid-check')); fileW.cb('change', 'report.html'); };
+await sleep(300);
+check(onRead === null && reloads.length === 1 && reloads[0] === DOC('nine, written mid-check'), `a write during a check's awaits still reloads (${JSON.stringify(reloads)})`);
+// the page file still gone at maxWaitMs: no reload over it; its return reloads
+reloads.length = 0;
+disk.delete(PAGE);
+fileW.cb('rename', 'report.html');
+await sleep(700);
+check(reloads.length === 0, `a page still missing at maxWaitMs is not loaded (${reloads.length})`);
+put(PAGE, DOC('ten, back'));
+dirW.cb('rename', 'report.html');
+await sleep(200);
+check(reloads.length === 1 && reloads[0] === DOC('ten, back'), `its return reloads it (${JSON.stringify(reloads)})`);
+console.log('ok: no lost events, no reload over a missing page');
+
+// the referenced files a view may watch stay inside its root (real paths), kept as written
+{
+  const links = new Map([['/tmp', '/private/tmp']]); // a symlinked prefix, as macOS /tmp
+  const files = new Set(['/private/tmp/views/a.png', '/private/tmp/views/img/b.png', '/private/tmp/outside.css', '/private/tmp/views/link.css', '/etc/passwd']);
+  const realpath = (p) => {
+    let r = p;
+    for (const [from, to] of links) if (r === from || r.startsWith(from + '/')) r = to + r.slice(from.length);
+    r = r.split('/').reduce((acc, part) => (part === '..' ? acc.slice(0, -1) : part === '.' || part === '' ? acc : [...acc, part]), []).join('/');
+    r = '/' + r;
+    if (r === '/private/tmp/views/link.css') return '/private/tmp/outside.css'; // a symlink out of the root
+    if (files.has(r) || ['/private/tmp', '/private/tmp/views', '/private/tmp/views/img', '/private/tmp/views/new'].includes(r)) return r;
+    throw new Error('ENOENT');
+  };
+  const kept = refsInside([
+    '/tmp/views/a.png', '/tmp/views/img/b.png', '/tmp/views/new/c.png',
+    '/tmp/views/../outside.css', '/private/tmp/outside.css', '/etc/passwd', '/tmp/views/link.css',
+    '\\\\server\\share\\x.png', '//server/share/x.png', '/nowhere/x.png', 'relative.png',
+  ], '/private/tmp/views', realpath);
+  check(kept.join(',') === '/tmp/views/a.png,/tmp/views/img/b.png,/tmp/views/new/c.png', `only references inside the root stay, as written (${kept})`);
+}
+console.log('ok: references stay inside the view root');
+
+// reloadKeepingState: a 'manual' scroll restoration left by a capture that timed out, or by a
+// restore that failed, is set back, and the next capture is told it was ours
+{
+  const fakePage = ({ capture, restore, resetOk = true }) => {
+    const calls = [];
+    return {
+      calls,
+      async reload() { calls.push(['reload']); },
+      evaluate(fn, arg) {
+        if (fn === captureViewState) { calls.push(['capture', arg]); return capture(); }
+        if (fn === restoreViewState) { calls.push(['restore']); return restore(); }
+        calls.push(['reset']);
+        return resetOk ? Promise.resolve() : Promise.reject(new Error('gone'));
+      },
+    };
+  };
+  const hung = fakePage({ capture: () => new Promise(() => {}), restore: async () => ({}) });
+  const r1 = await reloadKeepingState(hung, { captureMs: 30 });
+  check(r1.report === null && r1.ours === false && hung.calls.map((c) => c[0]).join() === 'capture,reload,reset', `a capture that timed out: reloaded, then set back (${JSON.stringify(hung.calls)}, ${JSON.stringify(r1)})`);
+  const stuck = fakePage({ capture: () => new Promise(() => {}), restore: async () => ({}), resetOk: false });
+  const r2 = await reloadKeepingState(stuck, { captureMs: 30 });
+  check(r2.ours === true, 'when it cannot be set back, it stays ours');
+  const next = fakePage({ capture: async () => ({ setManual: true }), restore: async () => ({ manual_left: false }) });
+  const r3 = await reloadKeepingState(next, { captureMs: 30, ours: r2.ours });
+  check(next.calls[0][0] === 'capture' && next.calls[0][1] === true && r3.ours === false, `the next capture is told the 'manual' is ours (${JSON.stringify(next.calls)})`);
+  const failing = fakePage({ capture: async () => ({ setManual: true }), restore: async () => { throw new Error('navigated'); } });
+  const r4 = await reloadKeepingState(failing, { captureMs: 30 });
+  check(failing.calls.map((c) => c[0]).join() === 'capture,reload,restore,reset' && r4.ours === false, `a restore that failed sets it back (${JSON.stringify(failing.calls)})`);
+}
+console.log('ok: a scroll restoration of ours never sticks');
 
 // one reload at a time: changes during a slow reload start one more after it
 let running = 0; let overlap = false; let slow = 0;

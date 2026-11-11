@@ -515,6 +515,8 @@ class GateTests(ForkSyncCase):
             "--no-tests=fail -E 'test(=server::headless::tests::fork_smoke::suspended_status_reaches_the_client_shell_snapshot)'",
             proc.stdout,
         )
+        smoke = [line for line in proc.stdout.splitlines() if line.startswith("smoke:")]
+        self.assertTrue(smoke and all("\tHERDR_REQUIRE_BROWSER_TESTS=1 " in line for line in smoke), smoke)
 
 
 class LandTests(ForkSyncCase):

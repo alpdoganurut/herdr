@@ -343,7 +343,9 @@ gate_steps() {
   local name
   while IFS= read -r name; do
     [[ -n "$name" ]] || continue
-    printf 'smoke:%s\t%s\n' "$name" "cargo nextest run --locked --no-tests=fail -E 'test(=$name)'"
+    # Browser checks must run, never skip (HERDR_REQUIRE_BROWSER_TESTS); playwright-core from
+    # the main checkout's companion app.
+    printf 'smoke:%s\t%s\n' "$name" "HERDR_REQUIRE_BROWSER_TESTS=1 HERDR_TEST_PLAYWRIGHT_CORE='$MAIN/apps/companion/node_modules/playwright-core' cargo nextest run --locked --no-tests=fail -E 'test(=$name)'"
   done < <(py forkmd "$FORK_MD" --key smoke_tests)
   printf 'release-build\t%s\n' "cargo build --release --locked"
 }

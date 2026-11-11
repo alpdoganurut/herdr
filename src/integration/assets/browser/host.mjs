@@ -14,7 +14,7 @@ import { createRequire } from 'node:module';
 import readline from 'node:readline';
 import fs from 'node:fs';
 import { EXTRACT_SOURCE, LINKS_SOURCE } from './extract.mjs';
-import { Overlay, Companion, NUDGE_URL, dismissPanes, CaptureLane, laneShot, shotParams, firstShot, cleanCapture, clearClipEmulation, SELECT_BUDGET_MS, describe, probePages, ControlPage, ViewWatches, viewRefs, cssRefs, reloadKeepingState, isFurnitureUrl, VIEW_MARKER, CompanionDialog, reconcileDialogs, pruneAnswered, DIALOG_BINDING } from './activity.mjs';
+import { Overlay, Companion, NUDGE_URL, dismissPanes, CaptureLane, laneShot, shotParams, firstShot, cleanCapture, clearClipEmulation, SELECT_BUDGET_MS, describe, probePages, ControlPage, ViewWatches, viewRefs, cssRefs, reloadKeepingState, refsInside, isFurnitureUrl, VIEW_MARKER, CompanionDialog, reconcileDialogs, pruneAnswered, DIALOG_BINDING } from './activity.mjs';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import nodePath from 'node:path';
 // the act's change probe and timeout message (on a line of their own)
@@ -458,6 +458,10 @@ async function blockNetwork(state) {
   if (typeof state.page.routeWebSocket === 'function') await state.page.routeWebSocket(/.*/, (ws) => ws.close()).catch(() => {});
 }
 
+/** Shown pages whose `history.scrollRestoration = 'manual'` may be the sidecar's
+ *  own (left by a reload whose capture timed out or whose restore failed). */
+const manualOurs = new Set();
+
 /** A shown page's reload (its file or one it references changed), keeping the
  *  reader's place (scroll, inner scroll areas, selection, form input, open
  *  <details>, focus: reloadKeepingState); answers the local files it
@@ -465,27 +469,70 @@ async function blockNetwork(state) {
 async function reloadView(name, target) {
   const profile = profiles.get(name);
   const state = profile && profile.pages.get(target);
-  if (!state || state.closed) { watches.disarm(target); return undefined; }
-  const kept = await reloadKeepingState(state.page, { log: (text) => log('debug', `view ${target}: ${text}`) });
+  if (!state || state.closed) { watches.disarm(target); manualOurs.delete(target); viewRoots.delete(target); return undefined; }
+  let done;
+  try {
+    done = await reloadKeepingState(state.page, { log: (text) => log('debug', `view ${target}: ${text}`), ours: manualOurs.has(target) });
+  } catch (err) {
+    if (err && err.ours === false) manualOurs.delete(target); else manualOurs.add(target);
+    throw err;
+  }
+  if (done.ours) manualOurs.add(target); else manualOurs.delete(target);
+  const kept = done.report;
   if (kept) log('debug', `view ${target}: reloaded, scroll ${kept.scroll || 'none'} (${kept.settled || 'no settle'}${kept.y ? ` ${kept.y.join('->')}` : ''}), ${kept.scrollers} scroll areas, ${kept.fields} fields, ${kept.details} details, selection ${kept.selection}, focus ${kept.focus}, ${kept.skipped} gone`);
-  return viewRefPaths(state.page, 0);
+  const refs = await viewRefPaths(state.page, viewRoots.get(target), 0);
+  log('debug', `view ${target}: ${refs.length} referenced files`);
+  return refs;
 }
 
-/** The local files a shown page references (absolute paths), once it loaded
- *  (at most `loadMs`); [] when the page does not answer. */
-async function viewRefPaths(page, loadMs = 1500) {
+/** The directory a shown page may read, as the companion confines it
+ *  (apps/companion/src/views.js viewRoot): `root` real, else (the file is not
+ *  inside it, a symlink to another folder) the directory the file really is in. */
+function viewRoot(root, file) {
+  const real = (p) => { try { return fs.realpathSync(p); } catch { return p ? nodePath.resolve(p) : p; } };
+  const within = (r, p) => p === r || p.startsWith(r.endsWith(nodePath.sep) ? r : r + nodePath.sep);
+  const fileReal = file ? real(file) : null;
+  const rootReal = real(root || (file ? nodePath.dirname(file) : '/'));
+  if (fileReal && !within(rootReal, fileReal)) return nodePath.dirname(fileReal);
+  return rootReal;
+}
+/** Shown page -> the real directory its references must stay inside. */
+const viewRoots = new Map();
+
+/** The text of a stylesheet a page references: a regular file, its first MiB. */
+async function sheetText(path) {
+  const st = await fs.promises.stat(path);
+  if (!st.isFile()) return null;
+  const handle = await fs.promises.open(path, 'r');
+  try {
+    const buf = Buffer.alloc(Math.min(st.size, 1024 * 1024));
+    const { bytesRead } = await handle.read(buf, 0, buf.length, 0);
+    return buf.subarray(0, bytesRead).toString('utf8');
+  } finally { await handle.close(); }
+}
+
+/** The local files a shown page references (absolute paths, inside `rootReal`
+ *  only: refsInside), once it loaded (at most `loadMs`); [] when the page
+ *  does not answer. */
+async function viewRefPaths(page, rootReal, loadMs = 1500) {
+  if (!rootReal) return [];
+  const inside = (list) => refsInside(list, rootReal, (p) => fs.realpathSync(p));
   if (loadMs > 0) await page.waitForLoadState('load', { timeout: loadMs }).catch(() => {});
   const urls = await withTimeout(page.evaluate(viewRefs), 1000, 'browser_timeout', 'refs').catch(() => []);
-  const paths = new Set();
-  for (const u of Array.isArray(urls) ? urls : []) { try { paths.add(fileURLToPath(u)); } catch {} }
+  const found = [];
+  for (const u of Array.isArray(urls) ? urls : []) { try { found.push(fileURLToPath(u)); } catch {} }
+  const paths = new Set(inside(found));
   // what the stylesheets reference (their url()s and imports, relative to each sheet), 20 sheets at most
   const sheets = [...paths].filter((p) => /\.css$/i.test(p));
   for (let i = 0; i < sheets.length && i < 20; i++) {
     let text;
-    try { text = (await fs.promises.readFile(sheets[i], 'utf8')).slice(0, 1024 * 1024); } catch { continue; }
+    try { text = await sheetText(sheets[i]); } catch { continue; }
+    if (text === null) continue;
+    const more = [];
     for (const ref of cssRefs(text)) {
-      let path;
-      try { path = ref.startsWith('file:') ? fileURLToPath(ref) : nodePath.resolve(nodePath.dirname(sheets[i]), decodeURIComponent(ref.split(/[?#]/)[0])); } catch { continue; }
+      try { more.push(ref.startsWith('file:') ? fileURLToPath(ref) : nodePath.resolve(nodePath.dirname(sheets[i]), decodeURIComponent(ref.split(/[?#]/)[0]))); } catch {}
+    }
+    for (const path of inside(more)) {
       if (paths.has(path)) continue;
       paths.add(path);
       if (/\.css$/i.test(path)) sheets.push(path);
@@ -494,10 +541,14 @@ async function viewRefPaths(page, loadMs = 1500) {
   return [...paths];
 }
 
-/** Arms a shown page's watch and, in the background, its referenced files. */
-function armView(name, target, file, state) {
+/** Arms a shown page's watch and, in the background, its referenced files
+ *  (inside the page's root: `root`, else the file's directory). */
+function armView(name, target, file, state, root) {
+  const rootReal = viewRoot(root, file);
+  viewRoots.set(target, rootReal);
+  manualOurs.delete(target);
   const watching = watches.arm(target, file, () => reloadView(name, target));
-  if (watching && state) viewRefPaths(state.page).then((paths) => watches.setRefs(target, paths)).catch(() => {});
+  if (watching && state) viewRefPaths(state.page, rootReal).then((paths) => watches.setRefs(target, paths)).catch(() => {});
   return watching;
 }
 
@@ -1272,7 +1323,7 @@ const ops = {
     if (args.focus && profile.kind !== 'companion') await quietSelect(state);
     let watching = false;
     if (args.watch !== false) {
-      try { watching = armView(name, targetId, file, state); }
+      try { watching = armView(name, targetId, file, state, args.root || nodePath.dirname(file)); }
       catch (err) { log('debug', `show: watch: ${err.message}`); }
     }
     return { result: { target: targetId, view_id: viewId, watching }, page: await pageInfo(state) };
@@ -1283,9 +1334,11 @@ const ops = {
     const state = needPage(needProfile(name), target);
     const file = String(args.file || '');
     if (!nodePath.isAbsolute(file)) fail('invalid_request', 'watch needs an absolute path');
-    return { watching: armView(name, target, file, state) };
+    return { watching: armView(name, target, file, state, args.root || null) };
   },
   async unwatch({ target }) {
+    viewRoots.delete(String(target || ''));
+    manualOurs.delete(String(target || ''));
     return { removed: watches.disarm(String(target || '')) };
   },
 

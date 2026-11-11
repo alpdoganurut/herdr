@@ -354,6 +354,11 @@ mod tests {
                 .find(|candidate| candidate.is_file())
         });
         let Some(node) = node else {
+            // the fork gate (HERDR_REQUIRE_BROWSER_TESTS=1) never lets these checks skip
+            assert!(
+                std::env::var("HERDR_REQUIRE_BROWSER_TESTS").as_deref() != Ok("1"),
+                "node not on PATH and HERDR_REQUIRE_BROWSER_TESTS=1: {script} cannot run"
+            );
             eprintln!("node not on PATH; {script} skipped");
             return;
         };
