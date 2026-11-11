@@ -5,7 +5,7 @@ import { createRequire } from 'node:module';
 import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const require = createRequire(import.meta.url);
 const electronBin = require('electron');
@@ -143,8 +143,8 @@ function startCompanion() {
   const out = fs.openSync(path.join(T, 'companion.log'), 'a');
   child = spawn(electronBin, [appDir, '--socket', SOCK, '--profile-dir', PROFILE, '--headless'], {
     // A small sync budget: the companion splits its syncs (one group each, titles cut when one
-    // group alone is over it), as it does for a real oversized sync.
-    env: { ...process.env, HERDR_COMPANION_HEADLESS: '1', HERDR_COMPANION_SYNC_BUDGET: String(SYNC_BUDGET) },
+    // group alone is over it), as it does for a real oversized sync. Test hooks: view_pixels.
+    env: { ...process.env, HERDR_COMPANION_HEADLESS: '1', HERDR_COMPANION_TEST_HOOKS: '1', HERDR_COMPANION_SYNC_BUDGET: String(SYNC_BUDGET) },
     stdio: ['ignore', out, out],
   });
   child.exited = new Promise((r) => child.on('exit', (code) => r(code)));
@@ -354,6 +354,59 @@ try {
       return /version two/.test(text(r)) ? r : null;
     }, 8000, 500);
     check('it reloads when the file changes', r2);
+  });
+
+  await section('html view: a rewritten page keeps its place on screen (what the compositor shows)', async () => {
+    // 100 px bands down the page, a fixed panel with its own bands that scrolls inside; the
+    // agent adds a 400 px header above everything. The window must show the same band at the
+    // same height (the scroll anchor) and the panel its same bands (an inner scroll area).
+    const band = (k) => [(k * 37) % 256, 255 - ((k * 53) % 256), (k * 91) % 256];
+    const band2 = (k) => [255 - ((k * 23) % 256), (k * 71) % 256, 128 + ((k * 13) % 128)];
+    const rgb = (c) => `rgb(${c.join(',')})`;
+    const file = path.join(T, 'site', 'place.html');
+    const html = (v, header) =>
+      `<!doctype html><html><head><title>place ${v}</title><style>html,body{margin:0}.b{height:100px}#panel{position:fixed;top:100px;right:0;width:200px;height:300px;overflow:auto}</style></head><body>` +
+      (header ? '<div style="height:400px;background:#000"></div>' : '') +
+      Array.from({ length: 60 }, (_, k) => `<div class="b" id="b${k}" style="background:${rgb(band(k))}"></div>`).join('') +
+      `<div id="panel">${Array.from({ length: 30 }, (_, k) => `<div class="b" style="background:${rgb(band2(k))}"></div>`).join('')}</div></body></html>\n`;
+    fs.writeFileSync(file, html('one', false));
+    // the page shown before (the later sections act on it): selected again at the end
+    const was = (await views()).find((x) => x.tab_id === t1 && x.active);
+    const sh = await browser(['show', file, '--focus'], p1);
+    const d = (sh.result && sh.result.data) || {};
+    check('the page is shown and watched', d.watching === true && d.host === 'companion', sh.error || d);
+    const url = pathToFileURL(file).href;
+    const view = await waitFor(async () => (await views()).find((x) => x.url === url && x.shown && x.live), 8000);
+    check('the companion shows it', view, await views());
+    if (!view) return;
+    const page = await waitFor(() => insp.browser.contexts().flatMap((c) => c.pages()).find((p) => p.url() === url), 5000);
+    check('the inspector sees the page', page);
+    if (!page) return;
+    await waitFor(() => within(page.evaluate(() => document.readyState === 'complete' && document.title === 'place one'), 3000, 'ready'), 5000);
+    await within(page.evaluate(() => { scrollTo(0, 2030); document.getElementById('panel').scrollTop = 1000; }), 3000, 'scroll');
+    await sleep(500);
+    const points = [[40, 5], [40, 250], [-40, 150], [-40, 350]];
+    // band 20 starts 30 px above the top; the panel (top 100) shows its band 10 at its top
+    const want = [band(20), band(22), band2(10), band2(12)];
+    const near = (a, b) => a && b && Math.abs(a[0] - b[0]) <= 6 && Math.abs(a[1] - b[1]) <= 6 && Math.abs(a[2] - b[2]) <= 6;
+    const drawn = async () => {
+      const probe = await within(insp.control().evaluate((a) => globalThis.__herdrCompanion.view_pixels(a), { view_id: view.view_id, points: [] }), 10000, 'view size');
+      const w = probe && probe.bounds ? probe.bounds.width : 0;
+      const px = await within(insp.control().evaluate((a) => globalThis.__herdrCompanion.view_pixels(a), { view_id: view.view_id, points: points.map(([x, y]) => [x < 0 ? w + x : x, y]) }), 10000, 'view pixels');
+      return { ok: !!(px && px.pixels && px.pixels.every((p, i) => near(p, want[i]))), pixels: px && px.pixels, error: px && px.error, w };
+    };
+    const before = await drawn();
+    check('before the rewrite: the scrolled bands are on screen', before.ok, { before, want });
+    fs.writeFileSync(file, html('two', true));
+    const reloaded = await waitFor(() => within(page.evaluate(() => document.title), 3000, 'title').then((t) => t === 'place two'), 10000, 200);
+    check('the rewritten page reloads', reloaded);
+    await sleep(2000); // the restore's settle (load, at most 1.5 s)
+    const after = await drawn();
+    check('after the rewrite: the same bands at the same height, the panel keeps its place', after.ok, { after, want });
+    // leave the session as it was: the page closed (p1's current tab), the earlier page selected
+    const closed = await browser(['close'], p1);
+    check('the page closes again', !closed.error && (await waitFor(async () => !(await views()).some((x) => x.url === url), 5000)), closed.error);
+    if (was) await within(insp.control().evaluate((v) => globalThis.__herdrCompanion.select(v), was.view_id), 10000, 'select back');
   });
 
   await section('needs-you: set by an agent focus, cleared when the user focuses that herdr tab', async () => {
