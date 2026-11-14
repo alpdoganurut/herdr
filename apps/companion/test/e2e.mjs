@@ -1093,6 +1093,7 @@ try {
     }));
     console.log('     sign-in page identity (navigator):', JSON.stringify(nav));
     console.log('     sign-in page identity (request headers):', JSON.stringify(oauthHints));
+    check('oauth: pages do not report navigator.webdriver (sign-in providers read it as automation)', nav.webdriver === false, nav.webdriver);
     for (const variant of ['same', 'cross']) {
       await oaPage.click(`#${variant}`);
       const opened = await oaPage.evaluate(() => window.result);

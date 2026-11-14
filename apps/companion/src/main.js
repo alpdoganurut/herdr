@@ -95,6 +95,11 @@ app.setName(APP_NAME);
 app.commandLine.appendSwitch('user-data-dir', app.getPath('userData'));
 app.commandLine.appendSwitch('remote-debugging-port', '0');
 app.commandLine.appendSwitch('remote-debugging-address', '127.0.0.1');
+// The DevTools port makes Chromium report navigator.webdriver = true to every page: sign-in
+// providers (Google's "This browser or app may not be secure") read that as an automated
+// browser. Electron shows no infobar for the switch (Chromium's does: herdr's own Chromium
+// launch leaves it out).
+app.commandLine.appendSwitch('disable-blink-features', 'AutomationControlled');
 // Every WebContents' default user agent without the Electron/x.y.z token, as the page sessions'
 // (src/views.js webUserAgent): a sign-in popup's window is created by Chromium with this
 // default, not its session's, and Google's sign-in reads it.
