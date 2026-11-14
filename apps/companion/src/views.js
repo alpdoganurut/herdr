@@ -13,6 +13,7 @@ const NETWORK_URLS = ['http://*/*', 'https://*/*', 'ws://*/*', 'wss://*/*'];
 // html views without network, no WebRTC
 const PAGE_PRELOAD = path.join(__dirname, 'preload', 'page.js');
 const { downloadAllowed } = require('./context-menu.js');
+const { openKind, popupWindowOptions } = require('./popups.js');
 
 // A page session's user agent without the Electron/x.y.z token: sites that see it serve their
 // desktop-app pages (Slack: window drag regions, app-only behaviour) instead of the web ones.
@@ -169,13 +170,16 @@ class ViewManager {
   // hooks: {log(...args), onNav(viewId, patch), onState(viewId), onError(viewId, kind, text), onOpen(fromViewId, url, disposition), onKey(input) -> bool,
   //         onPermission(viewId, {permission,label,origin}, done(allow)), onLeave(viewId, newOrigin|null),
   //         onDialogsEnd(viewId, frameKey|null): its dialogs are cancelled (navigation, crash, destroy),
-  //         onGone(viewId): its WebContents went without destroy() (window.close(), a CDP close)}
+  //         onGone(viewId): its WebContents went without destroy() (window.close(), a CDP close),
+  //         headless: popups never show, popupLevel() -> {raised, allSpaces} | null: the level popups take (the dock's),
+  //         onPopupContextMenu(ownerViewId, win, params)}
   constructor(hooks) {
     this.hooks = hooks;
     this.log = hooks.log || (() => {});
     this.live = new Map(); // view_id -> {view, entry, rootReal}
     this.host = null; // the window the views live in (the dock's while docked)
     this.overlays = []; // views kept above every page (the dialog modal); they move with the pages
+    this.popups = new Map(); // BrowserWindow -> {owner: view_id}: pages' sign-in popups (src/popups.js)
   }
 
   // A view that stays above the pages in whatever window hosts them.
@@ -212,6 +216,100 @@ class ViewManager {
       win.contentView.addChildView(v);
     }
     if (this.hooks.onRaise) this.hooks.onRaise(win);
+    this.syncPopups();
+  }
+
+  // ---------- popups (src/popups.js) ----------
+
+  // A page's window.open, target=_blank, cmd+click (and those of its popups, on behalf of the
+  // view that opened them): a sign-in popup becomes a child window of the companion's with
+  // its opener (a live window handle, window.opener); anything else a new view in the same
+  // group; never data: or a local file.
+  _openHandler(ownerId) {
+    return (details) => {
+      const kind = openKind(details);
+      if (kind === 'popup') {
+        const parent = this.host && !this.host.isDestroyed() ? this.host : null;
+        if (parent) {
+          return {
+            action: 'allow',
+            overrideBrowserWindowOptions: popupWindowOptions({ parent, show: !this.hooks.headless, preload: PAGE_PRELOAD }),
+          };
+        }
+      }
+      if (kind !== 'deny') this.hooks.onOpen(ownerId, details.url, details.disposition);
+      return { action: 'deny' };
+    };
+  }
+
+  // A popup window was created for a view (or for one of its popups): tracked until it closes
+  // (its own window.close() included; Electron closes it with its opener), the same open
+  // policy and context menu, the companion's level.
+  _adoptPopup(win, ownerId) {
+    const wc = win.webContents;
+    this.popups.set(win, { owner: ownerId });
+    win.on('closed', () => this.popups.delete(win));
+    wc.setWindowOpenHandler(this._openHandler(ownerId));
+    wc.on('did-create-window', (child) => this._adoptPopup(child, ownerId));
+    wc.on('context-menu', (_e, params) => this.hooks.onPopupContextMenu && this.hooks.onPopupContextMenu(ownerId, win, params));
+    this._popupLevel(win);
+    this.log('popup opened', ownerId);
+  }
+
+  // The popups follow the window the pages are in (the dock's while docked) and its level and
+  // Spaces: above it, never behind the raised dock, gone with it.
+  syncPopups() {
+    for (const win of [...this.popups.keys()]) {
+      if (win.isDestroyed()) {
+        this.popups.delete(win);
+        continue;
+      }
+      try {
+        if (this.host && !this.host.isDestroyed() && win.getParentWindow() !== this.host) win.setParentWindow(this.host);
+      } catch (e) {
+        this.log('popup re-parent failed', e && e.message);
+      }
+      this._popupLevel(win);
+    }
+  }
+
+  _popupLevel(win) {
+    const lvl = this.hooks.popupLevel ? this.hooks.popupLevel() : null;
+    if (!lvl) return;
+    try {
+      if (lvl.raised) win.setAlwaysOnTop(true, 'normal', 1);
+      else win.setAlwaysOnTop(false);
+      win.setVisibleOnAllWorkspaces(!!lvl.allSpaces, { visibleOnFullScreen: !!lvl.allSpaces, skipTransformProcessType: true });
+    } catch (e) {
+      this.log('popup level failed', e && e.message);
+    }
+  }
+
+  // The popup window that `win` is (a BrowserWindow), else null.
+  popupOf(win) {
+    return win && this.popups.has(win) && !win.isDestroyed() ? win : null;
+  }
+
+  // Every open popup: {owner, url, bounds, parent, visible} (the test hook's view).
+  popupList() {
+    const out = [];
+    for (const [win, p] of this.popups) {
+      if (win.isDestroyed()) continue;
+      let parent = null;
+      try {
+        parent = win.getParentWindow();
+      } catch {}
+      out.push({ owner: p.owner, url: win.webContents.getURL(), bounds: win.getBounds(), parent_is_host: !!parent && parent === this.host, visible: win.isVisible(), always_on_top: win.isAlwaysOnTop() });
+    }
+    return out;
+  }
+
+  closePopups() {
+    for (const win of [...this.popups.keys()]) {
+      try {
+        if (!win.isDestroyed()) win.close();
+      } catch {}
+    }
   }
 
   get(viewId) {
@@ -401,12 +499,10 @@ class ViewManager {
         if (/^https?:/i.test(url)) this.hooks.onOpen(id, url, 'background-tab', { opened_by: entry.opened_by || 'agent', fromView: true });
       });
     } else {
-      // window.open / target=_blank / cmd+click: a new view in the same group, never a window.
-      wc.setWindowOpenHandler(({ url, disposition }) => {
-        // never data: (loaded from here it would skip Chromium's top-level data: block)
-        if (/^(https?|about):/i.test(url)) this.hooks.onOpen(id, url, disposition);
-        return { action: 'deny' };
-      });
+      // window.open / target=_blank / cmd+click: a sign-in popup is a child window with its
+      // opener, anything else a new view in the same group (src/popups.js)
+      wc.setWindowOpenHandler(this._openHandler(id));
+      wc.on('did-create-window', (win) => this._adoptPopup(win, id));
     }
   }
 

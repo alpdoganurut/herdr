@@ -95,6 +95,12 @@ app.setName(APP_NAME);
 app.commandLine.appendSwitch('user-data-dir', app.getPath('userData'));
 app.commandLine.appendSwitch('remote-debugging-port', '0');
 app.commandLine.appendSwitch('remote-debugging-address', '127.0.0.1');
+// Every WebContents' default user agent without the Electron/x.y.z token, as the page sessions'
+// (src/views.js webUserAgent): a sign-in popup's window is created by Chromium with this
+// default, not its session's, and Google's sign-in reads it.
+try {
+  app.userAgentFallback = app.userAgentFallback.replace(/\sElectron\/\S+/, '');
+} catch {}
 // test runs: an uncaught exception in the main process goes to the log (the e2e checks read
 // it), never to Electron's error dialog
 if (MANAGED.testHooks) process.on('uncaughtException', (e) => log('uncaught exception', e && e.stack ? e.stack : e));
@@ -169,6 +175,11 @@ class Companion {
       onDialogsEnd: (id, frame) => this.dialogs.dismissView(id, { frame }),
       onGone: (id) => this.onViewGone(id),
       onRaise: (host) => this.raiseDockBar(host),
+      // pages' sign-in popups (src/popups.js): child windows of the companion's, never shown
+      // headless, at the dock's level while docked; their right-click is the page menu
+      headless: HEADLESS,
+      popupLevel: () => this.popupLevel(),
+      onPopupContextMenu: (owner, win, params) => this.openPageMenu(owner, params, { win }),
       // page API: views get window.herdr only while herdr advertises page messages
       pageApiOn: () => !!(this.features && this.features.has(pageApi.FEATURE)),
     });
@@ -1235,6 +1246,10 @@ class Companion {
           if (a && a.close && m.open) m.menu.closePopup();
           return { view_id: m.view_id, items: m.items, open: m.open };
         }
+        case 'popups':
+          // the pages' open sign-in popups (src/popups.js): owner view, url, bounds, parent
+          if (!MANAGED.testHooks) return errOut('unknown_op', 'unknown control op popups');
+          return this.views.popupList();
         case 'bar_debug':
           // the last bar layout: which window, its surface and pin, where the page starts and
           // how tall the bar's own area is, what the bars reported, the saved pins
@@ -1435,6 +1450,10 @@ class Companion {
   // ---------- strip ----------
 
   handleKey(k) {
+    // the app menu's keys reach here whichever window has the keyboard: in a sign-in popup,
+    // close / reload / back / forward act on the popup, not on the page under it
+    const popup = this.views.popupOf(BrowserWindow.getFocusedWindow());
+    if (popup) return this.popupKey(popup, k);
     const g = this.shownGroup();
     const e = this.activeEntry(g);
     const wc = e ? this.views.wcOf(e.view_id) : null;
@@ -1740,12 +1759,40 @@ class Companion {
     return sessionCounts(this.store, this.shownTab);
   }
 
+  // A key of the app menu with a sign-in popup focused (src/popups.js): ⌘W closes it, ⌘R
+  // reloads it, ⌘[ / ⌘] go back and forward in it; the others do nothing there.
+  popupKey(win, k) {
+    const wc = win.webContents;
+    try {
+      if (k === 'w') win.close();
+      else if (k === 'r') wc.reload();
+      else if (k === '[' && wc.navigationHistory.canGoBack()) wc.navigationHistory.goBack();
+      else if (k === ']' && wc.navigationHistory.canGoForward()) wc.navigationHistory.goForward();
+    } catch (e) {
+      log('popup key failed', k, e && e.message);
+    }
+  }
+
+  // The level and Spaces of pages' sign-in popups: the dock's while docked (raised above the
+  // terminal, on every Space when full screen), else a normal window's. Headless: none.
+  popupLevel() {
+    if (HEADLESS) return null;
+    const docked = !!(this.docked && this.dock);
+    return { raised: docked && this.dock.level === 'raised', allSpaces: docked && !!this.dock.fullScreen };
+  }
+
+  // dock.js: the dock's level or Spaces changed (the popups follow).
+  onDockLevel() {
+    this.views.syncPopups();
+  }
+
   // A right-click into a page: its context menu (src/context-menu.js) at the pointer, in the
   // window the page is in (the dock's while docked). Every item acts on the page that was
   // clicked (even if another one is shown by then); back, forward and reload are reported to
-  // herdr like the strip's buttons.
-  openPageMenu(viewId, params = {}) {
-    const wc = this.views.wcOf(viewId);
+  // herdr like the strip's buttons. A right-click into a sign-in popup (`popup.win`): the same
+  // menu in the popup, acting on it; its links open as tabs of its opener's group, unreported.
+  openPageMenu(viewId, params = {}, popup = null) {
+    const wc = popup ? (popup.win.isDestroyed() ? null : popup.win.webContents) : this.views.wcOf(viewId);
     if (!wc || HEADLESS) return 0;
     const actions = pageMenuActions({
       wc,
@@ -1753,11 +1800,16 @@ class Companion {
       openTab: (url) => this.onWindowOpen(viewId, url, 'foreground-tab'),
       copyText: (text) => clipboard.writeText(text),
       report: (action) => {
+        if (popup) return;
         const hit = this.store.findView(viewId);
         if (hit) this.report('user_action', action, hit.entry, hit.group);
       },
     });
-    const template = pageMenuItems(params, this.views.navState(viewId)).map((it) =>
+    let nav = { canGoBack: false, canGoForward: false };
+    try {
+      nav = popup ? { canGoBack: wc.navigationHistory.canGoBack(), canGoForward: wc.navigationHistory.canGoForward() } : this.views.navState(viewId);
+    } catch {}
+    const template = pageMenuItems(params, nav).map((it) =>
       it.type === 'separator'
         ? it
         : {
@@ -1772,7 +1824,7 @@ class Companion {
             },
           },
     );
-    const win = this.stripWindow();
+    const win = popup ? popup.win : this.stripWindow();
     if (!win) return 0;
     const menu = Menu.buildFromTemplate(template);
     // the test hook's view of the last one (page_menu)
@@ -2070,6 +2122,7 @@ class Companion {
   async shutdown() {
     this.shuttingDown = true;
     this.dialogs.dismissAll(); // no page stays blocked on a dialog while the app quits
+    this.views.closePopups(); // no sign-in popup outlives the companion
     if (this.watchdog) this.watchdog.stop();
     if (this.dock) this.dock.stop();
     if (this.feed) this.feed.stop();

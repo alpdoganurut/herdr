@@ -146,6 +146,8 @@ const web = http.createServer((req, res) => {
       }
     </script><button id=same onclick="signIn('/oauth/start')">same</button><button id=cross onclick="signIn('http://localhost:${P}/oauth/xstart')">cross</button>`);
   }
+  // a popup that stays open (the checks look at it, then close its opener's tab)
+  if (u === '/oauth/hold') return res.end('<title>hold</title>hold');
   if (u === '/oauth/start') return res.end('<title>consent</title><script>setTimeout(() => location.assign("/oauth/callback"), 200)</script>consent');
   // the second origin (localhost, not 127.0.0.1, another site: its own process): a page there,
   // then a server redirect back to the opener's origin
@@ -1109,11 +1111,39 @@ try {
     }
     const sel = await ctl(`__herdrCompanion.select(${JSON.stringify(oa.view_id)})`);
     check('oauth: the bar still works after the popups closed', sel && sel.ok, sel);
+    check('oauth: closed popups are forgotten', (await ctl('__herdrCompanion.popups()')).length === 0, await ctl('__herdrCompanion.popups()'));
+    // a popup that stays open: a child window of the companion's, sized by its features, with
+    // the page rules (no Node, no page API bridge, no Electron/ in its user agent), never shown
+    // headless; it closes with its opener's herdr tab
+    const agentsBefore = webAgents.length;
+    const held = await oaPage.evaluate(() => !!(window.held = window.open('/oauth/hold', 'held', 'popup,width=500,height=600')));
+    check('oauth: a held popup opens with a handle', held);
+    const pops = await waitFor(async () => ((l) => (l.length === 1 && /\/oauth\/hold$/.test(l[0].url) ? l : null))(await ctl('__herdrCompanion.popups()')), 5000);
+    check(
+      'oauth: the popup is a child window of the companion\'s, sized by its features, owned by its opener, hidden headless',
+      pops && pops[0].owner === oa.view_id && pops[0].parent_is_host && !pops[0].visible && Math.abs(pops[0].bounds.width - 500) <= 2 && Math.abs(pops[0].bounds.height - 600) <= 40,
+      pops,
+    );
+    const heldPage = await waitFor(() => mock.state.browser.contexts().flatMap((c) => c.pages()).find((p) => /\/oauth\/hold$/.test(p.url())), 5000);
+    const inside = heldPage && (await heldPage.evaluate(() => ({ require: typeof require, process: typeof process, herdr: typeof window.herdr, opener: !!window.opener, ua: navigator.userAgent })));
+    check('oauth: the popup has no Node, no page API bridge, its opener, no Electron/ in its user agent', inside && inside.require === 'undefined' && inside.process === 'undefined' && inside.herdr === 'undefined' && inside.opener && !/Electron\//.test(inside.ua), inside);
+    const popupHits = webAgents.slice(agentsBefore);
+    check('oauth: the popup\'s requests carry the page user agent', popupHits.length > 0 && popupHits.every((a) => !/Electron\//.test(a)), popupHits);
+    const dataOpen = await oaPage.evaluate(() => !!window.open('data:text/html,<title>d</title>d', 'd', 'popup,width=300,height=300'));
+    await sleep(500);
+    check('oauth: a data: popup never opens', !dataOpen && (await ctl('__herdrCompanion.popups()')).length === 1, { dataOpen, popups: await ctl('__herdrCompanion.popups()') });
+    // a link with target=_blank still opens a tab of the group
+    await oaPage.evaluate((P) => { const a = document.createElement('a'); a.href = `http://127.0.0.1:${P}/web`; a.target = '_blank'; a.id = 'lnk'; a.textContent = 'l'; document.body.append(a); }, webPort);
+    await oaPage.click('#lnk');
+    const tabbed = await waitFor(async () => ((v) => (v.length === 2 ? v : null))(await groupViews()), 5000);
+    check('oauth: a target=_blank link still opens a tab of the group, not a popup', tabbed && (await ctl('__herdrCompanion.popups()')).length === 1, await groupViews());
     const logText = fs.readFileSync(logFile, 'utf8');
     check('oauth: no error in the main process', !/Error occurred in handler|UnhandledPromiseRejection|uncaught exception|strip action failed|strip push failed/.test(logText));
     await api('mock.focus_tab', { tab_id: 'w1:t1' });
     await sleep(300);
     await api('mock.close_tab', { tab_id: ot.tab_id });
+    const orphaned = await waitFor(async () => ((l) => (l.length === 0 ? true : null))(await ctl('__herdrCompanion.popups()')), 5000);
+    check('oauth: closing the opener\'s herdr tab closes its popup', orphaned, await ctl('__herdrCompanion.popups()'));
   }
 
   // an agent focus() into a non-focused herdr tab survives unrelated tab events
@@ -1145,6 +1175,13 @@ try {
   // and keeps the bar's pins: the floating one unpinned now
   await stripPage().evaluate(() => document.getElementById('pin').click());
   await waitFor(async () => (await ctl('__herdrCompanion.bar_debug()')).pins.floating === false, 2000);
+  // a sign-in popup still open when the companion quits never keeps it alive
+  const qt = await api('mock.create_tab', { label: 'quit popup' });
+  const qo = await ctl(`__herdrCompanion.open({tab_id:${JSON.stringify(qt.tab_id)}, url:'http://127.0.0.1:${webPort}/web'})`);
+  const qp = qo && (await waitFor(() => pageForTarget(qo.target_id), 5000));
+  if (qp) await qp.waitForLoadState('load').catch(() => {});
+  const leftOpen = qp ? await qp.evaluate((P) => !!window.open(`http://127.0.0.1:${P}/oauth/hold`, 'left', 'popup,width=300,height=300'), webPort).catch((e) => String(e.message)) : 'no page';
+  check('a popup is open before the quit', leftOpen === true && (await waitFor(async () => ((l) => (l.length === 1 ? l : null))(await ctl('__herdrCompanion.popups()')), 5000)), leftOpen);
   const quit1 = await quitCompanion();
   check('quits through its own control path', quit1);
   check('unregistered on quit', !mock.state.lease);

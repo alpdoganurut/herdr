@@ -258,6 +258,32 @@ try {
     check('screenshot of the (hidden-or-shown) view', !s.error && size > 1000, s.error || { bytes: size });
   });
 
+  // a page's sign-in popup (window.open with features) is a child window of the companion's,
+  // not a tab: herdr's browser tools keep working while it is open, never list it, and the
+  // agent's current tab stays its page
+  await section('a sign-in popup open in the companion does not disturb the agent tools', async () => {
+    const pops = () => within(insp.control().evaluate(() => globalThis.__herdrCompanion.popups()), 10000, 'popups()');
+    const o = await browser(['eval', `!!(window.__w = window.open('${W}/popup', 'signin', 'popup,width=480,height=560'))`], p1);
+    check('the page opens a popup with a handle', !o.error && /true/.test(text(o)), o.error || text(o).slice(0, 200));
+    const open = await waitFor(async () => ((l) => (l.length === 1 ? l : null))(await pops()), 5000);
+    check('the companion has it as a popup of the page', open && open[0].owner === viewA.view_id && open[0].url === `${W}/popup`, open || (await pops()));
+    // herdr's tools see every page target of the companion: the popup is listed as a tab the
+    // user opened (as in herdr's own Chromium), never the agent's current one
+    const tabsR = await browser(['tabs'], p1);
+    check('browser tabs works and lists the popup as a tab the user opened', !tabsR.error && /\/popup .*opened by you/.test(text(tabsR)) && /^\*t\d+ +127\.0\.0\.1:\d+\/b /m.test(text(tabsR)), tabsR.error || text(tabsR).slice(0, 300));
+    const r = await browser(['read', '--format', 'text'], p1);
+    check("the agent's tab is still its page", !r.error && /clicked|idle/.test(text(r)), r.error || text(r).slice(0, 200));
+    const v = await views();
+    check('the popup is not a companion view', !v.some((x) => x.url === `${W}/popup`), v);
+    const c = await browser(['eval', 'window.__w.close(); window.__w.closed'], p1);
+    const gone = await waitFor(async () => ((l) => (l.length === 0 ? true : null))(await pops()), 5000);
+    check("the opener's w.close() closes it", !c.error && gone, c.error || (await pops()));
+    const r2 = await browser(['read', '--format', 'text'], p1);
+    check('the agent tools work after it closed', !r2.error, r2.error);
+    const tabs2 = await waitFor(async () => ((t) => (!t.error && !/\/popup/.test(text(t)) ? t : null))(await browser(['tabs'], p1)), 5000);
+    check('browser tabs no longer lists it', tabs2, tabs2 ? undefined : text(await browser(['tabs'], p1)).slice(0, 300));
+  });
+
   await section('page dialogs: an agent sees and answers alert / confirm / prompt', async () => {
     // a dialog blocks the page: arm it from a timer, so the eval and its after-checks finish first
     const arm = (expr) => browser(['eval', `setTimeout(() => { window.__r = JSON.stringify(${expr}); }, 1500); 'armed'`], p1);

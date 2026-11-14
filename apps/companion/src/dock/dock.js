@@ -558,11 +558,16 @@ class DockController {
         win.setBounds({ x: r.x, y: r.y, width: r.width, height: r.height });
         this.host.layout();
       }
+      let spaces = false;
       if (d.fullScreen !== this.fullScreen && !this.headless) {
         this.fullScreen = d.fullScreen;
         win.setVisibleOnAllWorkspaces(d.fullScreen, { visibleOnFullScreen: d.fullScreen, skipTransformProcessType: true });
+        spaces = true;
       }
-      const dropped = this.setLevel(win, d.level) && d.level === 'normal';
+      const leveled = this.setLevel(win, d.level);
+      const dropped = leveled && d.level === 'normal';
+      // the pages' sign-in popups take the dock's level and Spaces too
+      if ((spaces || leveled) && this.host.onDockLevel) this.host.onDockLevel();
       const first = !this.shown;
       if (first) {
         this.shown = true;
