@@ -1033,7 +1033,7 @@ try {
     const sel2 = await ctl(`__herdrCompanion.select(${JSON.stringify(op.view_id)})`);
     check('… and the bar still works', sel2 && sel2.ok, sel2);
     const logText = fs.readFileSync(logFile, 'utf8');
-    check('no error in the main process (navigationHistory of a gone view)', !/navigationHistory|Error occurred in handler|UnhandledPromiseRejection|uncaught exception/.test(logText), (logText.match(/.*(navigationHistory|Error occurred in handler|UnhandledPromiseRejection|uncaught exception).*/) || [])[0]);
+    check('no error in the main process (navigationHistory of a gone view)', !/navigationHistory|Error occurred in handler|UnhandledPromiseRejection|uncaught exception|strip action failed|strip push failed|dock strip push failed|view leave failed|view dialogs end failed/.test(logText), (logText.match(/.*(navigationHistory|Error occurred in handler|UnhandledPromiseRejection|uncaught exception|strip action failed|strip push failed|dock strip push failed|view leave failed|view dialogs end failed).*/) || [])[0]);
     await api('mock.focus_tab', { tab_id: 'w1:t1' });
     await sleep(300);
     await api('mock.close_tab', { tab_id: ct.tab_id });

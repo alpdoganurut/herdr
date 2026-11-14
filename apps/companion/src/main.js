@@ -217,7 +217,9 @@ class Companion {
     ipcMain.handle('herdr-companion:strip', (e, name, a) => {
       const dock = !!(this.dockBarView() && e.sender === this.dockBar.webContents);
       if (!dock && (!this.win || e.sender !== this.win.webContents)) return null;
-      // one bad page must not throw out of the main process (an uncaught exception dialog)
+      // A rejecting handler goes back to the bar's invoke (never to the uncaught exception
+      // dialog), and the bar calls act() without a catch (ui/strip.js): answered null instead
+      // of an unhandled rejection in the bar, with the full stack in the log.
       return Promise.resolve()
         .then(() => this.stripAction(name, a, { dock }))
         .catch((err) => {
