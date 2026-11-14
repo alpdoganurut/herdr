@@ -114,6 +114,7 @@ const stripPage = () => mock.state.browser.contexts()[0].pages().find((p) => p.u
 // a local http server to observe html-view network blocking
 let hits = 0;
 const webAgents = []; // user-agent headers seen
+let oauthHints = null; // the sign-in opener's user agent and client hints (printed: what Google sees)
 // pages declaring window drag regions (Slack's desktop CSS); /dragframe is embedded cross-site
 const DRAG_CSS = '<style>#d{app-region:drag !important;-webkit-app-region:drag !important;height:40px}#d::before{content:"";app-region:drag}</style>';
 const web = http.createServer((req, res) => {
@@ -127,6 +128,38 @@ const web = http.createServer((req, res) => {
   // popup closes itself once it is done, as OAuth callback pages do
   if (u === '/opener') return res.end('<title>opener</title><button id=b onclick="window.open(\'/signin\', \'_blank\')">sign in</button>');
   if (u === '/signin') return res.end('<title>signin</title><script>setTimeout(() => window.close(), 400)</script>signing in');
+  // an OAuth-like sign-in (Google's "Continue with Google"): the opener opens a sized, named
+  // popup and keeps its handle (polls w.closed); the popup navigates (same origin, or through a
+  // second origin that redirects back), hands the profile to window.opener and closes itself
+  if (u === '/oauth') {
+    const P = web.address().port;
+    oauthHints = Object.fromEntries(Object.entries(req.headers).filter(([k]) => k === 'user-agent' || k.startsWith('sec-ch-ua')));
+    return res.end(`<title>oauth</title><script>
+      window.result = { state: 'idle' };
+      addEventListener('message', (e) => { if (e.data && e.data.profile) { result.profile = e.data.profile; result.from = e.origin; } });
+      function signIn(url) {
+        let w = null;
+        try { w = window.open(url, 'auth', 'popup,width=500,height=600'); } catch (e) { result.openError = String(e); }
+        result = { state: 'opened', handle: !!w, closedSeen: false, profile: null, from: null };
+        if (!w) return;
+        const t = setInterval(() => { try { if (w.closed) { result.closedSeen = true; clearInterval(t); } } catch (e) { result.pollError = String(e); } }, 100);
+      }
+    </script><button id=same onclick="signIn('/oauth/start')">same</button><button id=cross onclick="signIn('http://localhost:${P}/oauth/xstart')">cross</button>`);
+  }
+  if (u === '/oauth/start') return res.end('<title>consent</title><script>setTimeout(() => location.assign("/oauth/callback"), 200)</script>consent');
+  // the second origin (localhost, not 127.0.0.1, another site: its own process): a page there,
+  // then a server redirect back to the opener's origin
+  if (u === '/oauth/xstart') return res.end('<title>provider</title><script>setTimeout(() => location.assign("/oauth/xredirect"), 200)</script>provider');
+  if (u === '/oauth/xredirect') {
+    res.statusCode = 302;
+    res.setHeader('location', `http://127.0.0.1:${web.address().port}/oauth/callback`);
+    return res.end();
+  }
+  if (u === '/oauth/callback')
+    return res.end(`<title>callback</title><script>
+      try { window.opener.postMessage({ profile: { name: 'Ada', email: 'ada@example.test' } }, location.origin); } catch (e) { document.title = 'no opener: ' + e.message; }
+      setTimeout(() => window.close(), 200);
+    </script>callback`);
   res.end('<title>web</title>web');
 });
 await new Promise((r) => web.listen(0, '127.0.0.1', r));
@@ -1037,6 +1070,50 @@ try {
     await api('mock.focus_tab', { tab_id: 'w1:t1' });
     await sleep(300);
     await api('mock.close_tab', { tab_id: ct.tab_id });
+  }
+
+  // an OAuth sign-in popup (window.open with features, as Google's sign-in opens it): the
+  // opener gets a live window handle, the popup keeps window.opener across its navigations
+  // (same origin, and through a second origin), its postMessage reaches the opener, and its
+  // own window.close() shows to the opener as w.closed. Not a tab of the group.
+  {
+    const ot = await api('mock.create_tab', { label: 'oauth' });
+    await api('mock.focus_tab', { tab_id: ot.tab_id });
+    const oa = await ctl(`__herdrCompanion.open({tab_id:${JSON.stringify(ot.tab_id)}, url:'http://127.0.0.1:${webPort}/oauth', background:false})`);
+    const oaPage = oa && (await waitFor(() => pageForTarget(oa.target_id), 5000));
+    await waitFor(async () => ((await oaPage.title()) === 'oauth' ? true : null), 5000);
+    const groupViews = async () => (await ctl('__herdrCompanion.views()')).filter((v) => v.tab_id === ot.tab_id);
+    const nav = await oaPage.evaluate(async () => ({
+      ua: navigator.userAgent,
+      brands: navigator.userAgentData && navigator.userAgentData.brands,
+      high: navigator.userAgentData && (await navigator.userAgentData.getHighEntropyValues(['fullVersionList', 'platform'])),
+      webdriver: navigator.webdriver,
+    }));
+    console.log('     sign-in page identity (navigator):', JSON.stringify(nav));
+    console.log('     sign-in page identity (request headers):', JSON.stringify(oauthHints));
+    for (const variant of ['same', 'cross']) {
+      await oaPage.click(`#${variant}`);
+      const opened = await oaPage.evaluate(() => window.result);
+      check(`oauth (${variant}): window.open returns a window handle to the opener`, opened && opened.handle === true, opened);
+      const got = await waitFor(async () => ((r) => (r && r.profile ? r : null))(await oaPage.evaluate(() => window.result)), 6000);
+      check(
+        `oauth (${variant}): the popup's window.opener.postMessage reaches the opener`,
+        got && got.profile.name === 'Ada' && got.from === `http://127.0.0.1:${webPort}`,
+        got || (await oaPage.evaluate(() => window.result)),
+      );
+      const closed = await waitFor(async () => ((r) => (r && r.closedSeen ? r : null))(await oaPage.evaluate(() => window.result)), 6000);
+      check(`oauth (${variant}): the popup's window.close() shows to the opener as w.closed`, closed, await oaPage.evaluate(() => window.result));
+      await sleep(500);
+      const views = await groupViews();
+      check(`oauth (${variant}): the popup is not left behind as a tab of the group`, views.length === 1 && views[0].view_id === oa.view_id, views);
+    }
+    const sel = await ctl(`__herdrCompanion.select(${JSON.stringify(oa.view_id)})`);
+    check('oauth: the bar still works after the popups closed', sel && sel.ok, sel);
+    const logText = fs.readFileSync(logFile, 'utf8');
+    check('oauth: no error in the main process', !/Error occurred in handler|UnhandledPromiseRejection|uncaught exception|strip action failed|strip push failed/.test(logText));
+    await api('mock.focus_tab', { tab_id: 'w1:t1' });
+    await sleep(300);
+    await api('mock.close_tab', { tab_id: ot.tab_id });
   }
 
   // an agent focus() into a non-focused herdr tab survives unrelated tab events
