@@ -133,9 +133,10 @@ function frameKey(frame) {
 }
 
 async function targetIdOf(wc) {
-  const dbg = wc.debugger;
+  let dbg = null;
   let attached = false;
   try {
+    dbg = wc.debugger;
     if (!dbg.isAttached()) {
       dbg.attach('1.3');
       attached = true;
@@ -153,10 +154,22 @@ async function targetIdOf(wc) {
   }
 }
 
+// A record's webContents while alive, else null (destroyed: undefined, or isDestroyed()).
+function liveWc(rec) {
+  const wc = rec && rec.view && rec.view.webContents;
+  if (!wc) return null;
+  try {
+    return wc.isDestroyed() ? null : wc;
+  } catch {
+    return null;
+  }
+}
+
 class ViewManager {
   // hooks: {log(...args), onNav(viewId, patch), onState(viewId), onError(viewId, kind, text), onOpen(fromViewId, url, disposition), onKey(input) -> bool,
   //         onPermission(viewId, {permission,label,origin}, done(allow)), onLeave(viewId, newOrigin|null),
-  //         onDialogsEnd(viewId, frameKey|null): its dialogs are cancelled (navigation, crash, destroy)}
+  //         onDialogsEnd(viewId, frameKey|null): its dialogs are cancelled (navigation, crash, destroy),
+  //         onGone(viewId): its WebContents went without destroy() (window.close(), a CDP close)}
   constructor(hooks) {
     this.hooks = hooks;
     this.log = hooks.log || (() => {});
@@ -205,10 +218,17 @@ class ViewManager {
     return this.live.get(viewId) || null;
   }
 
+  // The view's webContents while it is alive, else null. A page's window.close() or a CDP
+  // close (Target.closeTarget, Page.close) destroys it under us: from then on
+  // WebContentsView.webContents is undefined.
+  wcOf(viewId) {
+    return liveWc(this.live.get(viewId));
+  }
+
   // The view whose webContents is `wc`, or null.
   viewIdOf(wc) {
     if (!wc) return null;
-    for (const [id, rec] of this.live) if (rec.view.webContents === wc) return id;
+    for (const [id, rec] of this.live) if (liveWc(rec) === wc) return id;
     return null;
   }
 
@@ -288,9 +308,10 @@ class ViewManager {
         ...(extraArgs.length ? { additionalArguments: extraArgs } : {}),
       },
     });
+    const wc = view.webContents; // kept: the view's own property goes when the page closes itself
     if (noNetwork) {
       try {
-        view.webContents.setWebRTCIPHandlingPolicy('disable_non_proxied_udp');
+        wc.setWebRTCIPHandlingPolicy('disable_non_proxied_udp');
       } catch {}
     }
     // pageApi: the bridge was given; pageToken: the current document's (a new document asks
@@ -304,11 +325,13 @@ class ViewManager {
     rec.ready = (async () => {
       // Never leave a target unloaded: an unloaded webContents stalls connectOverCDP (spike S1).
       if (sesReady) await sesReady;
-      await view.webContents.loadURL(`about:blank#herdr-view=${entry.view_id}`).catch(() => {});
-      rec.target = await targetIdOf(view.webContents);
+      if (wc.isDestroyed()) return null;
+      await wc.loadURL(`about:blank#herdr-view=${entry.view_id}`).catch(() => {});
+      if (wc.isDestroyed()) return null;
+      rec.target = await targetIdOf(wc);
       const url = isHtml ? pathToFileURL(entry.file).toString() : entry.url;
-      if (url && url !== 'about:blank') {
-        view.webContents.loadURL(url).catch(() => {}); // failures surface as did-fail-load
+      if (url && url !== 'about:blank' && !wc.isDestroyed()) {
+        wc.loadURL(url).catch(() => {}); // failures surface as did-fail-load
       }
       return rec.target;
     })();
@@ -319,6 +342,10 @@ class ViewManager {
     const { view, entry } = rec;
     const wc = view.webContents;
     const id = entry.view_id;
+    // destroyed without destroy(): the page called window.close() (Electron closes a page's
+    // WebContents for it, whoever opened it) or a CDP client closed its target. The page went:
+    // the same bookkeeping as destroy().
+    wc.once('destroyed', () => this._gone(id, rec));
     const nav = () => {
       const url = wc.getURL();
       if (url.startsWith('about:blank#herdr-view=')) return;
@@ -386,24 +413,51 @@ class ViewManager {
   destroy(viewId, win) {
     const rec = this.live.get(viewId);
     if (!rec) return;
-    this.live.delete(viewId);
-    if (this.hooks.onLeave) this.hooks.onLeave(viewId, null);
-    // its blocked dialog calls are answered before the page goes
-    if (this.hooks.onDialogsEnd) this.hooks.onDialogsEnd(viewId, null);
+    this._forget(viewId, rec, win);
     try {
-      (this.host || win).contentView.removeChildView(rec.view);
-    } catch {}
-    try {
-      rec.view.webContents.close();
+      const wc = liveWc(rec);
+      if (wc) wc.close();
     } catch {}
   }
 
+  // Out of `live` with its prompts and dialogs ended and its view out of the window (the
+  // record is gone first: nothing that runs from here on finds it).
+  _forget(viewId, rec, win) {
+    this.live.delete(viewId);
+    try {
+      if (this.hooks.onLeave) this.hooks.onLeave(viewId, null);
+    } catch (e) {
+      this.log('view leave failed', viewId, e && e.message);
+    }
+    // its blocked dialog calls are answered before the page goes
+    try {
+      if (this.hooks.onDialogsEnd) this.hooks.onDialogsEnd(viewId, null);
+    } catch (e) {
+      this.log('view dialogs end failed', viewId, e && e.message);
+    }
+    try {
+      (this.host || win).contentView.removeChildView(rec.view);
+    } catch {}
+  }
+
+  // Its WebContents was destroyed without destroy() (window.close(), a CDP close): forgotten as destroy()
+  // does, then main hears it (hooks.onGone) and closes its tab.
+  _gone(viewId, rec) {
+    if (this.live.get(viewId) !== rec) return; // destroy() went first
+    this.log('view gone (its page was closed outside the companion)', viewId);
+    this._forget(viewId, rec, null);
+    if (this.hooks.onGone) this.hooks.onGone(viewId);
+  }
+
   navState(viewId) {
-    const rec = this.live.get(viewId);
-    if (!rec) return { canGoBack: false, canGoForward: false, loading: false };
-    const wc = rec.view.webContents;
-    const h = wc.navigationHistory;
-    return { canGoBack: h.canGoBack(), canGoForward: h.canGoForward(), loading: wc.isLoading() };
+    const wc = this.wcOf(viewId);
+    if (!wc) return { canGoBack: false, canGoForward: false, loading: false };
+    try {
+      const h = wc.navigationHistory;
+      return { canGoBack: h.canGoBack(), canGoForward: h.canGoForward(), loading: wc.isLoading() };
+    } catch {
+      return { canGoBack: false, canGoForward: false, loading: false };
+    }
   }
 
   // Shows exactly one view (or none) in `bounds`; every other view stays a hidden child.

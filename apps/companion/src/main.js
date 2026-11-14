@@ -95,6 +95,9 @@ app.setName(APP_NAME);
 app.commandLine.appendSwitch('user-data-dir', app.getPath('userData'));
 app.commandLine.appendSwitch('remote-debugging-port', '0');
 app.commandLine.appendSwitch('remote-debugging-address', '127.0.0.1');
+// test runs: an uncaught exception in the main process goes to the log (the e2e checks read
+// it), never to Electron's error dialog
+if (MANAGED.testHooks) process.on('uncaughtException', (e) => log('uncaught exception', e && e.stack ? e.stack : e));
 if (HEADLESS && process.platform === 'darwin' && app.dock) app.dock.hide();
 else if (process.platform === 'darwin' && app.dock) {
   app.whenReady().then(() => {
@@ -164,6 +167,7 @@ class Companion {
       onLeave: (id, origin) => this.onLeave(id, origin),
       onContextMenu: (id, params) => this.openPageMenu(id, params),
       onDialogsEnd: (id, frame) => this.dialogs.dismissView(id, { frame }),
+      onGone: (id) => this.onViewGone(id),
       onRaise: (host) => this.raiseDockBar(host),
       // page API: views get window.herdr only while herdr advertises page messages
       pageApiOn: () => !!(this.features && this.features.has(pageApi.FEATURE)),
@@ -213,7 +217,13 @@ class Companion {
     ipcMain.handle('herdr-companion:strip', (e, name, a) => {
       const dock = !!(this.dockBarView() && e.sender === this.dockBar.webContents);
       if (!dock && (!this.win || e.sender !== this.win.webContents)) return null;
-      return this.stripAction(name, a, { dock });
+      // one bad page must not throw out of the main process (an uncaught exception dialog)
+      return Promise.resolve()
+        .then(() => this.stripAction(name, a, { dock }))
+        .catch((err) => {
+          log('strip action failed', name, err && err.stack ? err.stack : err);
+          return null;
+        });
     });
 
     this.win = new BrowserWindow({
@@ -891,6 +901,15 @@ class Companion {
     this.scheduleSync();
   }
 
+  // The page was closed outside the companion (window.close(): a sign-in popup that is done;
+  // a CDP close): its tab goes as a closed one does, and herdr hears it through the host sync
+  // (not as the user's close_tab: as the control page's close does).
+  onViewGone(id) {
+    // the app quitting takes its pages down too: herdr keeps them for the next start
+    if (this.shuttingDown) return;
+    if (!this.closeView(id)) this.pushStrip();
+  }
+
   onViewState(id) {
     const hit = this.store.findView(id);
     if (hit && hit.group.tab_id === this.shownTab) {
@@ -1071,7 +1090,8 @@ class Companion {
         this.dialogShown = null;
         view.webContents.send('dialog:show', null);
         // the keyboard goes back to the page
-        if (hadFocus && e && this.views.has(e.view_id)) this.views.get(e.view_id).view.webContents.focus();
+        const pageWc = hadFocus && e ? this.views.wcOf(e.view_id) : null;
+        if (pageWc) pageWc.focus();
       }
       return;
     }
@@ -1237,7 +1257,7 @@ class Companion {
           if (!MANAGED.testHooks) return errOut('unknown_op', 'unknown control op send_key');
           const r = a || {};
           const bars = { bar: this.win && this.win.webContents, dock: this.dockBarView() && this.dockBar.webContents };
-          const wc = r.surface ? bars[r.surface] || null : this.views.has(r.view_id) ? this.views.get(r.view_id).view.webContents : null;
+          const wc = r.surface ? bars[r.surface] || null : this.views.wcOf(r.view_id);
           if (!wc) return errOut('view_not_found', `no view ${r.view_id || r.surface}`);
           const modifiers = Array.isArray(r.modifiers) ? r.modifiers.map(String) : [];
           wc.sendInputEvent({ type: 'keyDown', keyCode: String(r.keyCode || ''), modifiers });
@@ -1249,8 +1269,9 @@ class Companion {
           // its size and the RGBA of the asked points ({view_id, points: [[x, y], ...]}, DIPs)
           if (!MANAGED.testHooks) return errOut('unknown_op', 'unknown control op view_pixels');
           const rec = a && this.views.get(a.view_id);
-          if (!rec) return errOut('view_not_found', `no view ${a && a.view_id}`);
-          const img = await rec.view.webContents.capturePage(undefined, { stayHidden: true });
+          const pageWc = a && this.views.wcOf(a.view_id);
+          if (!rec || !pageWc) return errOut('view_not_found', `no view ${a && a.view_id}`);
+          const img = await pageWc.capturePage(undefined, { stayHidden: true });
           const size = img.getSize();
           const bounds = rec.view.getBounds();
           const sx = size.width / Math.max(1, bounds.width);
@@ -1414,7 +1435,7 @@ class Companion {
   handleKey(k) {
     const g = this.shownGroup();
     const e = this.activeEntry(g);
-    const wc = e && this.views.has(e.view_id) ? this.views.get(e.view_id).view.webContents : null;
+    const wc = e ? this.views.wcOf(e.view_id) : null;
     switch (k) {
       case 't':
         this.pulseBar();
@@ -1527,7 +1548,7 @@ class Companion {
   async stripAction(name, a, { dock = false } = {}) {
     const g = this.shownGroup();
     const e = this.activeEntry(g);
-    const wc = e && this.views.has(e.view_id) ? this.views.get(e.view_id).view.webContents : null;
+    const wc = e ? this.views.wcOf(e.view_id) : null;
     switch (name) {
       case 'ready':
         return this.pushStrip();
@@ -1722,8 +1743,8 @@ class Companion {
   // clicked (even if another one is shown by then); back, forward and reload are reported to
   // herdr like the strip's buttons.
   openPageMenu(viewId, params = {}) {
-    if (!this.views.has(viewId) || HEADLESS) return 0;
-    const wc = this.views.get(viewId).view.webContents;
+    const wc = this.views.wcOf(viewId);
+    if (!wc || HEADLESS) return 0;
     const actions = pageMenuActions({
       wc,
       params,
@@ -1809,10 +1830,20 @@ class Companion {
     return template.length;
   }
 
+  // Never throws: it runs from page events, IPC and timers, where one would reach the main
+  // process as an uncaught exception.
   pushStrip() {
-    if (this.win && !this.win.isDestroyed()) this.win.webContents.send('strip:state', this.stripPreview ? this.previewState(this.stripPreview) : this.stripState());
-    const dock = this.dockBarView();
-    if (dock) dock.webContents.send('strip:state', this.stripState({ dock: true }));
+    try {
+      if (this.win && !this.win.isDestroyed()) this.win.webContents.send('strip:state', this.stripPreview ? this.previewState(this.stripPreview) : this.stripState());
+    } catch (e) {
+      log('strip push failed', e && e.stack ? e.stack : e);
+    }
+    try {
+      const dock = this.dockBarView();
+      if (dock) dock.webContents.send('strip:state', this.stripState({ dock: true }));
+    } catch (e) {
+      log('dock strip push failed', e && e.stack ? e.stack : e);
+    }
   }
 
   say(level, text, ms = 6000) {
@@ -1915,12 +1946,11 @@ class Companion {
     const e = this.activeEntry(g);
     if (!g || !e) return;
     let selection = '';
-    if (this.views.has(e.view_id)) {
+    const pageWc = this.views.wcOf(e.view_id);
+    if (pageWc) {
       try {
         // Isolated world: page scripts cannot fake the selection getter.
-        selection = await this.views
-          .get(e.view_id)
-          .view.webContents.executeJavaScriptInIsolatedWorld(1001, [{ code: 'String(window.getSelection ? window.getSelection() : "")' }]);
+        selection = await pageWc.executeJavaScriptInIsolatedWorld(1001, [{ code: 'String(window.getSelection ? window.getSelection() : "")' }]);
       } catch {}
     }
     const params = {
@@ -2036,6 +2066,7 @@ class Companion {
   }
 
   async shutdown() {
+    this.shuttingDown = true;
     this.dialogs.dismissAll(); // no page stays blocked on a dialog while the app quits
     if (this.watchdog) this.watchdog.stop();
     if (this.dock) this.dock.stop();

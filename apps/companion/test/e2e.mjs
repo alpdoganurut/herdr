@@ -1021,8 +1021,19 @@ try {
     }, 4000);
     check('herdr hears the closed page through the host sync', syncedGone, syncedGone && syncedGone.entries.map((e) => e.url));
     check('a page closing itself is not reported as the user closing it', !mock.state.reports.some((r) => r.action === 'close_tab' && r.tab_id === ct.tab_id));
+    // a CDP client closing the page's target (Playwright's page.close()) destroys it the same way
+    const cp = await ctl(`__herdrCompanion.open({tab_id:${JSON.stringify(ct.tab_id)}, url:'data:text/html,<title>cdp</title>cdp', background:false})`);
+    const cpPage = cp && (await waitFor(() => pageForTarget(cp.target_id), 5000));
+    await cpPage.close();
+    const cdpGone = await waitFor(async () => {
+      const v = await groupViews();
+      return v.length === 1 && v[0].view_id === op.view_id ? v : null;
+    }, 5000);
+    check('a page closed over CDP leaves the group too', cdpGone, await groupViews());
+    const sel2 = await ctl(`__herdrCompanion.select(${JSON.stringify(op.view_id)})`);
+    check('… and the bar still works', sel2 && sel2.ok, sel2);
     const logText = fs.readFileSync(logFile, 'utf8');
-    check('no error in the main process (navigationHistory of a gone view)', !/navigationHistory|Error occurred in handler|UnhandledPromiseRejection/.test(logText), (logText.match(/.*(navigationHistory|Error occurred in handler|UnhandledPromiseRejection).*/) || [])[0]);
+    check('no error in the main process (navigationHistory of a gone view)', !/navigationHistory|Error occurred in handler|UnhandledPromiseRejection|uncaught exception/.test(logText), (logText.match(/.*(navigationHistory|Error occurred in handler|UnhandledPromiseRejection|uncaught exception).*/) || [])[0]);
     await api('mock.focus_tab', { tab_id: 'w1:t1' });
     await sleep(300);
     await api('mock.close_tab', { tab_id: ct.tab_id });
