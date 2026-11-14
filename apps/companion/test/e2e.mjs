@@ -123,6 +123,10 @@ const web = http.createServer((req, res) => {
   res.setHeader('content-type', 'text/html');
   if (u === '/drag1' || u === '/drag2') return res.end(`<title>${u}</title>${DRAG_CSS}<div id=d>d</div><iframe src="http://localhost:${web.address().port}/dragframe"></iframe>`);
   if (u === '/dragframe') return res.end(`<title>frame</title>${DRAG_CSS}<div id=d>f</div>`);
+  // a sign-in flow's popup: the opener's button opens it (a new tab in the group), and the
+  // popup closes itself once it is done, as OAuth callback pages do
+  if (u === '/opener') return res.end('<title>opener</title><button id=b onclick="window.open(\'/signin\', \'_blank\')">sign in</button>');
+  if (u === '/signin') return res.end('<title>signin</title><script>setTimeout(() => window.close(), 400)</script>signing in');
   res.end('<title>web</title>web');
 });
 await new Promise((r) => web.listen(0, '127.0.0.1', r));
@@ -981,6 +985,47 @@ try {
     await api('mock.focus_tab', { tab_id: 'w1:t1' });
     await sleep(300);
     await api('mock.close_tab', { tab_id: kt.tab_id });
+  }
+
+  // a page that closes itself (window.close(): a sign-in popup when it is done) destroys its
+  // WebContents under the companion; its tab goes like a closed one and the bar keeps working
+  {
+    const ct = await api('mock.create_tab', { label: 'popup' });
+    await api('mock.focus_tab', { tab_id: ct.tab_id });
+    const op = await ctl(`__herdrCompanion.open({tab_id:${JSON.stringify(ct.tab_id)}, url:'http://127.0.0.1:${webPort}/opener', background:false})`);
+    const opPage = op && (await waitFor(() => pageForTarget(op.target_id), 5000));
+    await waitFor(async () => ((await opPage.title()) === 'opener' ? true : null), 5000);
+    const groupViews = async () => (await ctl('__herdrCompanion.views()')).filter((v) => v.tab_id === ct.tab_id);
+    await opPage.click('#b');
+    const popup = await waitFor(() => mock.state.reports.find((r) => r.action === 'new_tab' && r.tab_id === ct.tab_id), 5000);
+    check('the opener\'s window.open becomes a tab in the group', popup, popup);
+    const closedItself = await waitFor(async () => {
+      const v = await groupViews();
+      return v.length === 1 && v[0].view_id === op.view_id ? v : null;
+    }, 5000);
+    check('a page that calls window.close() leaves the group, like a closed tab', closedItself, await groupViews());
+    const sel = await ctl(`__herdrCompanion.select(${JSON.stringify(op.view_id)})`);
+    check('the group\'s bar still works after it (select answers)', sel && sel.ok, sel);
+    // a click on the tab in the bar (the strip's IPC, where the user's crash surfaced)
+    const clicked = await stripPage()
+      .evaluate((v) => window.stripBridge.action('select', v).then(() => 'ok', (e) => String(e && e.message)), op.view_id)
+      .catch((e) => String(e.message));
+    check('a click on a tab in the bar answers (no error out of the strip handler)', clicked === 'ok', clicked);
+    await opPage.evaluate(() => location.reload());
+    await sleep(600);
+    const strip = await waitFor(() => stripPage().evaluate(() => [...document.querySelectorAll('#tabs .tab')].length || null), 3000);
+    check('the bar shows the one page left', strip === 1, strip);
+    const syncedGone = await waitFor(() => {
+      const t = mock.state.tabs.get(ct.tab_id);
+      return t && t.browser && t.browser.entries.length === 1 ? t.browser : null;
+    }, 4000);
+    check('herdr hears the closed page through the host sync', syncedGone, syncedGone && syncedGone.entries.map((e) => e.url));
+    check('a page closing itself is not reported as the user closing it', !mock.state.reports.some((r) => r.action === 'close_tab' && r.tab_id === ct.tab_id));
+    const logText = fs.readFileSync(logFile, 'utf8');
+    check('no error in the main process (navigationHistory of a gone view)', !/navigationHistory|Error occurred in handler|UnhandledPromiseRejection/.test(logText), (logText.match(/.*(navigationHistory|Error occurred in handler|UnhandledPromiseRejection).*/) || [])[0]);
+    await api('mock.focus_tab', { tab_id: 'w1:t1' });
+    await sleep(300);
+    await api('mock.close_tab', { tab_id: ct.tab_id });
   }
 
   // an agent focus() into a non-focused herdr tab survives unrelated tab events
