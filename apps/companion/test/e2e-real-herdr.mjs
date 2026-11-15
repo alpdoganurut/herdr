@@ -259,8 +259,9 @@ try {
   });
 
   // a page's sign-in popup (window.open with features) is a child window of the companion's,
-  // not a tab: herdr's browser tools keep working while it is open, never list it, and the
-  // agent's current tab stays its page
+  // not a companion tab: herdr's browser tools keep working while it is open, list it as a tab
+  // "opened by you" (any page target of the companion) until it closes, and the agent's
+  // current tab stays its page
   await section('a sign-in popup open in the companion does not disturb the agent tools', async () => {
     const pops = () => within(insp.control().evaluate(() => globalThis.__herdrCompanion.popups()), 10000, 'popups()');
     const o = await browser(['eval', `!!(window.__w = window.open('${W}/popup', 'signin', 'popup,width=480,height=560'))`], p1);

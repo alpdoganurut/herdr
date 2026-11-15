@@ -148,6 +148,8 @@ const web = http.createServer((req, res) => {
   }
   // a popup that stays open (the checks look at it, then close its opener's tab)
   if (u === '/oauth/hold') return res.end('<title>hold</title>hold');
+  // a popup that asks to stay (beforeunload) once the user has clicked it
+  if (u === '/oauth/sticky') return res.end('<title>sticky</title><script>addEventListener("beforeunload", (e) => { e.preventDefault(); e.returnValue = "stay"; })</script><button id=b onclick="window.c=1">b</button>');
   if (u === '/oauth/start') return res.end('<title>consent</title><script>setTimeout(() => location.assign("/oauth/callback"), 200)</script>consent');
   // the second origin (localhost, not 127.0.0.1, another site: its own process): a page there,
   // then a server redirect back to the opener's origin
@@ -1133,11 +1135,51 @@ try {
     const dataOpen = await oaPage.evaluate(() => !!window.open('data:text/html,<title>d</title>d', 'd', 'popup,width=300,height=300'));
     await sleep(500);
     check('oauth: a data: popup never opens', !dataOpen && (await ctl('__herdrCompanion.popups()')).length === 1, { dataOpen, popups: await ctl('__herdrCompanion.popups()') });
+    const popupsNow = () => ctl('__herdrCompanion.popups()');
+    // the title names where the popup's page is from
+    const titled = await waitFor(async () => ((l) => (l[0] && l[0].title === `127.0.0.1:${webPort} — hold` ? l : null))(await popupsNow()), 3000);
+    check('oauth: a popup\'s title is `<host> — <page title>`', titled, (await popupsNow()).map((x) => x.title));
+    // the page's features never make a frameless, see-through, unclosable, screen-sized window
+    const hostile = await oaPage.evaluate(() => !!window.open('/oauth/hold?h', 'hostile', 'frame=no,transparent=yes,closable=no,movable=no,resizable=no,opacity=0.1,alwaysOnTop=yes,hasShadow=no,minWidth=5000,minHeight=5000,width=6000,height=6000,left=-3000,top=-3000'));
+    const hp = await waitFor(async () => (await popupsNow()).find((x) => /\?h$/.test(x.url)), 5000);
+    check(
+      'oauth: hostile features give a normal framed window inside the screen (frame, opaque, closable, movable, resizable, not on top, capped)',
+      hostile && hp && hp.frame && !hp.transparent && hp.closable && hp.movable && hp.resizable && hp.opacity === 1 && !hp.always_on_top && hp.bounds.width <= 1280 && hp.bounds.height <= 1000 && hp.bounds.x >= 0 && hp.bounds.y >= 0,
+      hp,
+    );
+    // at most 2 popups per page: a third window.open becomes a tab of the group
+    const viewsBeforeCap = (await groupViews()).length;
+    const third = await oaPage.evaluate(() => !!window.open('/oauth/hold?third', 'third', 'popup,width=400,height=400'));
+    const capTab = await waitFor(async () => ((v) => (v.length === viewsBeforeCap + 1 ? v : null))(await groupViews()), 5000);
+    check('oauth: a third popup of the same page opens as a tab instead (cap 2)', !third && capTab && capTab.some((v) => /\?third$/.test(v.url)) && (await popupsNow()).length === 2, { third, views: await groupViews(), popups: (await popupsNow()).length });
+    // a popup's dialog is answered without asking (cancel), logged once with its origin
+    const conf = await heldPage.evaluate(() => [confirm('a'), confirm('b')]);
+    await sleep(300);
+    const autoLines = fs.readFileSync(logFile, 'utf8').split('\n').filter((l) => /popup dialog confirm answered without asking/.test(l));
+    check('oauth: a popup\'s confirm() answers false and is logged once with its origin', conf[0] === false && conf[1] === false && autoLines.length === 1 && autoLines[0].includes(`http://127.0.0.1:${webPort}`), { conf, autoLines });
+    // a popup whose page asks to stay (beforeunload, after a click) still closes on ⌘W
+    // Chromium still reports the beforeunload dialog over CDP as the window goes: handled here
+    // (Playwright's own handling would fail on the closed session and throw out of the run)
+    heldPage.on('dialog', (d) => d.accept().catch(() => {}));
+    await heldPage.evaluate(() => { addEventListener('beforeunload', (e) => { e.preventDefault(); e.returnValue = 'stay'; }); });
+    await heldPage.mouse.click(5, 5);
+    const heldIndex = (await popupsNow()).findIndex((x) => /\/oauth\/hold$/.test(x.url));
+    await ctl(`__herdrCompanion.popup_key({index:${heldIndex}, key:'w'})`);
+    const wClosed = await waitFor(async () => ((l) => (!l.some((x) => /\/oauth\/hold$/.test(x.url)) ? l : null))(await popupsNow()), 4000);
+    check('oauth: ⌘W closes a popup even when its page asks to stay (beforeunload)', wClosed, await popupsNow());
+    // a popup hides while its page's herdr tab is not the shown one, and comes back with it
+    await api('mock.focus_tab', { tab_id: 'w1:t1' });
+    const hid = await waitFor(async () => ((l) => (l.length && l.every((x) => x.hidden_with_tab) ? l : null))(await popupsNow()), 3000);
+    check("oauth: a popup hides while its herdr tab isn't shown", hid, await popupsNow());
+    await api('mock.focus_tab', { tab_id: ot.tab_id });
+    const back = await waitFor(async () => ((l) => (l.length && l.every((x) => !x.hidden_with_tab) ? l : null))(await popupsNow()), 3000);
+    check('oauth: … and shows again with its tab', back, await popupsNow());
     // a link with target=_blank still opens a tab of the group
+    const viewsBeforeLink = (await groupViews()).length;
     await oaPage.evaluate((P) => { const a = document.createElement('a'); a.href = `http://127.0.0.1:${P}/web`; a.target = '_blank'; a.id = 'lnk'; a.textContent = 'l'; document.body.append(a); }, webPort);
     await oaPage.click('#lnk');
-    const tabbed = await waitFor(async () => ((v) => (v.length === 2 ? v : null))(await groupViews()), 5000);
-    check('oauth: a target=_blank link still opens a tab of the group, not a popup', tabbed && (await ctl('__herdrCompanion.popups()')).length === 1, await groupViews());
+    const tabbed = await waitFor(async () => ((v) => (v.length === viewsBeforeLink + 1 ? v : null))(await groupViews()), 5000);
+    check('oauth: a target=_blank link still opens a tab of the group, not a popup', tabbed && (await popupsNow()).length === 1, await groupViews());
     const logText = fs.readFileSync(logFile, 'utf8');
     check('oauth: no error in the main process', !/Error occurred in handler|UnhandledPromiseRejection|uncaught exception|strip action failed|strip push failed/.test(logText));
     await api('mock.focus_tab', { tab_id: 'w1:t1' });
@@ -1181,8 +1223,13 @@ try {
   const qo = await ctl(`__herdrCompanion.open({tab_id:${JSON.stringify(qt.tab_id)}, url:'http://127.0.0.1:${webPort}/web'})`);
   const qp = qo && (await waitFor(() => pageForTarget(qo.target_id), 5000));
   if (qp) await qp.waitForLoadState('load').catch(() => {});
-  const leftOpen = qp ? await qp.evaluate((P) => !!window.open(`http://127.0.0.1:${P}/oauth/hold`, 'left', 'popup,width=300,height=300'), webPort).catch((e) => String(e.message)) : 'no page';
+  const leftOpen = qp ? await qp.evaluate((P) => !!window.open(`http://127.0.0.1:${P}/oauth/sticky`, 'left', 'popup,width=300,height=300'), webPort).catch((e) => String(e.message)) : 'no page';
   check('a popup is open before the quit', leftOpen === true && (await waitFor(async () => ((l) => (l.length === 1 ? l : null))(await ctl('__herdrCompanion.popups()')), 5000)), leftOpen);
+  // its page asks to stay (beforeunload after a click): the quit below must still go through
+  const sticky = await waitFor(() => mock.state.browser.contexts().flatMap((c) => c.pages()).find((p) => /\/oauth\/sticky$/.test(p.url())), 5000);
+  if (sticky) sticky.on('dialog', (d) => d.accept().catch(() => {}));
+  if (sticky) await sticky.click('#b').catch(() => {});
+  check('the popup left open asks to stay (clicked, beforeunload armed)', sticky && (await sticky.evaluate(() => window.c).catch(() => 0)) === 1);
   const quit1 = await quitCompanion();
   check('quits through its own control path', quit1);
   check('unregistered on quit', !mock.state.lease);

@@ -1,7 +1,7 @@
 // One WebContentsView per page (contract §6). Web pages share the persistent profile
 // partition; every html view gets its own in-memory sandbox partition (§4.3).
 'use strict';
-const { WebContentsView, session, net, app } = require('electron');
+const { WebContentsView, session, net, app, screen } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
@@ -13,7 +13,7 @@ const NETWORK_URLS = ['http://*/*', 'https://*/*', 'ws://*/*', 'wss://*/*'];
 // html views without network, no WebRTC
 const PAGE_PRELOAD = path.join(__dirname, 'preload', 'page.js');
 const { downloadAllowed } = require('./context-menu.js');
-const { openKind, popupWindowOptions } = require('./popups.js');
+const { openKind, popupWindowOptions, clampBounds, POPUP_CAP } = require('./popups.js');
 
 // A page session's user agent without the Electron/x.y.z token: sites that see it serve their
 // desktop-app pages (Slack: window drag regions, app-only behaviour) instead of the web ones.
@@ -179,7 +179,10 @@ class ViewManager {
     this.live = new Map(); // view_id -> {view, entry, rootReal}
     this.host = null; // the window the views live in (the dock's while docked)
     this.overlays = []; // views kept above every page (the dialog modal); they move with the pages
-    this.popups = new Map(); // BrowserWindow -> {owner: view_id}: pages' sign-in popups (src/popups.js)
+    this.popups = new Map(); // BrowserWindow -> {owner: view_id, ...}: pages' sign-in popups (src/popups.js)
+    this.popupPending = new Map(); // owner view_id -> times of allowed opens not yet created (the cap counts them)
+    this.popupShown = null; // the view ids whose popups may show (the shown herdr tab's group); null: all
+    this.autoAnswered = new Set(); // `${kind}|${origin}` already logged (a popup's dialog or permission)
   }
 
   // A view that stays above the pages in whatever window hosts them.
@@ -230,10 +233,14 @@ class ViewManager {
       const kind = openKind(details);
       if (kind === 'popup') {
         const parent = this.host && !this.host.isDestroyed() ? this.host : null;
-        if (parent) {
+        if (parent && this._popupCount(ownerId) >= POPUP_CAP) {
+          this.log('popup refused (cap', POPUP_CAP, 'reached), opened as a tab:', originOf(details.url) || '-');
+        } else if (parent) {
+          this._pending(ownerId).push(Date.now());
+          const show = !this.hooks.headless && this._popupMayShow(ownerId);
           return {
             action: 'allow',
-            overrideBrowserWindowOptions: popupWindowOptions({ parent, show: !this.hooks.headless, preload: PAGE_PRELOAD }),
+            overrideBrowserWindowOptions: popupWindowOptions({ parent, show, preload: PAGE_PRELOAD }),
           };
         }
       }
@@ -245,15 +252,111 @@ class ViewManager {
   // A popup window was created for a view (or for one of its popups): tracked until it closes
   // (its own window.close() included; Electron closes it with its opener), the same open
   // policy and context menu, the companion's level.
-  _adoptPopup(win, ownerId) {
+  _adoptPopup(win, ownerId, details = {}) {
     const wc = win.webContents;
-    this.popups.set(win, { owner: ownerId });
+    const pending = this._pending(ownerId);
+    pending.shift();
+    const opts = details.options || {};
+    this.popups.set(win, { owner: ownerId, frame: opts.frame !== false, transparent: !!opts.transparent, hidden: false });
     win.on('closed', () => this.popups.delete(win));
     wc.setWindowOpenHandler(this._openHandler(ownerId));
-    wc.on('did-create-window', (child) => this._adoptPopup(child, ownerId));
+    wc.on('did-create-window', (child, d) => this._adoptPopup(child, ownerId, d));
     wc.on('context-menu', (_e, params) => this.hooks.onPopupContextMenu && this.hooks.onPopupContextMenu(ownerId, win, params));
+    // a page's beforeunload never keeps a popup open: ⌘W, its opener's tab closing and the
+    // companion's quit always close it
+    wc.on('will-prevent-unload', (e) => e.preventDefault());
+    // the title says where the page is from (a popup can look like anything): `<host> — <title>`
+    const title = (t) => {
+      let host = '';
+      try {
+        host = new URL(wc.getURL()).host;
+      } catch {}
+      try {
+        if (!win.isDestroyed()) win.setTitle(host ? `${host} — ${t || ''}` : t || '');
+      } catch {}
+    };
+    win.on('page-title-updated', (e, t) => {
+      e.preventDefault();
+      title(t);
+    });
+    wc.on('did-navigate', () => title(wc.getTitle()));
+    title(wc.getTitle());
+    // inside its display's work area, never larger than POPUP_MAX
+    try {
+      const b = win.getBounds();
+      const area = screen.getDisplayMatching(this.host && !this.host.isDestroyed() ? this.host.getBounds() : b).workArea;
+      const c = clampBounds(b, area);
+      if (c.x !== b.x || c.y !== b.y || c.width !== b.width || c.height !== b.height) win.setBounds(c);
+    } catch (e) {
+      this.log('popup clamp failed', e && e.message);
+    }
     this._popupLevel(win);
+    this._popupVisibility(win);
     this.log('popup opened', ownerId);
+  }
+
+  // Allowed opens of `ownerId` not created yet (the window comes at did-create-window; one
+  // that never comes stops counting after a while).
+  _pending(ownerId) {
+    const now = Date.now();
+    const list = (this.popupPending.get(ownerId) || []).filter((t) => now - t < 10000);
+    this.popupPending.set(ownerId, list);
+    return list;
+  }
+
+  _popupCount(ownerId) {
+    let n = this._pending(ownerId).length;
+    for (const [win, p] of this.popups) if (p.owner === ownerId && !win.isDestroyed()) n++;
+    return n;
+  }
+
+  _popupMayShow(ownerId) {
+    return !this.popupShown || this.popupShown.has(ownerId);
+  }
+
+  // The popups of the shown herdr tab's pages show; the others hide until their tab shows
+  // again (`viewIds`: the shown group's view ids; null: none shows).
+  showPopupsOf(viewIds) {
+    this.popupShown = new Set(viewIds || []);
+    for (const win of this.popups.keys()) this._popupVisibility(win);
+  }
+
+  _popupVisibility(win) {
+    const p = this.popups.get(win);
+    if (!p || win.isDestroyed()) return;
+    const hide = !this._popupMayShow(p.owner);
+    if (hide === p.hidden) return;
+    p.hidden = hide;
+    if (this.hooks.headless) return;
+    try {
+      if (hide) win.hide();
+      else win.showInactive();
+    } catch (e) {
+      this.log('popup show/hide failed', e && e.message);
+    }
+  }
+
+  // A popup's dialog or prompted permission is answered without asking (no strip or card for
+  // popups): logged once per kind and origin.
+  noteAutoAnswer(kind, wc) {
+    let origin = '';
+    try {
+      origin = originOf(wc.getURL());
+    } catch {}
+    const key = `${kind}|${origin}`;
+    if (this.autoAnswered.has(key)) return;
+    this.autoAnswered.add(key);
+    this.log(`popup ${kind} answered without asking (popups get none):`, origin || '-');
+  }
+
+  // Whether `wc` is a popup's.
+  isPopupWc(wc) {
+    for (const win of this.popups.keys()) {
+      try {
+        if (!win.isDestroyed() && win.webContents === wc) return true;
+      } catch {}
+    }
+    return false;
   }
 
   // The popups follow the window the pages are in (the dock's while docked) and its level and
@@ -277,7 +380,7 @@ class ViewManager {
     const lvl = this.hooks.popupLevel ? this.hooks.popupLevel() : null;
     if (!lvl) return;
     try {
-      if (lvl.raised) win.setAlwaysOnTop(true, 'normal', 1);
+      if (lvl.raised) win.setAlwaysOnTop(true, ...lvl.level);
       else win.setAlwaysOnTop(false);
       win.setVisibleOnAllWorkspaces(!!lvl.allSpaces, { visibleOnFullScreen: !!lvl.allSpaces, skipTransformProcessType: true });
     } catch (e) {
@@ -299,7 +402,22 @@ class ViewManager {
       try {
         parent = win.getParentWindow();
       } catch {}
-      out.push({ owner: p.owner, url: win.webContents.getURL(), bounds: win.getBounds(), parent_is_host: !!parent && parent === this.host, visible: win.isVisible(), always_on_top: win.isAlwaysOnTop() });
+      out.push({
+        owner: p.owner,
+        url: win.webContents.getURL(),
+        title: win.getTitle(),
+        bounds: win.getBounds(),
+        parent_is_host: !!parent && parent === this.host,
+        visible: win.isVisible(),
+        hidden_with_tab: p.hidden,
+        always_on_top: win.isAlwaysOnTop(),
+        frame: p.frame,
+        transparent: p.transparent,
+        closable: win.isClosable(),
+        movable: win.isMovable(),
+        resizable: win.isResizable(),
+        opacity: win.getOpacity(),
+      });
     }
     return out;
   }
@@ -307,7 +425,7 @@ class ViewManager {
   closePopups() {
     for (const win of [...this.popups.keys()]) {
       try {
-        if (!win.isDestroyed()) win.close();
+        if (!win.isDestroyed()) win.destroy(); // never asks the page (beforeunload)
       } catch {}
     }
   }
@@ -342,6 +460,7 @@ class ViewManager {
     ses.setPermissionRequestHandler((wc, permission, cb, details = {}) => {
       if (ALLOWED.has(permission)) return cb(true);
       const viewId = this.viewIdOf(wc);
+      if (PROMPTED.has(permission) && !viewId && this.isPopupWc(wc)) this.noteAutoAnswer(`permission ${permission}`, wc);
       if (!PROMPTED.has(permission) || !viewId || !this.hooks.onPermission) return cb(false);
       const origin = originOf(details.requestingUrl || (wc && wc.getURL()) || '');
       if (!origin || origin === 'null') return cb(false);
@@ -502,7 +621,7 @@ class ViewManager {
       // window.open / target=_blank / cmd+click: a sign-in popup is a child window with its
       // opener, anything else a new view in the same group (src/popups.js)
       wc.setWindowOpenHandler(this._openHandler(id));
-      wc.on('did-create-window', (win) => this._adoptPopup(win, id));
+      wc.on('did-create-window', (win, d) => this._adoptPopup(win, id, d));
     }
   }
 

@@ -697,4 +697,4 @@ class DockController {
   }
 }
 
-module.exports = { DockCore, DockController, SETTLE_MS, RESETTLE_MS, FRONT_SETTLE_MS, PAIR_MS, NO_WINDOW, NOT_MAC, CONFIG_PENDING, CONFIG_FOLLOW_MS, FRONT_TIMEOUT_MS, geometryKey, activatedPid, pairStatus };
+module.exports = { RAISED, DockCore, DockController, SETTLE_MS, RESETTLE_MS, FRONT_SETTLE_MS, PAIR_MS, NO_WINDOW, NOT_MAC, CONFIG_PENDING, CONFIG_FOLLOW_MS, FRONT_TIMEOUT_MS, geometryKey, activatedPid, pairStatus };

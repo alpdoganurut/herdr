@@ -24,6 +24,7 @@ contextBridge.exposeInMainWorld('__herdrCompanion', {
   page_menu: (args) => call('page_menu', args), // the last page context menu ({close}: closes it)
   sessions_menu: () => call('sessions_menu'), // the pill menu's items as last built
   popups: () => call('popups'), // the pages' open sign-in popups (src/popups.js)
+  popup_key: (args) => call('popup_key', args), // {index, key}: an app-menu key in an open popup
   bar_debug: () => call('bar_debug'), // the bar's last layout, what the bars reported, the saved pins
   view_pixels: (args) => call('view_pixels', args), // {view_id, points}: the compositor's pixels of a view (capturePage)
   send_key: (args) => call('send_key', args), // {view_id | surface: 'bar' | 'dock', keyCode, modifiers}: a key as the keyboard sends it

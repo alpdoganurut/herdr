@@ -14,7 +14,7 @@ const { resolveSocketPath, serialized } = require('./herdr-api.js');
 const { parseManaged, registerFields, startupWindow, watchdogFor, onQuitSignals } = require('./managed.js');
 const { PlacementFeed, anyDockPlacement } = require('./dock/placements.js');
 const { WindowProbe } = require('./dock/window-probe.js');
-const { DockController } = require('./dock/dock.js');
+const { DockController, RAISED } = require('./dock/dock.js');
 const { sessionCounts, sessionMenuItems } = require('./info.js');
 const { pageMenuItems, pageMenuActions } = require('./context-menu.js');
 const bar = require('./ui/bar-model.js');
@@ -105,7 +105,9 @@ app.commandLine.appendSwitch('disable-blink-features', 'AutomationControlled');
 // default, not its session's, and Google's sign-in reads it.
 try {
   app.userAgentFallback = app.userAgentFallback.replace(/\sElectron\/\S+/, '');
-} catch {}
+} catch (e) {
+  log('default user agent not set:', e && e.message);
+}
 // test runs: an uncaught exception in the main process goes to the log (the e2e checks read
 // it), never to Electron's error dialog
 if (MANAGED.testHooks) process.on('uncaughtException', (e) => log('uncaught exception', e && e.stack ? e.stack : e));
@@ -622,6 +624,9 @@ class Companion {
     }
     const e = this.activeEntry();
     this.views.layout(e ? e.view_id : null, { x: 0, y: top, width: w, height: Math.max(0, h - top) });
+    // the sign-in popups of the shown herdr tab's pages show, the others hide with their tab
+    const sg = this.shownGroup();
+    this.views.showPopupsOf(sg ? sg.entries.map((x) => x.view_id) : []);
     this.layoutDialog();
     const title = this.windowTitle();
     if (this.win) this.win.setTitle(title);
@@ -1058,7 +1063,10 @@ class Companion {
         e.returnValue = value;
       } catch {}
     };
-    if (!viewId || !this.store.findView(viewId)) return reply(null);
+    if (!viewId || !this.store.findView(viewId)) {
+      if (!viewId && this.views.isPopupWc(e.sender)) this.views.noteAutoAnswer(`dialog ${req && req.type}`, e.sender);
+      return reply(null);
+    }
     const d = this.dialogs.open(viewId, req, reply, { frame, ancestors, alive, info: { origin: origin && origin !== 'null' ? origin : '', embedded } });
     if (!d) return;
     log('dialog', d.id, d.type, viewId);
@@ -1255,6 +1263,14 @@ class Companion {
           // the pages' open sign-in popups (src/popups.js): owner view, url, bounds, parent
           if (!MANAGED.testHooks) return errOut('unknown_op', 'unknown control op popups');
           return this.views.popupList();
+        case 'popup_key': {
+          // {index, key}: an app-menu key (w, r, [, ]) in the index-th open popup, as with it focused
+          if (!MANAGED.testHooks) return errOut('unknown_op', 'unknown control op popup_key');
+          const win = [...this.views.popups.keys()].filter((x) => !x.isDestroyed())[(a && a.index) || 0];
+          if (!win) return errOut('not_found', 'no such popup');
+          this.popupKey(win, a && a.key);
+          return { ok: true };
+        }
         case 'bar_debug':
           // the last bar layout: which window, its surface and pin, where the page starts and
           // how tall the bar's own area is, what the bars reported, the saved pins
@@ -1783,7 +1799,7 @@ class Companion {
   popupLevel() {
     if (HEADLESS) return null;
     const docked = !!(this.docked && this.dock);
-    return { raised: docked && this.dock.level === 'raised', allSpaces: docked && !!this.dock.fullScreen };
+    return { raised: docked && this.dock.level === 'raised', level: RAISED, allSpaces: docked && !!this.dock.fullScreen };
   }
 
   // dock.js: the dock's level or Spaces changed (the popups follow).
