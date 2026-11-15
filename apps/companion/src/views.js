@@ -186,6 +186,8 @@ class ViewManager {
     this.popupPending = new Map(); // owner view_id -> times of allowed opens not yet created (the cap counts them)
     this.popupShown = null; // the view ids whose popups may show (the shown herdr tab's group); null: all
     this.autoAnswered = new Set(); // `${kind}|${origin}` already logged (a popup's dialog or permission)
+    // the last layout(): {shownViewId, bounds}; null until the first (views are placed by it)
+    this.placed = null;
   }
 
   // A view that stays above the pages in whatever window hosts them.
@@ -588,7 +590,8 @@ class ViewManager {
     }
     // pageApi: the bridge was given; pageToken: the current document's (a new document asks
     // for a new one: did-navigate clears it)
-    const rec = { view, entry, rootReal, target: null, ready: null, grants: new Set(), pageApi, pageToken: null };
+    // paintHeld/paintTimer: a hold for an agent's capture (holdPaint)
+    const rec = { view, entry, rootReal, target: null, ready: null, grants: new Set(), pageApi, pageToken: null, paintHeld: false, paintTimer: null };
     this.live.set(entry.view_id, rec);
     view.setVisible(false);
     (this.host || win).contentView.addChildView(view);

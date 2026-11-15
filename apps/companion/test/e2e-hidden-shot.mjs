@@ -10,6 +10,8 @@
 // shown page must stay on top during the capture (the stacking order) and look the same.
 // A full-page shot of a never-shown tab must also leave it drawing right once shown (the
 // capture-race protections, test/e2e-capture-race.mjs).
+// Two overlapping shots of one tab share its paint holds (the first one's end keeps the
+// second's), and a shown page with no CSS background stays opaque over a held view.
 //
 // Starts ONE headless Electron (at a Retina scale factor: the inline copy is taken too), quits
 // it through its control page. Run: node test/e2e-hidden-shot.mjs
@@ -76,6 +78,7 @@ const control = (viewId) => ({
 });
 
 const FRONT_RGB = [51, 170, 119];
+let frontRgb = FRONT_RGB; // the shown page's colour (white for a page with no CSS background)
 let files = 0;
 const pageFile = (title, color = '#a37') => {
   const f = path.join(tmp, `p${++files}.html`);
@@ -130,11 +133,13 @@ async function session(target) {
 }
 
 const near = (a, b) => a && b && Math.abs(a[0] - b[0]) <= 6 && Math.abs(a[1] - b[1]) <= 6 && Math.abs(a[2] - b[2]) <= 6;
+// the compositor's pixel is opaque (view_pixels answers RGBA)
+const opaque = (p) => p && p[3] === 255;
 let frontId = null;
 // what the user sees of the shown page (the compositor's pixels), at three points
 async function frontLooksRight() {
   const px = await call('view_pixels', { view_id: frontId, points: [[40, 300], [600, 500], [1100, 700]] });
-  return !!(px && px.pixels && px.pixels.every((p) => near(p, FRONT_RGB)));
+  return !!(px && px.pixels && px.pixels.every((p) => near(p, frontRgb) && opaque(p)));
 }
 // view_pixels is the front view's own surface (what is above it does not show there): the
 // stacking order says whether anything visible sits above the shown page. While `viewId` is
@@ -166,9 +171,14 @@ const jpegSize = (buf) => {
 // (the viewport, or the whole document with `full`), then the scaled inline copy when the
 // picture is larger than 1568 px, then the hold let go. `selects` counts quiet selects;
 // `during` runs while the hold is on (the user's view is checked there).
+// a page's capture lane and paint holds, shared by its ops (the host's page state)
+const lanes = new Map();
+const holdsByView = new Map();
+const laneOf = (viewId) => lanes.get(viewId) || lanes.set(viewId, new activity.CaptureLane()).get(viewId);
+const holdsOf = (viewId) => holdsByView.get(viewId) || holdsByView.set(viewId, new activity.PaintHolds({ control: control(viewId), target: viewId, log: (t) => console.log('     ', t) })).get(viewId);
 async function hostShot(s, viewId, { full = false, selects = { n: 0 }, during = null } = {}) {
   const shots = [];
-  const lane = new activity.CaptureLane();
+  const lane = laneOf(viewId);
   const deadlineAt = Date.now() + 30000;
   const log = () => {};
   const select = () => {
@@ -176,7 +186,8 @@ async function hostShot(s, viewId, { full = false, selects = { n: 0 }, during = 
     return call('select', viewId).then((r) => !(r && r.error));
   };
   const t0 = Date.now();
-  const held = activity.paintHold ? await activity.paintHold({ control: control(viewId), target: viewId, ms: deadlineAt - Date.now(), log: (t) => console.log('     ', t) }) : false;
+  const hold = await holdsOf(viewId).acquire(deadlineAt);
+  const held = hold.held;
   let duringOk = null;
   try {
     if (during) duringOk = await during(viewId);
@@ -199,7 +210,7 @@ async function hostShot(s, viewId, { full = false, selects = { n: 0 }, during = 
     return { err: err.message, code: err.code || null, held, during: duringOk, ms: Date.now() - t0 };
   } finally {
     for (const shot of shots) shot.abandon();
-    if (held) await activity.paintHold({ control: control(viewId), target: viewId, ms: 0 });
+    await holdsOf(viewId).release(hold.token);
   }
 }
 
@@ -226,6 +237,7 @@ async function twoShots(name, v, viewId) {
   }
 }
 
+let other = null; // case 1's tab (hidden, in w1:t2)
 try {
   startCompanion();
   check('the companion registers', await waitFor(() => mock.state.lease, 40000));
@@ -250,6 +262,7 @@ try {
     await waitFor(async () => (await shownViews()).includes(frontId), 3000);
     await sleep(HIDDEN_SETTLE_MS);
     await twoShots('a tab in a herdr tab not shown, shown there before', v, id);
+    other = { v, id };
   }
 
   // 2. A loaded tab in a herdr tab never shown (an agent's tab in its own herdr tab).
@@ -279,6 +292,41 @@ try {
     await loaded(v.s, 'web');
     await sleep(HIDDEN_SETTLE_MS);
     await twoShots('a web page in a herdr tab not shown', v, id);
+  }
+
+  // 6. Two overlapping screenshots of one hidden tab: the first one ends (and lets go of its
+  //    hold) while the second has not captured yet; the second's hold keeps the tab painting.
+  {
+    await sleep(HIDDEN_SETTLE_MS);
+    let firstDone;
+    const done = new Promise((r) => { firstDone = r; });
+    const selectsB = { n: 0 };
+    const second = hostShot(other.v.s, other.id, {
+      selects: selectsB,
+      // after the first op is over, longer than a hidden view keeps drawing
+      during: async (viewId) => { await done; await sleep(HIDDEN_SETTLE_MS); return coveredWhileHeld(viewId); },
+    });
+    const selectsA = { n: 0 };
+    const first = await hostShot(other.v.s, other.id, { selects: selectsA, during: coveredWhileHeld });
+    firstDone();
+    const last = await second;
+    check('two overlapping shots of one hidden tab: both drawn, no quiet select, the second still held after the first ends', first.bytes > 1000 && last.bytes > 1000 && selectsA.n + selectsB.n === 0 && first.during === true && last.during === true && (await onlyFrontVisible()), { first, second: last, selects: selectsA.n + selectsB.n });
+  }
+
+  // 7. The shown page has no CSS background: it is still opaque (white, alpha 255) over a
+  //    view held for a capture.
+  {
+    const f = path.join(tmp, `p${++files}.html`);
+    fs.writeFileSync(f, '<!doctype html><title>plain</title><p>plain</p>');
+    const plain = await newView(() => call('show', { tab_id: 'w1:t1', file: f, focus: true }));
+    frontId = (await plain.answer).view_id;
+    frontRgb = [255, 255, 255];
+    await loaded(plain.s, 'plain');
+    await waitFor(async () => JSON.stringify(await shownViews()) === JSON.stringify([frontId]), 3000);
+    await sleep(HIDDEN_SETTLE_MS);
+    const selects = { n: 0 };
+    const shot = await hostShot(other.v.s, other.id, { selects, during: coveredWhileHeld });
+    check('a shown page with no CSS background stays opaque white over a held tab', shot.bytes > 1000 && selects.n === 0 && shot.during === true && (await onlyFrontVisible()), { shot, selects: selects.n });
   }
 
   // 5. A full-page shot of a never-shown tab of the shown herdr tab: drawn, and once the user

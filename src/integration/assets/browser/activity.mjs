@@ -506,30 +506,91 @@ export async function firstShot({ send, lane, type, quality, element = null, ful
 /** The most a screenshot waits for the companion's paint hold (or its release). */
 export const PAINT_CALL_MS = 1500;
 
+/** How long a page's paint holds wait behind a companion call that never
+ *  settles before the next one goes anyway (one stuck call must not wedge them). */
+export const PAINT_STALE_MS = 10000;
+
 /** A companion tab paints for a screenshot's captures: the companion's `paint`
  *  ({view_id, ms}, 0.2.11) makes a hidden view visible under the shown page,
- *  unseen, until `ms` passes or a `ms` 0 call lets it go. Chromium draws no
- *  frame for a hidden view (shown before: from a few seconds after it was
- *  hidden; never shown: its renderer has no size at all), so a CDP capture of
- *  one waits for a frame that never comes. `control` is the companion's
- *  ControlPage, `target` the page's target id. Answers true when the view
- *  paints now; false when the companion does not hold it (no page shown to
- *  cover it), is older than `paint` (not logged), or did not answer within
- *  `callMs`: the capture then goes as it did before. */
-export async function paintHold({ control, target, ms, log = () => {}, callMs = PAINT_CALL_MS }) {
-  let timer = null;
-  const late = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`the companion did not answer paint in ${callMs} ms`)), callMs); });
-  try {
-    const call = Promise.resolve().then(() => control.viewOf(target))
-      .then((view) => control.call('paint', { view_id: view, ms: Math.max(0, Math.round(Number(ms) || 0)) }));
-    call.catch(() => {});
-    const out = await Promise.race([call, late]);
-    return Boolean(out && out.held);
-  } catch (err) {
-    if (!err.missing) log(`paint hold: ${err.message}`);
-    return false;
-  } finally {
-    clearTimeout(timer);
+ *  unseen, until `ms` passes or a `ms` 0 call lets it go. A CDP capture of a
+ *  hidden view stops being answered from a few seconds after it was hidden
+ *  (one never shown has no size at all). A companion older than `paint` answers
+ *  `missing` (not logged), one that does not answer within PAINT_CALL_MS is
+ *  not waited for: the capture then goes as it did before.
+ *
+ *  One companion page's paint holds, shared by every screenshot op of the page
+ *  (ops run concurrently). Each op `acquire`s with its deadline and `release`s
+ *  its token after its captures; the companion is told one state, the latest
+ *  outstanding deadline (its hold replaces its timer on each call, so a shorter
+ *  later op must not shorten an earlier one), and `ms` 0 only once no op holds.
+ *  Calls go one at a time, each reading that state when it is about to be sent
+ *  (after the view id is known), so a call that answers late is followed by the
+ *  state that is current then: an acquisition that timed out never outlives its
+ *  op, and one whose op ended before it was sent is not sent at all. Answers of
+ *  acquire: `{ token, held }` (held: the companion paints the view now). */
+export class PaintHolds {
+  constructor({ control, target, log = () => {}, callMs = PAINT_CALL_MS, staleMs = PAINT_STALE_MS, now = Date.now }) {
+    this.control = control; // the ControlPage, or a function answering it
+    this.target = target;
+    this.log = log;
+    this.callMs = callMs;
+    this.staleMs = staleMs;
+    this.now = now;
+    this.deadlines = new Map(); // token -> the op's deadline (epoch ms)
+    this.nextToken = 1;
+    this.sent = null; // the last ms the companion was sent (null: none yet)
+    this.tail = Promise.resolve();
+    this.queued = null; // a sync not started yet (a later one shares it)
+  }
+  /** The ms the companion should hold now: to the latest outstanding deadline. */
+  wanted() {
+    let latest = 0;
+    for (const at of this.deadlines.values()) latest = Math.max(latest, at);
+    return latest ? Math.max(0, Math.round(latest - this.now())) : 0;
+  }
+  /** Sends the current state after the calls before it; answers the companion's held. */
+  sync() {
+    if (this.queued) return this.queued;
+    const run = async () => {
+      this.queued = null;
+      const control = typeof this.control === 'function' ? this.control() : this.control;
+      const view = await control.viewOf(this.target);
+      const ms = this.wanted();
+      // nothing held and nothing to take back: not sent at all
+      if (ms === 0 && !this.sent) return false;
+      this.sent = ms;
+      const out = await control.call('paint', { view_id: view, ms });
+      return Boolean(out && out.held);
+    };
+    const step = this.tail.then(run);
+    this.queued = step;
+    step.catch(() => {});
+    let timer = null;
+    const stale = new Promise((resolve) => { timer = setTimeout(resolve, this.staleMs); });
+    this.tail = Promise.race([step.then(() => {}, () => {}), stale]).finally(() => clearTimeout(timer));
+    return step;
+  }
+  /** `sync()`, waited for at most callMs; false on a timeout or a failure. */
+  async settle() {
+    let timer = null;
+    const late = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`the companion did not answer paint in ${this.callMs} ms`)), this.callMs); });
+    try {
+      return await Promise.race([this.sync(), late]);
+    } catch (err) {
+      if (!err.missing) this.log(`paint hold: ${err.message}`);
+      return false;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  async acquire(deadlineAt) {
+    const token = this.nextToken++;
+    this.deadlines.set(token, deadlineAt);
+    return { token, held: await this.settle() };
+  }
+  async release(token) {
+    this.deadlines.delete(token);
+    await this.settle();
   }
 }
 

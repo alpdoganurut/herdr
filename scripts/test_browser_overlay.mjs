@@ -10,7 +10,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { Overlay, Companion, OVERLAY_JS, dismissPanes, captureWithQuietRetry, CaptureLane, laneShot, captureTimeout, shotParams, clipReady, cleanCapture, firstShot, paintHold, FRAME_LINGER_MS, CURSOR_LINGER_MS, LINGER_MS } from '../src/integration/assets/browser/activity.mjs';
+import { Overlay, Companion, OVERLAY_JS, dismissPanes, captureWithQuietRetry, CaptureLane, laneShot, captureTimeout, shotParams, clipReady, cleanCapture, firstShot, PaintHolds, FRAME_LINGER_MS, CURSOR_LINGER_MS, LINGER_MS } from '../src/integration/assets/browser/activity.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function check(cond, msg) { if (!cond) { console.error(`FAIL: ${msg}`); process.exit(1); } }
@@ -472,28 +472,89 @@ groups.set(43, { id: 43, windowId: 1, title: 'mine', color: 'red', collapsed: fa
 tabs.set(6, { id: 6, windowId: 1, groupId: 43, url: 'https://b.test/', title: 'B' });
 reply = await self.herdrGroup({ key: 'w1:p2', tabId: 6, title: '◇ review', color: 'cyan', wasGrouped: false, active: true });
 check(reply.skipped === 'other_group' && groups.get(43).title === 'mine', `another group is left alone: ${JSON.stringify(reply)}`);
-// ------------------------------------------- the companion's paint hold for a capture
+// ------------------------------------------- the companion's paint holds for captures
 {
-  const calls = [];
-  const logs = [];
-  const control = (answer) => ({
-    viewOf: async (target) => `view-of-${target}`,
-    call: async (fn, arg) => { calls.push([fn, arg]); return answer(fn, arg); },
-  });
-  const held = await paintHold({ control: control(() => ({ ok: true, held: true })), target: 'T1', ms: 12345.6, log: (t) => logs.push(t) });
-  check(held === true && JSON.stringify(calls.at(-1)) === JSON.stringify(['paint', { view_id: 'view-of-T1', ms: 12346 }]), `a hold asks the companion's paint for the view and the op's time: ${JSON.stringify(calls)}`);
-  check(await paintHold({ control: control(() => ({ ok: true, held: false })), target: 'T1', ms: 0 }) === false && calls.at(-1)[1].ms === 0, 'a release is a 0 ms hold');
-  // nothing shown to cover it: not held, the capture goes as before
-  check(await paintHold({ control: control(() => ({ ok: true, held: false })), target: 'T1', ms: 5000 }) === false, 'a hold the companion refuses is not held');
+  // a fake companion control page: records every paint it gets (in the order it gets them)
+  const fake = ({ viewMs = 0, callMs = 0, answer = () => ({ ok: true, held: true }) } = {}) => {
+    const paints = [];
+    return {
+      paints,
+      viewOf: async (target) => { if (viewMs) await sleep(viewMs); return `view-of-${target}`; },
+      call: async (fn, arg) => { paints.push(arg.ms); if (callMs) await sleep(callMs); return answer(fn, arg); },
+    };
+  };
+  let t = 1000000;
+  const now = () => t;
+  // a hold, then its release
+  {
+    const c = fake();
+    const holds = new PaintHolds({ control: c, target: 'T1', now });
+    const a = await holds.acquire(t + 12345);
+    check(a.held === true && c.paints.join() === '12345', `a hold asks paint for the op's time: ${c.paints}`);
+    await holds.release(a.token);
+    check(c.paints.join() === '12345,0', `the release sends 0: ${c.paints}`);
+  }
+  // two overlapping screenshots of one tab: the first one's release keeps the second's hold,
+  // and a shorter later op never shortens an earlier one's
+  {
+    const c = fake();
+    const holds = new PaintHolds({ control: () => c, target: 'T1', now });
+    const first = await holds.acquire(t + 30000);
+    const second = await holds.acquire(t + 10000);
+    check(c.paints.join() === '30000,30000', `the latest deadline is held: ${c.paints}`);
+    await holds.release(first.token);
+    check(c.paints.at(-1) === 10000, `the first op done, the second's hold stays: ${c.paints}`);
+    await holds.release(second.token);
+    check(c.paints.at(-1) === 0 && c.paints.filter((ms) => ms === 0).length === 1, `0 only once no op holds: ${c.paints}`);
+  }
+  // a hold whose view id comes late (after its op timed out and let go): never sent
+  {
+    const c = fake({ viewMs: 150 });
+    const holds = new PaintHolds({ control: c, target: 'T1', now, callMs: 30 });
+    const a = await holds.acquire(t + 30000);
+    check(a.held === false, 'a hold that does not answer in time is not held');
+    await holds.release(a.token);
+    await sleep(400);
+    check(c.paints.length === 0, `an acquisition its op outlived is not sent: ${c.paints}`);
+  }
+  // a hold the companion answers late: the release goes after it, so it never outlives its op
+  {
+    const c = fake({ callMs: 150 });
+    const holds = new PaintHolds({ control: c, target: 'T1', now, callMs: 30 });
+    const a = await holds.acquire(t + 30000);
+    await holds.release(a.token);
+    await sleep(500);
+    check(c.paints.join() === '30000,0', `a late hold is followed by its release: ${c.paints}`);
+  }
   // a companion older than paint (0.2.10 and before): not held, nothing logged
-  const missing = Object.assign(new Error('the control page has no paint()'), { code: 'host_verify_failed', missing: true });
-  logs.length = 0;
-  check(await paintHold({ control: control(() => { throw missing; }), target: 'T1', ms: 5000, log: (t) => logs.push(t) }) === false && logs.length === 0, `an older companion is not held and not logged: ${JSON.stringify(logs)}`);
-  // a gone view, a companion that does not answer: not held, logged, never past callMs
-  check(await paintHold({ control: control(() => { throw Object.assign(new Error('no view v9'), { code: 'view_not_found' }); }), target: 'T1', ms: 5000, log: (t) => logs.push(t) }) === false && /no view v9/.test(logs.at(-1)), 'a failed hold is logged and not held');
-  const t0 = Date.now();
-  const late = await paintHold({ control: control(() => new Promise(() => {})), target: 'T1', ms: 5000, log: (t) => logs.push(t), callMs: 50 });
-  check(late === false && Date.now() - t0 < 1000 && /did not answer paint/.test(logs.at(-1)), `a companion that does not answer is not waited for: ${Date.now() - t0} ms`);
+  {
+    const logs = [];
+    const missing = Object.assign(new Error('the control page has no paint()'), { code: 'host_verify_failed', missing: true });
+    const holds = new PaintHolds({ control: fake({ answer: () => { throw missing; } }), target: 'T1', now, log: (x) => logs.push(x) });
+    const a = await holds.acquire(t + 5000);
+    await holds.release(a.token);
+    check(a.held === false && logs.length === 0, `an older companion is not held and not logged: ${JSON.stringify(logs)}`);
+  }
+  // a gone view: not held, logged
+  {
+    const logs = [];
+    const holds = new PaintHolds({ control: fake({ answer: () => { throw Object.assign(new Error('no view v9'), { code: 'view_not_found' }); } }), target: 'T1', now, log: (x) => logs.push(x) });
+    const a = await holds.acquire(t + 5000);
+    check(a.held === false && /no view v9/.test(logs.at(-1)), 'a failed hold is logged and not held');
+  }
+  // a companion that never answers: not waited for, and later holds go after the stale cap
+  {
+    const c = fake();
+    let stuck = true;
+    const ctl = { viewOf: c.viewOf, call: (fn, arg) => (stuck ? (stuck = false, c.paints.push(arg.ms), new Promise(() => {})) : c.call(fn, arg)) };
+    const holds = new PaintHolds({ control: ctl, target: 'T1', now, callMs: 30, staleMs: 100 });
+    const t0 = Date.now();
+    const a = await holds.acquire(t + 5000);
+    check(a.held === false && Date.now() - t0 < 500, `a companion that does not answer is not waited for: ${Date.now() - t0} ms`);
+    await holds.release(a.token);
+    await sleep(300);
+    check(c.paints.join() === '5000,0', `the release goes after the stale cap: ${c.paints}`);
+  }
 }
 
 console.log('ok: the frame lives for the activity window, the cursor stays, a gone pane dismisses it, the group title carries the mark while active');
