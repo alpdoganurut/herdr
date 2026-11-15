@@ -1223,6 +1223,13 @@ class Companion {
         }
         case 'focus':
           return await this.ctlFocus(a);
+        case 'paint': {
+          // {view_id, ms}: a hidden view paints for an agent's capture, `ms` 0 lets it go
+          const r = a || {};
+          const held = this.views.holdPaint(String(r.view_id || ''), r.ms);
+          if (held === null) return errOut('view_not_found', `no view ${r.view_id}`);
+          return { ok: true, view_id: String(r.view_id), held };
+        }
         case 'close': {
           const hit = this.closeView(a);
           if (!hit) return errOut('view_not_found', `no view ${a}`);
@@ -1302,6 +1309,10 @@ class Companion {
           wc.sendInputEvent({ type: 'keyUp', keyCode: String(r.keyCode || ''), modifiers });
           return { ok: true };
         }
+        case 'view_stack':
+          // the pages bottom first, with their visibility
+          if (!MANAGED.testHooks) return errOut('unknown_op', 'unknown control op view_stack');
+          return this.views.stack();
         case 'view_pixels': {
           // what the compositor shows of a view (webContents.capturePage, not a CDP capture):
           // its size and the RGBA of the asked points ({view_id, points: [[x, y], ...]}, DIPs)

@@ -7,7 +7,7 @@
 // capture is the host's own (activity.mjs paintHold around firstShot and the scaled inline
 // copy, as host.mjs screenshot takes them) on a raw CDP session, as the host's. None may need
 // the quiet select (on the shown herdr tab it changes the page the user sees), and the user's
-// shown page must look the same during the capture (the compositor's pixels, capturePage).
+// shown page must stay on top during the capture (the stacking order) and look the same.
 // A full-page shot of a never-shown tab must also leave it drawing right once shown (the
 // capture-race protections, test/e2e-capture-race.mjs).
 //
@@ -136,6 +136,21 @@ async function frontLooksRight() {
   const px = await call('view_pixels', { view_id: frontId, points: [[40, 300], [600, 500], [1100, 700]] });
   return !!(px && px.pixels && px.pixels.every((p) => near(p, FRONT_RGB)));
 }
+// view_pixels is the front view's own surface (what is above it does not show there): the
+// stacking order says whether anything visible sits above the shown page. While `viewId` is
+// held for a capture it is visible and under the shown page; never anything visible above it.
+async function coveredWhileHeld(viewId) {
+  const stack = await call('view_stack');
+  const front = stack.findIndex((x) => x.view_id === frontId);
+  const held = stack.findIndex((x) => x.view_id === viewId);
+  const aboveFront = stack.slice(front + 1).filter((x) => x.visible).map((x) => x.view_id);
+  return front >= 0 && held >= 0 && held < front && stack[held].visible && aboveFront.length === 0 && (await frontLooksRight());
+}
+// After the capture: only the shown page is visible.
+async function onlyFrontVisible() {
+  const visible = (await call('view_stack')).filter((x) => x.visible).map((x) => x.view_id);
+  return JSON.stringify(visible) === JSON.stringify([frontId]);
+}
 
 const jpegSize = (buf) => {
   for (let i = 2; i < buf.length - 9; ) {
@@ -164,7 +179,7 @@ async function hostShot(s, viewId, { full = false, selects = { n: 0 }, during = 
   const held = activity.paintHold ? await activity.paintHold({ control: control(viewId), target: viewId, ms: deadlineAt - Date.now(), log: (t) => console.log('     ', t) }) : false;
   let duringOk = null;
   try {
-    if (during) duringOk = await during();
+    if (during) duringOk = await during(viewId);
     const answer = await activity.firstShot({ send: s.send, lane, type: 'jpeg', quality: 70, full, select, log, deadlineAt, stallMs: 5000, shots });
     const first = Date.now() - t0;
     const size = jpegSize(Buffer.from(answer.data, 'base64'));
@@ -203,10 +218,10 @@ const shownViews = async () => ((await ctl('__herdrCompanion.views()')) || []).f
 async function twoShots(name, v, viewId) {
   for (const k of [1, 2]) {
     const selects = { n: 0 };
-    const shot = await hostShot(v.s, viewId, { selects, during: frontLooksRight });
+    const shot = await hostShot(v.s, viewId, { selects, during: coveredWhileHeld });
     const after = await shownViews();
-    const front = await frontLooksRight();
-    check(`${name} (shot ${k}): drawn, no quiet select, the user's page unchanged`, shot.bytes > 1000 && selects.n === 0 && shot.during !== false && front && JSON.stringify(after) === JSON.stringify([frontId]), { shot, selects: selects.n, after, front });
+    const front = (await frontLooksRight()) && (await onlyFrontVisible());
+    check(`${name} (shot ${k}): drawn, no quiet select, held under the shown page, the user's page unchanged`, shot.bytes > 1000 && selects.n === 0 && shot.during === true && front && JSON.stringify(after) === JSON.stringify([frontId]), { shot, selects: selects.n, after, front });
     if (k === 1) await sleep(HIDDEN_SETTLE_MS);
   }
 }
@@ -274,7 +289,7 @@ try {
     await loaded(v.s, 'bands');
     await sleep(HIDDEN_SETTLE_MS);
     const selects = { n: 0 };
-    const shot = await hostShot(v.s, id, { full: true, selects, during: frontLooksRight });
+    const shot = await hostShot(v.s, id, { full: true, selects, during: coveredWhileHeld });
     await call('select', id);
     await sleep(300);
     await v.s.evaluate('window.scrollTo(0, 1000); new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))');
@@ -284,7 +299,7 @@ try {
     const px = await call('view_pixels', { view_id: id, points });
     const want = points.map(([, py]) => band(Math.floor((m.scrollY + py) / 100)));
     const drawn = !!(px && px.pixels && px.pixels.every((p, i) => near(p, want[i])));
-    check('a full-page shot of a never-shown tab: drawn, no quiet select; shown and scrolled, it draws its scrolled frame', shot.bytes > 1000 && selects.n === 0 && shot.during !== false && drawn, { shot, selects: selects.n, m, pixels: px && px.pixels, want });
+    check('a full-page shot of a never-shown tab: drawn, no quiet select; shown and scrolled, it draws its scrolled frame', shot.bytes > 1000 && selects.n === 0 && shot.during === true && drawn, { shot, selects: selects.n, m, pixels: px && px.pixels, want });
   }
 } catch (e) {
   check('no exception', false, String(e && e.stack));

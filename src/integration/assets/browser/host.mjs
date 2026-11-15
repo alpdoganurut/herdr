@@ -14,7 +14,7 @@ import { createRequire } from 'node:module';
 import readline from 'node:readline';
 import fs from 'node:fs';
 import { EXTRACT_SOURCE, LINKS_SOURCE } from './extract.mjs';
-import { Overlay, Companion, NUDGE_URL, dismissPanes, CaptureLane, laneShot, shotParams, firstShot, cleanCapture, clearClipEmulation, SELECT_BUDGET_MS, describe, probePages, ControlPage, ViewWatches, viewRefs, cssRefs, reloadKeepingState, refsInside, isFurnitureUrl, VIEW_MARKER, CompanionDialog, reconcileDialogs, pruneAnswered, DIALOG_BINDING } from './activity.mjs';
+import { Overlay, Companion, NUDGE_URL, dismissPanes, CaptureLane, laneShot, shotParams, firstShot, cleanCapture, clearClipEmulation, paintHold, SELECT_BUDGET_MS, describe, probePages, ControlPage, ViewWatches, viewRefs, cssRefs, reloadKeepingState, refsInside, isFurnitureUrl, VIEW_MARKER, CompanionDialog, reconcileDialogs, pruneAnswered, DIALOG_BINDING } from './activity.mjs';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import nodePath from 'node:path';
 // the act's change probe and timeout message (on a line of their own)
@@ -606,6 +606,12 @@ async function quietSelect(state) {
   if (!companion || companion.state !== 'ready') return false;
   return withTimeout(companion.select(state), SELECT_BUDGET_MS, 'x', 'x').catch((err) => { log('debug', `quiet select: ${err.message}`); return false; });
 }
+/** A companion page paints for this op's captures (activity.mjs paintHold);
+ *  false for other profiles. */
+function paintFor(state, ms) {
+  if (state.profile.kind !== 'companion' || !state.profile.control) return Promise.resolve(false);
+  return paintHold({ control: state.profile.control, target: state.target, ms, log: (text) => log('debug', text) });
+}
 async function pageInfo(state) {
   const dialogOpen = await dialogStillOpen(state);
   let title = '';
@@ -907,6 +913,10 @@ const ops = {
     // The agent's picture is the page: the activity overlay steps aside for
     // both captures (the file and the inline copy).
     await state.overlay.suspend(true);
+    // A hidden companion tab (another herdr tab's, or not the selected one)
+    // paints, unseen, for the op's captures (paintHold); let go after them
+    // (also when the hold's answer came late: the companion may hold it).
+    await paintFor(state, deadlineAt - Date.now());
     let size; let inlinePath = null;
     try {
     // An element's box in page coordinates, scrolled into view first (visible
@@ -989,6 +999,7 @@ const ops = {
     }
     } finally {
       for (const shot of shots) shot.abandon();
+      await paintFor(state, 0);
       await state.overlay.suspend(false);
     }
     return { result: { path: args.path, inline_path: inlinePath, width: size.width, height: size.height, bytes: buffer.length }, page: await pageInfo(state) };

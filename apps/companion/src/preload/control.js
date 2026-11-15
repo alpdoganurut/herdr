@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('__herdrCompanion', {
   open: (args) => call('open', args),
   select: (viewId) => call('select', viewId),
   focus: (viewId) => call('focus', viewId),
+  paint: (args) => call('paint', args), // {view_id, ms}: a hidden view paints for a capture (ms 0: let go)
   close: (viewId) => call('close', viewId),
   show: (args) => call('show', args),
   views: () => call('views'),
@@ -26,6 +27,7 @@ contextBridge.exposeInMainWorld('__herdrCompanion', {
   popups: () => call('popups'), // the pages' open sign-in popups (src/popups.js)
   popup_key: (args) => call('popup_key', args), // {index, key}: an app-menu key in an open popup
   bar_debug: () => call('bar_debug'), // the bar's last layout, what the bars reported, the saved pins
+  view_stack: () => call('view_stack'), // the pages bottom first: [{view_id, visible}]
   view_pixels: (args) => call('view_pixels', args), // {view_id, points}: the compositor's pixels of a view (capturePage)
   send_key: (args) => call('send_key', args), // {view_id | surface: 'bar' | 'dock', keyCode, modifiers}: a key as the keyboard sends it
   strip_preview: (args) => call('strip_preview', args), // {dock, kind, features}: the floating bar as that surface; null: its own

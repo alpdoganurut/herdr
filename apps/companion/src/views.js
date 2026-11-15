@@ -14,6 +14,9 @@ const NETWORK_URLS = ['http://*/*', 'https://*/*', 'ws://*/*', 'wss://*/*'];
 const PAGE_PRELOAD = path.join(__dirname, 'preload', 'page.js');
 const { downloadAllowed } = require('./context-menu.js');
 const { openKind, popupWindowOptions, clampBounds, POPUP_CAP } = require('./popups.js');
+// The longest a hidden view paints for one capture hold (holdPaint); the sidecar asks for
+// what is left of its screenshot's deadline and lets go when its captures settle.
+const PAINT_HOLD_MAX_MS = 60000;
 
 // A page session's user agent without the Electron/x.y.z token: sites that see it serve their
 // desktop-app pages (Slack: window drag regions, app-only behaviour) instead of the web ones.
@@ -218,6 +221,8 @@ class ViewManager {
       } catch {}
       win.contentView.addChildView(v);
     }
+    // a view held for a capture goes back under the pages
+    for (const [id, rec] of this.live) if (rec.paintHeld) this._place(id, rec);
     if (this.hooks.onRaise) this.hooks.onRaise(win);
     this.syncPopups();
   }
@@ -441,6 +446,56 @@ class ViewManager {
     return liveWc(this.live.get(viewId));
   }
 
+  // A hidden view paints for an agent's capture for `ms` (at most PAINT_HOLD_MAX_MS; a new
+  // call extends the hold, `ms` 0 lets it go). Chromium draws no frame for a hidden view: a
+  // CDP capture of one waits for a frame that never comes (shown before, a few seconds after
+  // it was hidden; never shown, its renderer has no size at all). Held, it is visible at the
+  // shown page's bounds, under every other page: the shown page covers it, so the user sees
+  // nothing change. Not while no page is shown (nothing would cover it). Answers whether the
+  // view paints now; null: no such view.
+  holdPaint(viewId, ms) {
+    const rec = this.live.get(viewId);
+    if (!liveWc(rec)) return null;
+    const hold = Math.min(Math.max(0, Number(ms) || 0), PAINT_HOLD_MAX_MS);
+    if (rec.paintTimer) clearTimeout(rec.paintTimer);
+    rec.paintTimer = null;
+    if (!hold) {
+      this._releasePaint(viewId, rec);
+      return false;
+    }
+    // nothing shown to cover it: not held (the capture goes as it would have)
+    const p = this.placed;
+    if (!p || !p.shownViewId || !this.live.has(p.shownViewId)) {
+      this._releasePaint(viewId, rec);
+      return false;
+    }
+    rec.paintTimer = setTimeout(() => this._releasePaint(viewId, rec), hold);
+    if (!rec.paintHeld) {
+      rec.paintHeld = true;
+      this._place(viewId, rec);
+    }
+    return true;
+  }
+
+  _releasePaint(viewId, rec) {
+    if (rec.paintTimer) clearTimeout(rec.paintTimer);
+    rec.paintTimer = null;
+    if (!rec.paintHeld) return;
+    rec.paintHeld = false;
+    if (this.live.get(viewId) === rec) this._place(viewId, rec);
+  }
+
+  // The pages in the host window's stacking order, bottom first: {view_id, visible} (a test
+  // hook: a view held for a capture must sit under the shown one).
+  stack() {
+    const children = this.host ? this.host.contentView.children : [];
+    const out = [];
+    for (const child of children) {
+      for (const [id, rec] of this.live) if (rec.view === child) out.push({ view_id: id, visible: rec.view.getVisible() });
+    }
+    return out;
+  }
+
   // The view whose webContents is `wc`, or null.
   viewIdOf(wc) {
     if (!wc) return null;
@@ -639,6 +694,7 @@ class ViewManager {
   // record is gone first: nothing that runs from here on finds it).
   _forget(viewId, rec, win) {
     this.live.delete(viewId);
+    this._releasePaint(viewId, rec);
     try {
       if (this.hooks.onLeave) this.hooks.onLeave(viewId, null);
     } catch (e) {
@@ -677,10 +733,26 @@ class ViewManager {
 
   // Shows exactly one view (or none) in `bounds`; every other view stays a hidden child.
   layout(shownViewId, bounds) {
-    // Hidden views keep the same size so agents' screenshots match what the user would see.
-    for (const [id, rec] of this.live) {
-      rec.view.setBounds(bounds);
-      rec.view.setVisible(id === shownViewId);
+    this.placed = { shownViewId, bounds };
+    for (const [id, rec] of this.live) this._place(id, rec);
+  }
+
+  // One view where the last layout() puts it: hidden views keep the same size so agents'
+  // screenshots match what the user would see; one held for a capture (holdPaint) is visible
+  // under the shown page, and only while a live page is shown to cover it.
+  _place(id, rec) {
+    const p = this.placed;
+    if (!p || !p.bounds) return;
+    const shown = id === p.shownViewId;
+    const covered = !!p.shownViewId && this.live.has(p.shownViewId);
+    const held = !shown && !!rec.paintHeld && covered;
+    try {
+      rec.view.setBounds(p.bounds);
+      // under every other page (setHost and new views add theirs on top)
+      if (held && this.host) this.host.contentView.addChildView(rec.view, 0);
+      rec.view.setVisible(shown || held);
+    } catch (e) {
+      this.log('view place failed', id, e && e.message);
     }
   }
 }

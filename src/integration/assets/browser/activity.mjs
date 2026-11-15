@@ -503,6 +503,36 @@ export async function firstShot({ send, lane, type, quality, element = null, ful
   }
 }
 
+/** The most a screenshot waits for the companion's paint hold (or its release). */
+export const PAINT_CALL_MS = 1500;
+
+/** A companion tab paints for a screenshot's captures: the companion's `paint`
+ *  ({view_id, ms}, 0.2.11) makes a hidden view visible under the shown page,
+ *  unseen, until `ms` passes or a `ms` 0 call lets it go. Chromium draws no
+ *  frame for a hidden view (shown before: from a few seconds after it was
+ *  hidden; never shown: its renderer has no size at all), so a CDP capture of
+ *  one waits for a frame that never comes. `control` is the companion's
+ *  ControlPage, `target` the page's target id. Answers true when the view
+ *  paints now; false when the companion does not hold it (no page shown to
+ *  cover it), is older than `paint` (not logged), or did not answer within
+ *  `callMs`: the capture then goes as it did before. */
+export async function paintHold({ control, target, ms, log = () => {}, callMs = PAINT_CALL_MS }) {
+  let timer = null;
+  const late = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`the companion did not answer paint in ${callMs} ms`)), callMs); });
+  try {
+    const call = Promise.resolve().then(() => control.viewOf(target))
+      .then((view) => control.call('paint', { view_id: view, ms: Math.max(0, Math.round(Number(ms) || 0)) }));
+    call.catch(() => {});
+    const out = await Promise.race([call, late]);
+    return Boolean(out && out.held);
+  } catch (err) {
+    if (!err.missing) log(`paint hold: ${err.message}`);
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** Panes that are gone: the overlay of every page a pane's directive touched
  *  (`state.paneKey`, recorded by the host when the directive arrived) goes
  *  now — whatever the companion's state, grouped or not. Answers how many. */
