@@ -575,6 +575,29 @@ try {
     check('the prompt was cancelled (the page got null) and the agent works on its tab', got, got);
   });
 
+  // Screenshots of a page that is not on screen (fork, 2026-11-15): an agent's page in its own
+  // herdr tab's group while the user looks at another herdr tab. Chromium draws no frame for a
+  // hidden view (from ~3 s after it was hidden; one never shown has no size), so the page is
+  // hidden 5 s before each shot; the companion paints it unseen for the capture (`paint`).
+  await section('screenshots of a page not on screen (another herdr tab\'s group)', async () => {
+    await api('tab.focus', { tab_id: t1 });
+    await waitFor(async () => (await views()).find((x) => x.tab_id === t1 && x.shown), 3000);
+    const shownBefore = (await views()).filter((x) => x.shown).map((x) => x.view_id);
+    const o = await browser(['open', `${W}/b?hidden`], p2);
+    const vh = await waitFor(async () => (await views()).find((x) => x.url.startsWith(`${W}/b?hidden`)), 5000);
+    check(`an agent in ${t2} opens a page into ${t2}'s group, not shown`, !o.error && vh && vh.tab_id === t2 && !vh.shown, vh || o.error);
+    for (const k of [1, 2]) {
+      await sleep(5000);
+      const out = path.join(T, `hidden-${k}.png`);
+      const t0 = Date.now();
+      const s = await browser(['screenshot', '--out', out], p2);
+      const ms = Date.now() - t0;
+      const bytes = fs.existsSync(out) ? fs.statSync(out).size : 0;
+      const shownAfter = (await views()).filter((x) => x.shown).map((x) => x.view_id);
+      check(`screenshot ${k} of the page not on screen (hidden 5 s): drawn, the user's page still the shown one`, !s.error && bytes > 1000 && JSON.stringify(shownAfter) === JSON.stringify(shownBefore), s.error || { bytes, ms, shownBefore, shownAfter });
+    }
+  });
+
   await section('live handoff: groups survive, the companion stays attached', async () => {
     const before = await sessions();
     const h = await apiOk('server.live_handoff', { import_exe: BIN }, 60000);
