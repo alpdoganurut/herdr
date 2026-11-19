@@ -24,10 +24,32 @@ impl HeadlessServer {
             Ok(request) => request,
             Err(err) => return App::model_reply(id, Err(err)),
         };
-        let shown = match self.show_client_id() {
-            Some(client_id) => self.navigate_client(client_id, request.navigation.clone()),
-            None => Err(crate::app::agents_show::no_client()),
+        let Some(client_id) = self.show_client_id() else {
+            let result = self
+                .app
+                .finish_agents_show(request, Err(crate::app::agents_show::no_client()));
+            return App::model_reply(
+                id,
+                result.map(|tab| api::schema::ResponseResult::TabInfo { tab }),
+            );
         };
+        // The user is typing in another pane of that window: moving it would
+        // take the keys away mid-word. Their own "show me X" in the caller's
+        // pane is the request itself, not typing to protect.
+        if let Some(focus) = self.shell_focus_target(client_id) {
+            let own = request.caller_pane() == Some((focus.workspace_index, focus.pane_id));
+            if !own
+                && self
+                    .app
+                    .pane_user_typing(focus.workspace_index, focus.pane_id)
+            {
+                let err = self
+                    .app
+                    .deny_agents_show(request, crate::app::agents_show::user_typing());
+                return App::model_reply(id, Err(err));
+            }
+        }
+        let shown = self.navigate_client(client_id, request.navigation.clone());
         let result = self.app.finish_agents_show(request, shown);
         App::model_reply(
             id,
@@ -38,11 +60,29 @@ impl HeadlessServer {
     /// The client shell the user works in: the foreground client, only
     /// while it is an active client shell (no other window is moved).
     fn show_client_id(&self) -> Option<u64> {
-        self.foreground_client_id.filter(|client_id| {
-            self.clients.get(client_id).is_some_and(|client| {
-                client.is_active_shell_client() && client.shell_location.is_some()
-            })
-        })
+        let Some(client_id) = self.foreground_client_id else {
+            tracing::debug!("agents.show: no foreground client");
+            return None;
+        };
+        let Some(client) = self.clients.get(&client_id) else {
+            tracing::debug!(client_id, "agents.show: the foreground client is gone");
+            return None;
+        };
+        if !client.is_active_shell_client() {
+            tracing::debug!(
+                client_id,
+                "agents.show: the foreground client is not an active client shell"
+            );
+            return None;
+        }
+        if client.shell_location.is_none() {
+            tracing::debug!(
+                client_id,
+                "agents.show: the foreground client shell has no location yet"
+            );
+            return None;
+        }
+        Some(client_id)
     }
 
     /// Run `method` as client `client_id`'s own navigation request.

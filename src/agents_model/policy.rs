@@ -327,8 +327,16 @@ fn agent(team: bool, relation: Relation, action: Action, facts: &Facts) -> Decis
             "the group order is your user's whole sidebar: only your user, or the coordinator at their request, reorders groups".into(),
         ),
         // The view is the user's: moved only when they asked, wherever the
-        // tab is (looking is free everywhere).
-        Action::Show => turn_gate(facts),
+        // tab is (looking is free everywhere). A relayed request is refused:
+        // the coordinator shows tabs itself in its user's turn.
+        Action::Show if facts.user_turn => Decision::Allow,
+        Action::Show => deny(
+            error_code::NON_USER_TURN,
+            format!(
+                "this turn started from {}, not your user, and only your user's own request moves their view; the coordinator shows tabs itself in its user's turn, so if your user wants to see it, tell them to ask the coordinator (or you, directly)",
+                turn_from(facts)
+            ),
+        ),
     }
 }
 
@@ -344,12 +352,17 @@ fn deny(code: &'static str, hint: String) -> Decision {
     Decision::Deny { code, hint }
 }
 
-fn non_user_turn(facts: &Facts) -> Decision {
-    let from = if facts.turn_desc.is_empty() {
+/// What started the caller's turn, for the hints.
+fn turn_from(facts: &Facts) -> &'static str {
+    if facts.turn_desc.is_empty() {
         "no input"
     } else {
         facts.turn_desc
-    };
+    }
+}
+
+fn non_user_turn(facts: &Facts) -> Decision {
+    let from = turn_from(facts);
     deny(
         error_code::NON_USER_TURN,
         format!(
@@ -817,6 +830,10 @@ mod tests {
                 };
                 assert_eq!(code, "non_user_turn");
                 assert!(hint.contains("a teammate's message"), "{hint}");
+                // It points at the coordinator, not at a repeat to this agent
+                // relayed through someone else.
+                assert!(hint.contains("tell them to ask the coordinator"), "{hint}");
+                assert!(!hint.contains("repeat the request"), "{hint}");
             }
         }
         // The coordinator at its user's request, its own tab included.

@@ -24,12 +24,29 @@ pub(crate) struct ShowRequest {
     pub(crate) navigation: Method,
 }
 
+/// The user types in another pane of the window that would move.
+pub(crate) fn user_typing() -> ModelError {
+    ModelError::new(
+        error_code::USER_TYPING,
+        "your user is typing in another pane; try again in a moment",
+    )
+}
+
 /// No client shell to show the target in.
 pub(crate) fn no_client() -> ModelError {
     ModelError::new(
         error_code::NO_CLIENT,
-        "no herdr window is attached, so there is no view to move; tell your user where it is instead",
+        "no herdr window to move (none is attached, or the one in use shows no tabs yet); tell your user where it is instead",
     )
+}
+
+impl ShowRequest {
+    /// The caller's own pane (`None`: the user).
+    pub(crate) fn caller_pane(&self) -> Option<(usize, crate::layout::PaneId)> {
+        self.caller
+            .as_ref()
+            .map(|caller| (caller.ws_idx, caller.pane_id))
+    }
 }
 
 impl App {
@@ -69,6 +86,18 @@ impl App {
             tab_idx: target.tab_idx,
             navigation,
         })
+    }
+
+    /// The show was refused after the check (the user types elsewhere):
+    /// logged as denied, nothing moved.
+    pub(crate) fn deny_agents_show(&mut self, request: ShowRequest, err: ModelError) -> ModelError {
+        let ShowRequest {
+            caller, mut line, ..
+        } = request;
+        line.code = Some(err.code.clone());
+        line.detail = Some(err.message.clone());
+        self.log_model_action(caller.as_ref(), AgentsActionOutcome::Denied, line);
+        err
     }
 
     /// Log how the move went and answer the tab now shown.

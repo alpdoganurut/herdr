@@ -1600,3 +1600,72 @@ async fn fork_smoke_agents_show_needs_the_users_turn_and_a_client() {
     let _ = std::fs::remove_dir_all(dir);
     shutdown_test_runtimes(&mut server);
 }
+
+/// Fork (agents show): while the user types in another pane of the window
+/// that would move (the focused pane), a show is refused `user_typing`,
+/// logged as denied, and nothing moves; without recent input it goes
+/// through; the user's input in the caller's own pane (their "show me X")
+/// does not hold it back.
+#[tokio::test]
+async fn fork_smoke_agents_show_waits_while_the_user_types_in_another_pane() {
+    let (mut server, _input, panes) = crew_server();
+    add_far_team(&mut server);
+    let dir = temp_dir("show-typing");
+    server.app.agents_model.dir = Some(dir.clone());
+    let (lead, fixer) = (public(&server, panes[0]), public(&server, panes[1]));
+    let fixer_tab = server.app.public_tab_id(1, 1).unwrap();
+    let far_tab = server.app.public_tab_id(2, 0).unwrap();
+    let (_control, _render) = connect_test_shell(&mut server, 81, 80, 23);
+    user_turn_on(&mut server, 1, panes[0]);
+    user_turn_on(&mut server, 1, panes[1]);
+
+    // No recent input in the focused pane: shown.
+    assert!(server.focus_shell_client_on_tab(81, &fixer_tab));
+    let shown = show(&mut server, &lead, "far");
+    assert_eq!(
+        shown["result"]["tab"]["tab_id"],
+        far_tab.as_str(),
+        "{shown}"
+    );
+    assert!(server.focus_shell_client_on_tab(81, &fixer_tab));
+
+    // The user types in the fixer's pane, the one the window shows.
+    server.handle_server_event(ServerEvent::ClientShellPaneInput {
+        client_id: 81,
+        pane_id: fixer.clone(),
+        events: vec![crate::protocol::ClientPaneInputEvent::TextCommit(
+            "half a thought".into(),
+        )],
+    });
+    let refused = show(&mut server, &lead, "far");
+    assert_eq!(refused["error"]["code"], "user_typing", "{refused}");
+    assert!(
+        refused["error"]["message"]
+            .as_str()
+            .is_some_and(|hint| hint.contains("typing in another pane")),
+        "{refused}"
+    );
+    assert_eq!(
+        server.shell_tab_id_for_client(81).as_deref(),
+        Some(fixer_tab.as_str()),
+        "nothing moved"
+    );
+    let log = crate::agents_model::actions_log::read_tail(&dir, 1);
+    assert_eq!(log[0].action, "show");
+    assert_eq!(log[0].outcome, AgentsActionOutcome::Denied);
+    assert_eq!(log[0].code.as_deref(), Some("user_typing"));
+
+    // The same input is the fixer's own request when the fixer asks.
+    let shown = show(&mut server, &fixer, "far");
+    assert_eq!(
+        shown["result"]["tab"]["tab_id"],
+        far_tab.as_str(),
+        "{shown}"
+    );
+    assert_eq!(
+        server.shell_tab_id_for_client(81).as_deref(),
+        Some(far_tab.as_str())
+    );
+    let _ = std::fs::remove_dir_all(dir);
+    shutdown_test_runtimes(&mut server);
+}
