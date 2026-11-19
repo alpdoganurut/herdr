@@ -2815,6 +2815,25 @@
           ],
           "type": "object"
         },
+        "AgentsShowParams": {
+          "description": "`agents.show` (fork, src/server/headless/agents_show.rs): move the\nuser's view (the foreground client shell only) to a tab, as their own\nnavigation, so it counts as their visit. Only in the caller's user's\nturn, any tab; logged. Without `caller_pane` the caller is the user.\nAnswers `tab_info` for the tab now shown; `no_client` when no client\nshell is attached.",
+          "properties": {
+            "caller_pane": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "target": {
+              "description": "A pane id, a tab id, an agent name or a tab label.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "target"
+          ],
+          "type": "object"
+        },
         "AgentsTakeQuietParams": {
           "description": "`agents.take_quiet` (fork, src/app/quiet_messages.rs): take the quiet\nmessages stored for the caller, oldest first, as the text its Claude hook\nadds to its context (UserPromptSubmit, SessionStart). Taking marks them\ndelivered. Answers `ResponseResult::AgentsTakeQuiet`.",
           "properties": {
@@ -11943,6 +11962,23 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/BrowserPageMessageParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Fork (agents show): move the user's view (the foreground client\nshell) to an agent's tab at their request, checked as the caller\n(the herdr_agents agents_show tool). The headless server handles it\n(src/server/headless/agents_show.rs). Not client-shell.",
+          "properties": {
+            "method": {
+              "const": "agents.show",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AgentsShowParams"
             }
           },
           "required": [

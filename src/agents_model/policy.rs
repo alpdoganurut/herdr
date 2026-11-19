@@ -25,6 +25,7 @@
 //! | TeamStructure (D2) | UT | UT | outside_team | UT | - |
 //! | ReorderTab (in a team group; no team: outside_team) | ✓ | ✓ | outside_team | UT | protected_tab |
 //! | ReorderGroup (the user's whole sidebar) | coordinator_only | coordinator_only | coordinator_only | UT | - |
+//! | Show (move the user's view there; any team) | UT | UT | UT | UT | UT |
 //!
 //! The user may do everything.
 
@@ -141,6 +142,9 @@ pub enum Action {
     ReorderTab,
     /// A group's place in the sidebar (every group moves with it).
     ReorderGroup,
+    /// Moving the user's view to a tab (fork, `agents.show`): only at the
+    /// user's request, so only in their turn; any tab, other teams' too.
+    Show,
 }
 
 /// The caller's turn and the facts the hints name.
@@ -322,6 +326,9 @@ fn agent(team: bool, relation: Relation, action: Action, facts: &Facts) -> Decis
             error_code::COORDINATOR_ONLY,
             "the group order is your user's whole sidebar: only your user, or the coordinator at their request, reorders groups".into(),
         ),
+        // The view is the user's: moved only when they asked, wherever the
+        // tab is (looking is free everywhere).
+        Action::Show => turn_gate(facts),
     }
 }
 
@@ -439,6 +446,7 @@ mod tests {
         out.push(Action::TeamStructure(TeamOp::Purpose));
         out.push(Action::ReorderTab);
         out.push(Action::ReorderGroup);
+        out.push(Action::Show);
         out
     }
 
@@ -790,6 +798,34 @@ mod tests {
         );
         for relation in RELATIONS {
             assert!(authorize(Actor::User, relation, quiet, &facts(false)).is_allowed());
+        }
+    }
+
+    #[test]
+    fn showing_a_tab_needs_the_users_turn_and_reaches_every_team() {
+        let show = Action::Show;
+        for team in [true, false] {
+            for relation in RELATIONS {
+                let actor = Actor::Agent { team };
+                assert!(
+                    authorize(actor, relation, show, &facts(true)).is_allowed(),
+                    "{relation:?}"
+                );
+                let Decision::Deny { code, hint } = authorize(actor, relation, show, &facts(false))
+                else {
+                    panic!("an agent's own turn moves nobody's view");
+                };
+                assert_eq!(code, "non_user_turn");
+                assert!(hint.contains("a teammate's message"), "{hint}");
+            }
+        }
+        // The coordinator at its user's request, its own tab included.
+        for relation in RELATIONS {
+            assert!(authorize(Actor::Coordinator, relation, show, &facts(true)).is_allowed());
+            assert_eq!(
+                code(authorize(Actor::Coordinator, relation, show, &facts(false))),
+                "non_user_turn"
+            );
         }
     }
 

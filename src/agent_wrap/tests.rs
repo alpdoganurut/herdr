@@ -745,6 +745,7 @@ fn a_team_launch_with_the_master_off_gets_only_the_team_bits() {
         "agents_restart",
         "agents_mute",
         "agents_dnd",
+        "agents_show",
     ] {
         assert!(
             team_allow().contains(&format!("mcp__herdr_agents__{tool}")),

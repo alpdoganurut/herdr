@@ -239,7 +239,8 @@ started the turn) · agents_open_tab · agents_rename_tab · agents_move_to_grou
 agents_team (make, purpose) · agents_set_meta · agents_close_tab · agents_reopen_tab · agents_suspend ·
 agents_activate · agents_restart (never your own tab) · agents_mute · agents_dnd · agents_reorder_tab (a tab's
 place in its group) · agents_reorder_group (a group's place in the sidebar: position, or before / after another
-group; only you may reorder groups, and only at the user's request).
+group; only you may reorder groups, and only at the user's request) · agents_show (switches the user's window to
+a tab, any team's, only when they asked to see it).
 agents_manage / agents_unmanage are kept for old sessions only: every tab is part of herdr+ now.
 agents_list marks: `=` yours · `◆` you may edit (you: every tab but your own needs the user's request) ·
 `·` read and message; `[team]` on a member, `team "<purpose>"` on its group in the `groups:` line.

@@ -51,6 +51,7 @@ pub mod method {
     pub const TAKE_QUIET: &str = "agents.take_quiet";
     pub const ACK_QUIET: &str = "agents.ack_quiet";
     pub const SET_QUIET: &str = "agents.set_quiet";
+    pub const SHOW: &str = "agents.show";
 
     /// The methods advertised to client shells (the TUI's "Set role…" and
     /// "Handoff & compact").
@@ -59,7 +60,7 @@ pub mod method {
 
     /// Every method.
     #[cfg(test)]
-    pub const ALL: [&str; 27] = [
+    pub const ALL: [&str; 28] = [
         ACTOR,
         DIRECTORY,
         READ,
@@ -87,6 +88,7 @@ pub mod method {
         TAKE_QUIET,
         ACK_QUIET,
         SET_QUIET,
+        SHOW,
     ];
 }
 
@@ -144,6 +146,8 @@ pub mod error_code {
     /// Only the user, or the coordinator in its user's turn, may do that
     /// (the group order).
     pub const COORDINATOR_ONLY: &str = "coordinator_only";
+    /// No client shell is attached to show the target in (`agents.show`).
+    pub const NO_CLIENT: &str = "no_client";
 }
 
 // ----- enums ----------------------------------------------------------------
@@ -1048,6 +1052,20 @@ pub struct AgentsSetQuietParams {
     pub dnd: Option<bool>,
 }
 
+/// `agents.show` (fork, src/server/headless/agents_show.rs): move the
+/// user's view (the foreground client shell only) to a tab, as their own
+/// navigation, so it counts as their visit. Only in the caller's user's
+/// turn, any tab; logged. Without `caller_pane` the caller is the user.
+/// Answers `tab_info` for the tab now shown; `no_client` when no client
+/// shell is attached.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AgentsShowParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller_pane: Option<String>,
+    /// A pane id, a tab id, an agent name or a tab label.
+    pub target: String,
+}
+
 /// `agents.handoff` (fork): handoff, then compact, for a Claude agent
 /// (src/agent_handoff.rs). Without `caller_pane` the caller is the user
 /// (the tab menu, the keybinding, `herdr agent handoff` outside an agent);
@@ -1255,7 +1273,7 @@ pub struct AgentActionEntry {
 
 /// The type names the params structs may reference (digest hygiene).
 #[cfg(test)]
-pub const PARAM_TYPES: [&str; 28] = [
+pub const PARAM_TYPES: [&str; 29] = [
     "AgentsActorParams",
     "AgentsDirectoryParams",
     "AgentsReadParams",
@@ -1284,6 +1302,7 @@ pub const PARAM_TYPES: [&str; 28] = [
     "AgentsTakeQuietParams",
     "AgentsAckQuietParams",
     "AgentsSetQuietParams",
+    "AgentsShowParams",
 ];
 
 #[cfg(test)]

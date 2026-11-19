@@ -46,8 +46,8 @@ use crate::api::schema::agents_model::{
     AgentsReadResult, AgentsReadSource, AgentsRenameResult, AgentsRenameTabParams,
     AgentsReopenResult, AgentsReopenTabParams, AgentsReorderGroupParams, AgentsReorderResult,
     AgentsReorderTabParams, AgentsReportWaitParams, AgentsScreenAccess, AgentsSendMessageParams,
-    AgentsSetMetaParams, AgentsSetMetaResult, AgentsSetQuietParams, AgentsTabInfo, AgentsTeamRef,
-    AgentsTurnInfo, AgentsTurnOrigin,
+    AgentsSetMetaParams, AgentsSetMetaResult, AgentsSetQuietParams, AgentsShowParams,
+    AgentsTabInfo, AgentsTeamRef, AgentsTurnInfo, AgentsTurnOrigin,
 };
 use crate::api::schema::notes::{
     NotesAuthor, NotesGetParams, NotesInfo, NotesRevealParams, NotesSetParams, NotesTarget,
@@ -168,7 +168,7 @@ const TOOL_LINE: &str = "tools: agents_whoami agents_notify agents_list agents_g
 agents_wait_for_message agents_wait agents_send_message agents_notes_read agents_notes_write \
 agents_set_meta agents_actions agents_rename_tab (team) agents_move_to_group (team) \
 agents_open_tab (team) agents_reopen_tab (team) agents_suspend (team, never yourself) agents_activate (team) agents_restart (team, never yourself) agents_mute (team) agents_dnd (team) agents_reorder_tab (team) agents_reorder_group (coordinator, your user's request) agents_team (your user's request) agents_create_group (your user's request) \
-agents_close_tab (your user's request); (team) = your team, or your own tab when you are in none";
+agents_show (your user's request) agents_close_tab (your user's request); (team) = your team, or your own tab when you are in none";
 
 /// The etiquette line for a team member.
 const TEAM_ETIQUETTE: &str = "etiquette: in your team rename, reorder and move tabs, set roles and one-line notes, open new teammates, suspend, activate or restart teammates and mute (agents_mute) or put them in do not disturb (agents_dnd) on your own judgment; \
@@ -184,7 +184,7 @@ your notes are your user's page: change them only when they ask (or via /plus:no
 const TEAM_TOOL_LINE: &str = TOOL_LINE;
 
 /// Every herdr_agents tool, in `tools/list` order.
-pub const TOOL_NAMES: [&str; 29] = [
+pub const TOOL_NAMES: [&str; 30] = [
     "agents_whoami",
     "agents_notify",
     "agents_list",
@@ -212,6 +212,7 @@ pub const TOOL_NAMES: [&str; 29] = [
     "agents_reorder_group",
     "agents_mute",
     "agents_dnd",
+    "agents_show",
     "agents_manage",
     "agents_unmanage",
 ];
@@ -767,6 +768,7 @@ impl<A: Api> Session<A> {
             "agents_reorder_group" => self.reorder_group(caller, args),
             "agents_mute" => self.set_quiet(caller, args, Quiet::Mute),
             "agents_dnd" => self.set_quiet(caller, args, Quiet::Dnd),
+            "agents_show" => self.show(caller, args),
             _ => self.manage(caller, args),
         }
     }
@@ -2437,6 +2439,33 @@ impl<A: Api> Session<A> {
         ))
     }
 
+    /// `agents_show {target}`: `agents.show` moves the user's view (their
+    /// foreground herdr window) to the target's tab; the server allows it
+    /// only in the user's turn. A name, label or `coordinator` resolves
+    /// here first (the pane, else the tab), as for the other tools.
+    fn show(&self, caller: &Caller, args: &Value) -> ToolResult {
+        let target = req_str(args, "target")?;
+        let resolved = if is_self(caller, Some(&target)) {
+            caller.pane_id.clone()
+        } else {
+            let found = self.find(caller, &target)?;
+            found
+                .pane
+                .map(|pane| pane.pane_id)
+                .unwrap_or(found.tab.tab_id)
+        };
+        let result = self.api.call(Method::AgentsShow(AgentsShowParams {
+            caller_pane: Some(caller.pane_id.clone()),
+            target: resolved,
+        }))?;
+        let tab_id = result["tab"]["tab_id"].as_str().unwrap_or("").to_string();
+        let label = result["tab"]["label"].as_str().unwrap_or("").to_string();
+        Ok(Reply::new(
+            format!("your user's herdr window now shows {target} (tab {tab_id} \"{label}\")"),
+            json!({ "target": target, "tab_id": tab_id, "label": label }),
+        ))
+    }
+
     /// `agents_mute {target, muted?}` and `agents_dnd {target, on?}`: one
     /// `agents.set_quiet` per target (the server checks each: free in your
     /// team, logged), one outcome line per target. A single target's
@@ -3694,6 +3723,10 @@ pub fn tools() -> Vec<Value> {
                 "target": quiet_targets,
                 "on": { "type": "boolean", "description": "Default true; false ends do not disturb" },
             }), &["target"]) }),
+        json!({ "name": "agents_show", "description": "Switch your user's herdr window (the one they are using) to another agent's tab, as if they clicked it; their other windows stay put and the tab's cards count as seen. Use it only when your user asked to see something (\"show me the Marla lead\"), never on your own initiative, to report progress or to get their attention (that is agents_notify). Any tab, other teams' included. herdr allows it only in your user's turn (non_user_turn otherwise; the coordinator in its user's turn too) and answers no_client when no herdr window is attached.",
+            "inputSchema": schema(json!({
+                "target": string("Agent name, pane id, tab id, tab label or `coordinator`"),
+            }), &["target"]) }),
         json!({ "name": "agents_manage", "description": "Kept for older sessions: every agent is part of herdr+ now. Sets role and note like agents_set_meta (a project goes into the note); use agents_set_meta.",
             "inputSchema": schema(json!({
                 "target": string("Default: yourself"),
@@ -4344,6 +4377,12 @@ mod tests {
                     Ok(json!({ "type": "tab_info", "tab": { "tab_id": fake.tab,
                         "muted": params.muted.unwrap_or(false), "dnd": params.dnd.unwrap_or(false) } }))
                 }
+                Method::AgentsShow(params) => {
+                    let fake = self.resolve(&params.target).ok_or_else(not_found)?;
+                    Ok(
+                        json!({ "type": "tab_info", "tab": { "tab_id": fake.tab, "label": fake.label } }),
+                    )
+                }
                 Method::AgentsSuspend(params) => {
                     let pane = self.canonical(&params.target).ok_or_else(not_found)?;
                     self.set(&pane, |fake| fake.status = "suspended".into());
@@ -4560,7 +4599,7 @@ mod tests {
             .handle(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }))
             .unwrap();
         let tools = list["result"]["tools"].as_array().unwrap().clone();
-        assert_eq!(tools.len(), 29);
+        assert_eq!(tools.len(), 30);
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert_eq!(names, TOOL_NAMES, "listed in TOOL_NAMES order");
         for tool in &tools {
@@ -4618,6 +4657,7 @@ mod tests {
             ),
             ("agents_mute", json!({ "target": "rev" })),
             ("agents_dnd", json!({ "target": "rev", "on": false })),
+            ("agents_show", json!({ "target": "rev" })),
             ("agents_manage", json!({ "note": "busy with the API" })),
             ("agents_unmanage", json!({})),
         ];
@@ -4662,7 +4702,7 @@ mod tests {
     #[test]
     fn close_and_reopen_are_the_only_tools_not_preapproved() {
         let approved: Vec<&str> = preapproved_tools().collect();
-        assert_eq!(approved.len(), 27);
+        assert_eq!(approved.len(), 28);
         for tool in TOOL_NAMES {
             assert_eq!(
                 approved.contains(&tool),
@@ -4818,7 +4858,7 @@ mod tests {
         let list = s
             .handle(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }))
             .unwrap();
-        assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 29);
+        assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 30);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -5309,6 +5349,70 @@ mod tests {
             out.text.contains("`claude --resume <session id>`"),
             "{}",
             out.text
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn show_resolves_the_target_and_passes_the_servers_refusal_on() {
+        let (dir, world) = world("mcp-show");
+        let mut s = session(&world, "w3:p1", Verdict::Verified);
+        // A name in another team, a tab label, `coordinator`: each as its pane.
+        for (target, pane, tab) in [
+            ("lead", "w2:p3", "w2:t3"),
+            ("notes", "w2:p5", "w2:t5"),
+            ("coordinator", "w1:p1", "w1:t1"),
+        ] {
+            let out = call(&mut s, "agents_show", json!({ "target": target }));
+            assert!(!out.is_error, "{target}: {}", out.text);
+            assert!(
+                body(&out).starts_with(&format!(
+                    "your user's herdr window now shows {target} (tab {tab}"
+                )),
+                "{}",
+                out.text
+            );
+            assert_eq!(out.data["tab_id"], tab);
+            let calls = world.calls_of("agents.show");
+            let Method::AgentsShow(params) = calls.last().unwrap() else {
+                panic!("a show");
+            };
+            assert_eq!(params.caller_pane.as_deref(), Some("w3:p1"));
+            assert_eq!(params.target, pane);
+        }
+        world.queue(
+            "agents.show",
+            Err(ApiError::new(
+                "non_user_turn",
+                "this turn started from another agent's message, not your user",
+            )),
+        );
+        let out = call(&mut s, "agents_show", json!({ "target": "lead" }));
+        assert!(
+            out.is_error && body(&out).starts_with("error non_user_turn"),
+            "{}",
+            out.text
+        );
+        let out = call(&mut s, "agents_show", json!({ "target": "ghost" }));
+        assert!(
+            out.is_error && out.text.contains("not_found"),
+            "{}",
+            out.text
+        );
+        // The description keeps it to the user's request.
+        let list = s
+            .handle(&json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }))
+            .unwrap();
+        let tools = list["result"]["tools"].as_array().unwrap();
+        let show = tools
+            .iter()
+            .find(|tool| tool["name"] == "agents_show")
+            .unwrap();
+        let description = show["description"].as_str().unwrap();
+        assert!(
+            description.contains("only when your user asked to see something")
+                && description.contains("never on your own initiative"),
+            "{description}"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

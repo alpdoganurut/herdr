@@ -1576,6 +1576,7 @@ impl App {
             Method::AgentsSetQuiet(params) => {
                 return self.handle_agents_set_quiet(request.id, params)
             }
+            Method::AgentsShow(params) => return self.handle_agents_show(request.id, params),
             Method::AgentPrompt(_) => {
                 return responses::encode_error(
                     request.id,

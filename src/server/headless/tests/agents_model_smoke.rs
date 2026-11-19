@@ -1355,3 +1355,248 @@ async fn fork_smoke_a_client_pane_focus_on_a_reused_workspace_id_focuses_the_liv
     }
     shutdown_test_runtimes(&mut server);
 }
+
+/// Fork (agents show): a second team group `far` with one Claude agent
+/// named `far`; answers its pane.
+fn add_far_team(server: &mut HeadlessServer) -> crate::layout::PaneId {
+    server
+        .app
+        .state
+        .workspaces
+        .push(crate::workspace::Workspace::test_new("far"));
+    server.app.state.ensure_test_terminals();
+    let far = server.app.state.workspaces[2].tabs[0].root_pane;
+    let terminal_id = server.app.state.workspaces[2]
+        .pane_state(far)
+        .unwrap()
+        .attached_terminal_id
+        .clone();
+    let terminal = server.app.state.terminals.get_mut(&terminal_id).unwrap();
+    terminal.set_detected_state(Some(Agent::Claude), AgentState::Idle);
+    terminal.set_agent_name("far".into());
+    let workspace_id = server.app.state.workspaces[2].id.clone();
+    let made = public_api(
+        server,
+        Method::TeamMake(TeamMakeParams {
+            workspace_id,
+            purpose: None,
+            caller_pane: None,
+        }),
+    );
+    assert_eq!(made["result"]["type"], "team_reply", "{made}");
+    far
+}
+
+/// The pane's agent starts a turn its user submitted.
+fn user_turn_on(server: &mut HeadlessServer, ws_idx: usize, pane: crate::layout::PaneId) {
+    let id = server.app.state.workspaces[ws_idx]
+        .pane_state(pane)
+        .unwrap()
+        .attached_terminal_id
+        .clone();
+    let turn = server.app.state.terminals.get_mut(&id).unwrap().turn_mut();
+    let now = std::time::Instant::now();
+    turn.note_input(
+        &InputSource::Client {
+            submit: true,
+            attach: false,
+        },
+        now,
+    );
+    turn.on_status_edge(EdgeStatus::Idle, EdgeStatus::Working, false, now, 1);
+}
+
+/// The focused tab of the newest client shell snapshot sent so far.
+fn last_snapshot_tab(control: &std::sync::mpsc::Receiver<Vec<u8>>) -> Option<String> {
+    let mut tab = None;
+    while let Ok(bytes) = control.recv_timeout(std::time::Duration::from_millis(100)) {
+        if let ServerMessage::EndpointControl { kind, data } = read_server_message(bytes) {
+            if kind == crate::protocol::endpoint::ENDPOINT_SNAPSHOT_KIND {
+                let snapshot: Box<crate::protocol::ClientShellSnapshot> =
+                    serde_json::from_str(&data).unwrap();
+                tab = snapshot.focused_tab_id;
+            }
+        }
+    }
+    tab
+}
+
+fn show(server: &mut HeadlessServer, caller: &str, target: &str) -> serde_json::Value {
+    public_api(
+        server,
+        Method::AgentsShow(crate::api::schema::agents_model::AgentsShowParams {
+            caller_pane: Some(caller.to_string()),
+            target: target.into(),
+        }),
+    )
+}
+
+/// Fork (agents show): in its user's turn, an agent shows the user another
+/// team's agent: only the foreground client shell moves there (not the
+/// client that connected last), as its own visit, so the tab's agent card
+/// clears; the other client stays where it was; the action log names it.
+#[tokio::test]
+async fn fork_smoke_agents_show_moves_only_the_foreground_client_as_its_visit() {
+    let (mut server, _input, panes) = crew_server();
+    let far = add_far_team(&mut server);
+    let dir = temp_dir("show");
+    server.app.agents_model.dir = Some(dir.clone());
+    let bucket_tab = server.app.public_tab_id(0, 0).unwrap();
+    let far_tab = server.app.public_tab_id(2, 0).unwrap();
+    let far_pane = server.app.public_pane_id(2, far).unwrap();
+    let (user, _user_render) = connect_test_shell(&mut server, 71, 80, 23);
+    let (other, _other_render) = connect_test_shell(&mut server, 72, 80, 23);
+    for client in [71, 72] {
+        assert!(server.focus_shell_client_on_tab(client, &bucket_tab));
+    }
+    // The user works in the first window.
+    server.promote_client_to_foreground(71);
+    assert_eq!(server.foreground_client_id, Some(71));
+    let card = public_api(
+        &mut server,
+        Method::AgentNotify(crate::api::schema::AgentNotifyParams {
+            caller_pane: far_pane.clone(),
+            kind: crate::api::schema::AgentNoticeKind::Question,
+            title: "look at me".into(),
+            body: None,
+        }),
+    );
+    assert_eq!(card["result"]["outcome"], "shown", "{card}");
+    server.render_and_stream();
+    let _ = (last_snapshot_tab(&user), last_snapshot_tab(&other));
+
+    let listed = |server: &mut HeadlessServer| {
+        public_api(
+            server,
+            Method::AgentNotices(crate::api::schema::EmptyParams::default()),
+        )["result"]["notices"]
+            .clone()
+    };
+    assert_eq!(listed(&mut server).as_array().map(Vec::len), Some(1));
+    let lead = public(&server, panes[0]);
+    user_turn_on(&mut server, 1, panes[0]);
+    let shown = show(&mut server, &lead, "far");
+    assert_eq!(
+        shown["result"]["tab"]["tab_id"],
+        far_tab.as_str(),
+        "{shown}"
+    );
+    assert_eq!(
+        server.shell_tab_id_for_client(71).as_deref(),
+        Some(far_tab.as_str())
+    );
+    assert_eq!(
+        server.shell_tab_id_for_client(72).as_deref(),
+        Some(bucket_tab.as_str()),
+        "the other window stays put"
+    );
+    assert_eq!(
+        server.app.state.active,
+        Some(2),
+        "the default target follows"
+    );
+    // The user's own visit: the far tab's card is seen.
+    assert_eq!(
+        listed(&mut server),
+        serde_json::json!([]),
+        "the card is seen"
+    );
+    server.render_and_stream();
+    assert_eq!(last_snapshot_tab(&user).as_deref(), Some(far_tab.as_str()));
+    assert_ne!(
+        last_snapshot_tab(&other).as_deref(),
+        Some(far_tab.as_str()),
+        "the other window is not sent the far tab"
+    );
+    assert_eq!(
+        server.shell_tab_id_for_client(72).as_deref(),
+        Some(bucket_tab.as_str())
+    );
+    let log = crate::agents_model::actions_log::read_tail(&dir, 1);
+    assert_eq!(log[0].action, "show");
+    assert_eq!(log[0].outcome, AgentsActionOutcome::Ok);
+    assert_eq!(log[0].actor_pane.as_deref(), Some(lead.as_str()));
+    assert_eq!(log[0].target_tab.as_deref(), Some(far_tab.as_str()));
+    let _ = std::fs::remove_dir_all(dir);
+    shutdown_test_runtimes(&mut server);
+}
+
+/// Fork (agents show): outside its user's turn an agent moves no view
+/// (`non_user_turn`, logged); the coordinator shows a tab in its user's
+/// turn; an unknown target is `not_found`; with no client shell attached a
+/// show the policy allows answers `no_client`.
+#[tokio::test]
+async fn fork_smoke_agents_show_needs_the_users_turn_and_a_client() {
+    let (mut server, _input, panes) = crew_server();
+    let far = add_far_team(&mut server);
+    let dir = temp_dir("show-refused");
+    server.app.agents_model.dir = Some(dir.clone());
+    let lead = public(&server, panes[0]);
+    let far_tab = server.app.public_tab_id(2, 0).unwrap();
+    let far_pane = server.app.public_pane_id(2, far).unwrap();
+
+    // No client yet: the turn is checked first, then the client.
+    let refused = show(&mut server, &lead, &far_pane);
+    assert_eq!(refused["error"]["code"], "non_user_turn", "{refused}");
+    assert!(
+        refused["error"]["message"]
+            .as_str()
+            .is_some_and(|hint| hint.contains("not your user")),
+        "{refused}"
+    );
+    user_turn_on(&mut server, 1, panes[0]);
+    let none = show(&mut server, &lead, &far_pane);
+    assert_eq!(none["error"]["code"], "no_client", "{none}");
+    let log = crate::agents_model::actions_log::read_tail(&dir, 2);
+    assert_eq!(
+        log.iter().map(|entry| entry.outcome).collect::<Vec<_>>(),
+        [AgentsActionOutcome::Failed, AgentsActionOutcome::Denied],
+        "newest first"
+    );
+
+    let (_control, _render) = connect_test_shell(&mut server, 73, 80, 23);
+    let bucket_tab = server.app.public_tab_id(0, 0).unwrap();
+    assert!(server.focus_shell_client_on_tab(73, &bucket_tab));
+    let ghost = show(&mut server, &lead, "ghost");
+    assert_eq!(ghost["error"]["code"], "not_found", "{ghost}");
+    assert_eq!(
+        server.shell_tab_id_for_client(73).as_deref(),
+        Some(bucket_tab.as_str())
+    );
+
+    // The coordinator (the bucket's first pane) acts for its user.
+    let coordinator_pane = server.app.state.workspaces[0].tabs[0].root_pane;
+    let coordinator_terminal = server.app.state.workspaces[0]
+        .pane_state(coordinator_pane)
+        .unwrap()
+        .attached_terminal_id
+        .clone();
+    server.app.state.coordinator_terminal_id = Some(coordinator_terminal.clone());
+    server
+        .app
+        .state
+        .terminals
+        .get_mut(&coordinator_terminal)
+        .unwrap()
+        .set_detected_state(Some(Agent::Claude), AgentState::Idle);
+    let coordinator = server.app.public_pane_id(0, coordinator_pane).unwrap();
+    let refused = show(&mut server, &coordinator, "far");
+    assert_eq!(refused["error"]["code"], "non_user_turn", "{refused}");
+    assert_eq!(
+        server.shell_tab_id_for_client(73).as_deref(),
+        Some(bucket_tab.as_str())
+    );
+    user_turn_on(&mut server, 0, coordinator_pane);
+    let shown = show(&mut server, &coordinator, "far");
+    assert_eq!(
+        shown["result"]["tab"]["tab_id"],
+        far_tab.as_str(),
+        "{shown}"
+    );
+    assert_eq!(
+        server.shell_tab_id_for_client(73).as_deref(),
+        Some(far_tab.as_str())
+    );
+    let _ = std::fs::remove_dir_all(dir);
+    shutdown_test_runtimes(&mut server);
+}

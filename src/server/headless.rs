@@ -79,6 +79,8 @@ pub mod agent_context;
 pub mod agent_notices;
 /// Fork (sidebar v2): the `endpoint.agent-times.v1` push.
 pub mod agent_times;
+/// Fork (agents show): `agents.show` moves the foreground client shell.
+mod agents_show;
 /// Fork: the autosuspend scan's shown panes.
 mod autosuspend;
 mod bootstrap;
@@ -3179,6 +3181,12 @@ impl HeadlessServer {
             return changed;
         }
         let alt_screen_read_spec = self.alt_screen_read_spec(&msg.request);
+        // Fork (agents show): the server moves the foreground client itself.
+        if let api::schema::Method::AgentsShow(params) = &msg.request.method {
+            let response = self.handle_agents_show_api(msg.request.id.clone(), params);
+            let _ = msg.respond_to.send(response);
+            return true;
+        }
         // Fork: an `agents.open_tab` start waits for the new tab's shell.
         if matches!(&msg.request.method, api::schema::Method::AgentsOpenTab(_)) {
             let deferred_changed = self

@@ -292,6 +292,11 @@ operations::define_operations! {
     /// that agent (the companion's `window.herdr.send`; App lane, src/app/
     /// browser_page_message.rs). Not client-shell.
     BrowserPageMessage(BrowserPageMessageParams) => "browser.page_message", false, false;
+    /// Fork (agents show): move the user's view (the foreground client
+    /// shell) to an agent's tab at their request, checked as the caller
+    /// (the herdr_agents agents_show tool). The headless server handles it
+    /// (src/server/headless/agents_show.rs). Not client-shell.
+    AgentsShow(agents_model::AgentsShowParams) => "agents.show", true, false;
     AgentPrompt(AgentPromptParams) => "agent.prompt", true, false;
     AgentWait(AgentWaitParams) => "agent.wait", false, false;
     PaneSplit(PaneSplitParams) => "pane.split", true, true;

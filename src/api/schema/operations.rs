@@ -249,6 +249,7 @@ mod tests {
             "agents.set_quiet",
             "browser.placement_action",
             "browser.view_cycle",
+            "agents.show",
         ]
         .into_iter()
         .collect::<BTreeSet<_>>();

@@ -239,7 +239,7 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
     <h3>The <code>herdr_agents</code> tools</h3>
     <div class="chips">
       <code>agents_whoami</code><code>agents_list</code><code>agents_get</code><code>agents_read</code><code>agents_messages</code><code>agents_wait</code><code>agents_wait_for_message</code><code>agents_actions</code><code>agents_notes_read</code>
-      <code class="w">agents_send_message</code><code class="w">agents_notify</code><code class="w">agents_notes_write</code><code class="w">agents_open_tab</code><code class="w">agents_rename_tab</code><code class="w">agents_move_to_group</code><code class="w">agents_create_group</code><code class="w">agents_set_meta</code><code class="w">agents_reorder_tab</code><code class="w">agents_reorder_group</code><code class="w">agents_suspend</code><code class="w">agents_activate</code><code class="w">agents_restart</code><code class="w">agents_mute</code><code class="w">agents_dnd</code><code class="w">agents_close_tab</code><code class="w">agents_reopen_tab</code><code class="w">agents_team</code>
+      <code class="w">agents_send_message</code><code class="w">agents_notify</code><code class="w">agents_notes_write</code><code class="w">agents_open_tab</code><code class="w">agents_rename_tab</code><code class="w">agents_move_to_group</code><code class="w">agents_create_group</code><code class="w">agents_set_meta</code><code class="w">agents_reorder_tab</code><code class="w">agents_reorder_group</code><code class="w">agents_suspend</code><code class="w">agents_activate</code><code class="w">agents_restart</code><code class="w">agents_mute</code><code class="w">agents_dnd</code><code class="w">agents_show</code><code class="w">agents_close_tab</code><code class="w">agents_reopen_tab</code><code class="w">agents_team</code>
     </div>
     <p class="dim" style="margin-top:.5rem;font-size:.82rem">Blue = changes, checked by herdr. Grey = reads.</p>
   </div>
@@ -252,6 +252,7 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
       <tr><td>Everyone else</td><td>Read screens and send messages. Nothing more.</td></tr>
       <tr><td>Shell screens</td><td>Readable by teammates and the coordinator only.</td></tr>
       <tr><td>Closing a tab</td><td>Only when you asked for it by typing in that agent's pane. Closed tabs can be reopened.</td></tr>
+      <tr><td>Showing you a tab</td><td>Only when you asked ("show me the Marla lead"): <code>agents_show</code> switches the window you are using to any tab, as your own click would. Your other windows stay put.</td></tr>
       <tr><td>Coordinator tab</td><td>Off limits to every agent: no rename, move, close, suspend, restart, mute or do not disturb.</td></tr>
     </table></div>
     <div class="grid" style="grid-template-columns:1fr">

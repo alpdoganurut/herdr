@@ -22,6 +22,8 @@ pub(crate) mod agents_migrate;
 pub(crate) mod agents_model;
 mod agents_quiet;
 mod agents_reorder;
+/// Fork (agents show): `agents.show`, checked here, moved by the server.
+pub(crate) mod agents_show;
 // fork: typed launches wait for the shell and stay short.
 mod browser;
 mod browser_host;
