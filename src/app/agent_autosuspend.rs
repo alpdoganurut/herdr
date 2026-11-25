@@ -530,7 +530,8 @@ mod tests {
             Agent::Claude,
             Some(crate::detect::remote::RemoteOrigin {
                 client: crate::detect::remote::RemoteClient::Ssh,
-                via: crate::detect::remote::RemoteVia::SshCommand,
+                via: crate::detect::remote::RemoteVia::ClientCommand,
+                client_process: None,
             }),
         );
         assert!(!scan(&mut app));

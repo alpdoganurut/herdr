@@ -414,7 +414,8 @@ async fn suspended_coordinator_codex_and_switched_off_runs_are_refused() {
             Agent::Claude,
             Some(crate::detect::remote::RemoteOrigin {
                 client: crate::detect::remote::RemoteClient::Ssh,
-                via: crate::detect::remote::RemoteVia::SshCommand,
+                via: crate::detect::remote::RemoteVia::ClientCommand,
+                client_process: None,
             }),
         );
     let pane = s.pane.clone();

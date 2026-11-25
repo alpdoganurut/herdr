@@ -307,10 +307,15 @@ pub fn persisted_session_from_launch_args(
 /// `--fork-session` launch runs a new session, so only its `--session-id`
 /// counts, and a non-UUID value (a picker search term) is none. Codex: the
 /// exact `resume <id>` launch [`persisted_session_from_launch_args`] reads.
+/// A remote-shell client's argv (`ssh -t host claude --resume <uuid>`)
+/// names a session on another machine: none.
 pub fn persisted_session_from_process_argv(
     agent: crate::detect::Agent,
     argv: &[String],
 ) -> Option<PersistedAgentSession> {
+    if crate::detect::remote::is_remote_client_argv0(argv.first()?) {
+        return None;
+    }
     let args = argv.get(1..)?;
     match agent {
         crate::detect::Agent::Codex => persisted_session_from_launch_args(agent, args),
@@ -1036,6 +1041,29 @@ mod tests {
             &argv(&["copilot", "--resume", ID])
         )
         .is_none());
+    }
+
+    #[test]
+    fn a_remote_client_argv_names_no_local_session() {
+        // Before the remote mark exists (a restored pane), the ssh client's
+        // argv must not be read as a local Claude launch.
+        for client in ["ssh", "/usr/bin/ssh", "mosh", "et", "ssh.exe"] {
+            assert!(
+                persisted_session_from_process_argv(
+                    crate::detect::Agent::Claude,
+                    &argv(&[
+                        client,
+                        "-t",
+                        "host",
+                        "claude",
+                        "--resume",
+                        "5b21611c-f122-4167-be9a-d57b522a9979"
+                    ])
+                )
+                .is_none(),
+                "{client}"
+            );
+        }
     }
 
     #[test]

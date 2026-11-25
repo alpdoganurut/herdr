@@ -315,6 +315,31 @@ async fn publish_agent_process_detected_event(
     }
 }
 
+/// Fork: a probe found the pane's known agent behind a remote-shell client
+/// (or local again) without a new detection to carry the mark
+/// (src/pane/remote_agent.rs `RemoteMarkSync`).
+async fn publish_agent_remote_observed_event(
+    state_events: &mpsc::Sender<AppEvent>,
+    pane_id: PaneId,
+    agent: Agent,
+    remote: Option<crate::detect::remote::RemoteOrigin>,
+) {
+    if let Err(e) = state_events
+        .send(AppEvent::AgentRemoteObserved {
+            pane_id,
+            agent,
+            remote,
+        })
+        .await
+    {
+        warn!(
+            pane = pane_id.raw(),
+            err = %e,
+            "failed to deliver AgentRemoteObserved event"
+        );
+    }
+}
+
 async fn publish_codex_prompt_observation(
     state_events: &mpsc::Sender<AppEvent>,
     pane_id: PaneId,
@@ -907,7 +932,8 @@ fn remote_command_probe_result(
     Some(ProcessProbeResult {
         remote: Some(crate::detect::remote::RemoteOrigin {
             client,
-            via: crate::detect::remote::RemoteVia::SshCommand,
+            via: crate::detect::remote::RemoteVia::ClientCommand,
+            client_process: None,
         }),
         ..process_probe_result(
             job,
@@ -1048,6 +1074,7 @@ fn spawn_basic_detection_task(
         let mut agent_job = AgentJobTracker::default();
         let mut status_disagreement = program_status_log::DisagreementTracker::new(pane_id);
         let mut status_identity = remote_agent::ProgramStatusIdentity::default();
+        let mut remote_mark = remote_agent::RemoteMarkSync::default();
 
         loop {
             let sleep_duration = if pending_idle.active() {
@@ -1083,7 +1110,8 @@ fn spawn_basic_detection_task(
                     pending_idle.clear();
                     agent_job = AgentJobTracker::default();
                     program_status_log::reset(&mut status_disagreement, std::time::Instant::now());
-                    status_identity = remote_agent::ProgramStatusIdentity::default();
+                    status_identity.reset_detection();
+                    remote_mark.reset();
                 }
             }
 
@@ -1124,6 +1152,7 @@ fn spawn_basic_detection_task(
             let status_report_changed = status_identity.report_changed(
                 terminal.program_status_root_packed(),
                 program_status::enabled(),
+                foreground_pgid,
             );
             let should_check_process = pid > 0 && {
                 let process_probe_input = ProcessProbeInput {
@@ -1151,8 +1180,15 @@ fn spawn_basic_detection_task(
                 let had_process_probe = has_process_probe;
                 has_process_probe = true;
                 let mut probe = probe_foreground_process(pid, foreground_pgid);
-                let identity_released =
-                    remote_agent::apply_to_probe(&mut status_identity, &mut probe, &terminal, now);
+                let identity_released = remote_agent::apply_to_probe(
+                    &mut status_identity,
+                    &mut probe,
+                    &terminal,
+                    pane_id,
+                    now,
+                );
+                let probe_client_pid = probe.agent_pid;
+                let mut detection_published = false;
                 let process_group_id = probe.process_group_id;
                 let tracked_process_group_id =
                     process_group_for_change_tracking(foreground_pgid, process_group_id);
@@ -1221,17 +1257,30 @@ fn spawn_basic_detection_task(
                             last_visible_working = false;
                             last_voice = crate::detect::AgentVoice::Off;
                             last_visible_signal_refresh = None;
+                            remote_mark.detected(agent, probe_remote, probe_client_pid);
+                            detection_published = true;
                             publish_agent_process_detected_event(
                                 state_events.clone(),
                                 pane_id,
                                 agent,
-                                probe_remote,
+                                remote_agent::pin_client_process(probe_remote, probe_client_pid),
                                 now,
                             )
                             .await;
                         } else {
                             agent_startup_grace_until = None;
                         }
+                    }
+                }
+                if !detection_published {
+                    if let Some((agent, remote)) = remote_mark.remark(
+                        agent_presence.current_agent(),
+                        new_agent,
+                        probe_remote,
+                        probe_client_pid,
+                    ) {
+                        publish_agent_remote_observed_event(&state_events, pane_id, agent, remote)
+                            .await;
                     }
                 }
             }
@@ -3046,6 +3095,7 @@ impl PaneRuntime {
                 let mut agent_job = AgentJobTracker::default();
                 let mut status_disagreement = program_status_log::DisagreementTracker::new(pane_id);
                 let mut status_identity = remote_agent::ProgramStatusIdentity::default();
+                let mut remote_mark = remote_agent::RemoteMarkSync::default();
 
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -3091,7 +3141,8 @@ impl PaneRuntime {
                             pending_idle.clear();
                             agent_job = AgentJobTracker::default();
                             program_status_log::reset(&mut status_disagreement, std::time::Instant::now());
-                            status_identity = remote_agent::ProgramStatusIdentity::default();
+                            status_identity.reset_detection();
+                            remote_mark.reset();
                         }
                     }
 
@@ -3166,6 +3217,7 @@ impl PaneRuntime {
                     let status_report_changed = status_identity.report_changed(
                         terminal.program_status_root_packed(),
                         program_status::enabled(),
+                        foreground_pgid,
                     );
                     let should_check_process = pid > 0 && {
                         let process_probe_input = ProcessProbeInput {
@@ -3192,8 +3244,11 @@ impl PaneRuntime {
                                 &mut status_identity,
                                 &mut probe,
                                 &terminal,
+                                pane_id,
                                 now,
                             );
+                            let probe_client_pid = probe.agent_pid;
+                            let mut detection_published = false;
                             let process_name = probe.process_name;
                             let process_group_id = probe.process_group_id;
                             let tracked_process_group_id = process_group_for_change_tracking(
@@ -3275,11 +3330,16 @@ impl PaneRuntime {
                                         last_visible_working = false;
                                         last_voice = crate::detect::AgentVoice::Off;
                                         last_visible_signal_refresh = None;
+                                        remote_mark.detected(agent, probe_remote, probe_client_pid);
+                                        detection_published = true;
                                         publish_agent_process_detected_event(
                                             state_events.clone(),
                                             pane_id,
                                             agent,
-                                            probe_remote,
+                                            remote_agent::pin_client_process(
+                                                probe_remote,
+                                                probe_client_pid,
+                                            ),
                                             now,
                                         )
                                         .await;
@@ -3306,6 +3366,22 @@ impl PaneRuntime {
                                     );
                                 }
                                 agent_changed = true;
+                            }
+                            if !detection_published {
+                                if let Some((agent, remote)) = remote_mark.remark(
+                                    agent_presence.current_agent(),
+                                    new_agent,
+                                    probe_remote,
+                                    probe_client_pid,
+                                ) {
+                                    publish_agent_remote_observed_event(
+                                        &state_events,
+                                        pane_id,
+                                        agent,
+                                        remote,
+                                    )
+                                    .await;
+                                }
                             }
                         }
                     }
@@ -6031,6 +6107,74 @@ mod tests {
     }
 
     #[test]
+    fn a_restored_remote_agent_gets_its_remote_mark_without_a_new_detection() {
+        // A pane restored (or handed off) with Claude already known: the
+        // detector is seeded with it, so the probe that finds `ssh -t host
+        // claude` is no agent change and publishes no detection.
+        const SSH: u32 = 40;
+        let mut pane = held_agent::Pane::empty();
+        pane.presence = AgentDetectionPresence::from_agent(Some(Agent::Claude));
+        pane.processes.spawn(SSH, 8_000, SSH);
+        let previous = pane.presence.current_agent();
+        let (_, changed) = pane.probe_process(Some(Agent::Claude), SSH, SSH);
+        assert!(!changed || pane.presence.current_agent() == previous);
+
+        let remote = crate::detect::remote::RemoteOrigin {
+            client: crate::detect::remote::RemoteClient::Ssh,
+            via: crate::detect::remote::RemoteVia::ClientCommand,
+            client_process: None,
+        };
+        let mut mark = remote_agent::RemoteMarkSync::default();
+        let (agent, sent) = mark
+            .remark(
+                pane.presence.current_agent(),
+                Some(Agent::Claude),
+                Some(remote),
+                Some(SSH),
+            )
+            .expect("the remote mark is sent");
+        assert_eq!(agent, Agent::Claude);
+        let sent = sent.expect("a remote mark");
+        assert_eq!((sent.client, sent.via), (remote.client, remote.via));
+        assert_eq!(sent.client_process.map(|process| process.pid), Some(SSH));
+        // Once per client: the next probe sends nothing more.
+        assert_eq!(
+            mark.remark(
+                pane.presence.current_agent(),
+                Some(Agent::Claude),
+                Some(remote),
+                Some(SSH),
+            ),
+            None
+        );
+        // Another ssh in front is marked anew; the same agent local clears it.
+        assert!(mark
+            .remark(
+                Some(Agent::Claude),
+                Some(Agent::Claude),
+                Some(remote),
+                Some(41)
+            )
+            .is_some());
+        assert_eq!(
+            mark.remark(Some(Agent::Claude), Some(Agent::Claude), None, Some(7)),
+            Some((Agent::Claude, None))
+        );
+        // A detection carries its own mark.
+        let mut mark = remote_agent::RemoteMarkSync::default();
+        mark.detected(Agent::Claude, Some(remote), Some(SSH));
+        assert_eq!(
+            mark.remark(
+                Some(Agent::Claude),
+                Some(Agent::Claude),
+                Some(remote),
+                Some(SSH)
+            ),
+            None
+        );
+    }
+
+    #[test]
     fn fork_smoke_a_released_status_identity_reports_the_exit_while_ssh_stays_in_front() {
         // `ssh host`, then `claude`: identified from its status reports.
         const SSH: u32 = 40;
@@ -6387,7 +6531,8 @@ mod tests {
                 result.remote,
                 Some(crate::detect::remote::RemoteOrigin {
                     client: crate::detect::remote::RemoteClient::Ssh,
-                    via: crate::detect::remote::RemoteVia::SshCommand,
+                    via: crate::detect::remote::RemoteVia::ClientCommand,
+                    client_process: None,
                 })
             );
         }

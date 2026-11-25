@@ -487,7 +487,8 @@ mod tests {
                 crate::detect::Agent::Codex,
                 Some(crate::detect::remote::RemoteOrigin {
                     client: crate::detect::remote::RemoteClient::Ssh,
-                    via: crate::detect::remote::RemoteVia::SshCommand,
+                    via: crate::detect::remote::RemoteVia::ClientCommand,
+                    client_process: None,
                 }),
             );
         assert!(app.codex_session_candidates().is_empty());

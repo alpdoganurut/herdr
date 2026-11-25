@@ -7448,7 +7448,8 @@ mod tests {
     fn a_remote_mark_follows_only_the_agent_it_was_reported_with() {
         let ssh = crate::detect::remote::RemoteOrigin {
             client: crate::detect::remote::RemoteClient::Ssh,
-            via: crate::detect::remote::RemoteVia::SshCommand,
+            via: crate::detect::remote::RemoteVia::ClientCommand,
+            client_process: None,
         };
         let now = std::time::Instant::now();
         let mut terminal = test_terminal();

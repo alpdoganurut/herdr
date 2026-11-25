@@ -227,4 +227,12 @@ pub enum AppEvent {
     WorktreeReadFinished(Box<WorktreeReadResult>),
     /// The coordinator worker finished a pass with something to report.
     CoordinatorPassFinished(Box<crate::coordinator::engine::CoordinatorPassOutput>),
+    /// Fork: a probe found the pane's known agent behind a remote-shell
+    /// client (or local, `remote: None`) with no new detection to carry the
+    /// mark, as for a pane restored or handed off with its agent known.
+    AgentRemoteObserved {
+        pane_id: PaneId,
+        agent: Agent,
+        remote: Option<crate::detect::remote::RemoteOrigin>,
+    },
 }

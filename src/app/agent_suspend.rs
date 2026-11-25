@@ -1878,7 +1878,8 @@ mod tests {
                 Agent::Claude,
                 Some(crate::detect::remote::RemoteOrigin {
                     client: crate::detect::remote::RemoteClient::Ssh,
-                    via: crate::detect::remote::RemoteVia::SshCommand,
+                    via: crate::detect::remote::RemoteVia::ClientCommand,
+                    client_process: None,
                 }),
             );
         let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
@@ -1897,7 +1898,7 @@ mod tests {
         let agent = &got["result"]["agent"];
         assert!(agent.get("agent_session").is_none(), "{got}");
         assert_eq!(agent["remote_agent"]["client"], "ssh", "{got}");
-        assert_eq!(agent["remote_agent"]["via"], "ssh_command", "{got}");
+        assert_eq!(agent["remote_agent"]["via"], "client_command", "{got}");
 
         let response = suspend(&mut app, "remote");
         assert_eq!(
@@ -1909,6 +1910,50 @@ mod tests {
         assert!(app.state.terminals[&terminal_id].suspended_agent.is_none());
         assert!(rx.try_recv().is_err(), "nothing typed into the ssh client");
         assert_eq!(reported_session(&mut app, "remote"), None);
+    }
+
+    #[tokio::test]
+    async fn a_restored_remote_agent_gets_its_mark_from_a_probe_and_is_not_suspended() {
+        // A restored or handed-off pane: Claude is known, no detection
+        // event (and so no remote mark) came with it. The detector's next
+        // probe finds it behind ssh and sends only the mark.
+        let mut app = test_app();
+        host_live_agent(&mut app, Agent::Claude, "remote", None);
+        let terminal_id = root_terminal_id(&app);
+        let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.terminal_runtimes.insert(terminal_id.clone(), runtime);
+        let pane_id = app.state.workspaces[0]
+            .panes
+            .keys()
+            .copied()
+            .find(|pane_id| {
+                app.state.workspaces[0]
+                    .pane_state(*pane_id)
+                    .is_some_and(|pane| pane.attached_terminal_id == terminal_id)
+            })
+            .expect("pane");
+        assert_eq!(app.state.terminals[&terminal_id].agent_remote(), None);
+        let state_before = app.state.terminals[&terminal_id].state;
+
+        app.handle_internal_event(crate::events::AppEvent::AgentRemoteObserved {
+            pane_id,
+            agent: Agent::Claude,
+            remote: Some(crate::detect::remote::RemoteOrigin {
+                client: crate::detect::remote::RemoteClient::Ssh,
+                via: crate::detect::remote::RemoteVia::ClientCommand,
+                client_process: None,
+            }),
+        });
+        let terminal = &app.state.terminals[&terminal_id];
+        assert!(terminal.agent_remote().is_some());
+        assert_eq!(terminal.state, state_before, "the agent's state stands");
+
+        let response = suspend(&mut app, "remote");
+        assert_eq!(
+            response["error"]["code"], "agent_not_suspendable",
+            "{response}"
+        );
+        assert!(rx.try_recv().is_err(), "nothing typed into the ssh client");
     }
 
     #[tokio::test]

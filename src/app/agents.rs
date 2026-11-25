@@ -515,10 +515,11 @@ pub(super) fn runtime_hosts_agent(
     live_runtime_agent(runtime) == Some(expected)
 }
 
-/// Fork: the pane's foreground job is still led by the remote-shell client
-/// a remote agent was identified behind (src/detect/remote.rs), so typed
-/// input reaches that agent. The agent itself is only on the other side;
-/// its screen, read by the caller's own gates, says whether it can take it.
+/// Fork: the pane's foreground job is still led by the very remote-shell
+/// client process a remote agent was identified behind (src/detect/remote.rs),
+/// so typed input reaches that agent. The agent itself is only on the other
+/// side; its screen, read by the caller's own gates, says whether it can
+/// take it.
 pub(super) fn runtime_hosts_remote_agent(
     runtime: &crate::terminal::TerminalRuntime,
     remote: Option<crate::detect::remote::RemoteOrigin>,
@@ -532,12 +533,32 @@ pub(super) fn runtime_hosts_remote_agent(
     let Some(group) = crate::detect::foreground_process_group_id(pid) else {
         return false;
     };
-    group != pid
-        && crate::detect::foreground_group_leader_job(group).and_then(|job| {
-            job.processes
-                .first()
-                .and_then(crate::detect::remote::remote_client)
-        }) == Some(remote.client)
+    let job = crate::detect::foreground_group_leader_job(group);
+    remote_client_leads_job(remote, job.as_ref(), crate::platform::process_start_token)
+}
+
+/// Fork: `job`'s leader is the client process `remote` was identified
+/// behind: same client kind, pid and start token. The pane's own process
+/// counts (`ssh -t host claude` run as the pane's command). A held agent's
+/// client in the background with another client in front does not.
+fn remote_client_leads_job(
+    remote: crate::detect::remote::RemoteOrigin,
+    job: Option<&crate::platform::ForegroundJob>,
+    start_token: impl Fn(u32) -> Option<u64>,
+) -> bool {
+    let Some(identified) = remote.client_process else {
+        return false;
+    };
+    let Some(leader) = job.and_then(|job| {
+        job.processes
+            .iter()
+            .find(|process| process.pid == job.process_group_id)
+    }) else {
+        return false;
+    };
+    leader.pid == identified.pid
+        && crate::detect::remote::remote_client(leader) == Some(remote.client)
+        && start_token(leader.pid) == identified.start_token
 }
 
 fn live_runtime_agent(runtime: &crate::terminal::TerminalRuntime) -> Option<crate::detect::Agent> {
@@ -594,6 +615,77 @@ pub(super) enum AgentRenameError {
 #[cfg(test)]
 mod tests {
     use super::valid_agent_name;
+
+    fn ssh_job(pid: u32) -> crate::platform::ForegroundJob {
+        crate::platform::ForegroundJob {
+            process_group_id: pid,
+            processes: vec![crate::platform::ForegroundProcess {
+                pid,
+                name: "ssh".into(),
+                argv0: None,
+                argv: Some(vec!["ssh".into(), "host".into()]),
+                cmdline: Some("ssh host".into()),
+            }],
+        }
+    }
+
+    fn held_behind(pid: Option<u32>, token: Option<u64>) -> crate::detect::remote::RemoteOrigin {
+        crate::detect::remote::RemoteOrigin {
+            client: crate::detect::remote::RemoteClient::Ssh,
+            via: crate::detect::remote::RemoteVia::ProgramStatus,
+            client_process: pid.map(|pid| crate::detect::remote::RemoteClientProcess {
+                pid,
+                start_token: token,
+            }),
+        }
+    }
+
+    #[test]
+    fn typed_input_goes_only_to_the_client_the_agent_was_identified_behind() {
+        let tokens = |pid: u32| Some(u64::from(pid) * 10);
+        let remote = held_behind(Some(40), Some(400));
+        assert!(super::remote_client_leads_job(
+            remote,
+            Some(&ssh_job(40)),
+            tokens
+        ));
+        // The agent's ssh is in the background; another ssh leads.
+        assert!(!super::remote_client_leads_job(
+            remote,
+            Some(&ssh_job(41)),
+            tokens
+        ));
+        // The same pid, reused by a later ssh.
+        assert!(!super::remote_client_leads_job(
+            remote,
+            Some(&ssh_job(40)),
+            |_| Some(999)
+        ));
+        // A mark without its client process, or no job, never matches.
+        assert!(!super::remote_client_leads_job(
+            held_behind(None, None),
+            Some(&ssh_job(40)),
+            tokens
+        ));
+        assert!(!super::remote_client_leads_job(remote, None, tokens));
+        // Not a remote-shell client in front.
+        let mut job = ssh_job(40);
+        job.processes[0].name = "vim".into();
+        job.processes[0].argv = Some(vec!["vim".into()]);
+        assert!(!super::remote_client_leads_job(remote, Some(&job), tokens));
+    }
+
+    #[test]
+    fn a_pane_whose_own_process_is_the_client_takes_input() {
+        // `ssh -t host claude` as the pane's command: its group is the
+        // pane's own process, and the mark names it.
+        let remote = held_behind(Some(42), Some(420));
+        assert!(super::remote_client_leads_job(
+            remote,
+            Some(&ssh_job(42)),
+            |pid| Some(u64::from(pid) * 10)
+        ));
+    }
 
     #[test]
     fn agent_names_use_a_small_cli_safe_grammar() {

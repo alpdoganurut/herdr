@@ -13727,7 +13727,7 @@
               "type": "string"
             },
             "via": {
-              "description": "How the agent was identified: `ssh_command` (the client's remote\ncommand runs it) or `program_status` (its own OSC 7501 status\nreports, which anything on the other side can print).",
+              "description": "How the agent was identified: `client_command` (the client's remote\ncommand runs it) or `program_status` (its own OSC 7501 status\nreports, which anything on the other side can print).",
               "type": "string"
             }
           },

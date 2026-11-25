@@ -1483,6 +1483,19 @@ impl AppState {
                 })
                 .into_iter()
                 .collect(),
+            AppEvent::AgentRemoteObserved {
+                pane_id,
+                agent,
+                remote,
+            } => self
+                .update_terminal_state(pane_id, |terminal| {
+                    // Fork: only the runtime mark; the agent and its state
+                    // stand (src/pane/remote_agent.rs `RemoteMarkSync`).
+                    terminal.set_agent_remote(agent, remote);
+                    None
+                })
+                .into_iter()
+                .collect(),
             AppEvent::CodexPromptObserved { pane_id, ready } => self
                 .update_terminal_state(pane_id, |terminal| {
                     terminal.observe_codex_prompt_ready(ready)

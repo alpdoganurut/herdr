@@ -3,13 +3,14 @@
 //!
 //! Process identification only sees the local client, so the remote
 //! command line it was given is the evidence: `ssh -t host 'cd ~/w &&
-//! claude'` names `claude` as a command word. Only command words count
-//! (the first word of a simple command after `&&`, `||`, `;`, `|`, `&`,
-//! `exec`, `env`, assignments), so `ssh host cat claude.md`, `ssh claude@h`
-//! or `ssh -i ~/.ssh/claude h` name no agent. A remote token is never
-//! resolved against the local file system.
+//! claude'` names `claude` as a command word. Only the command word of
+//! the last simple command counts (after `&&`, `||`, `;`, `|`, `&`, `exec`,
+//! `env`, assignments), so `ssh host cat claude.md`, `ssh claude@h`,
+//! `ssh -i ~/.ssh/claude h` or `ssh -t h 'claude; bash'` (a remote shell
+//! outlives the agent) name no agent. A remote token is never resolved
+//! against the local file system.
 //!
-//! An agent found this way is [`RemoteVia::SshCommand`]; one adopted from
+//! An agent found this way is [`RemoteVia::ClientCommand`]; one adopted from
 //! its own OSC 7501 status reports while a client is in front is
 //! [`RemoteVia::ProgramStatus`] (src/pane/remote_agent.rs). Either way herdr
 //! never acts on the local process for it (it is the client): no suspend,
@@ -38,8 +39,9 @@ impl RemoteClient {
 /// How a remote agent was identified.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RemoteVia {
-    /// The client's remote command line runs the agent.
-    SshCommand,
+    /// The client's remote command line (`ssh`, `mosh`, `et -c`) runs the
+    /// agent.
+    ClientCommand,
     /// The agent's own OSC 7501 status reports named it while the client
     /// led the foreground (src/pane/remote_agent.rs).
     ProgramStatus,
@@ -48,7 +50,7 @@ pub enum RemoteVia {
 impl RemoteVia {
     pub fn label(self) -> &'static str {
         match self {
-            Self::SshCommand => "ssh_command",
+            Self::ClientCommand => "client_command",
             Self::ProgramStatus => "program_status",
         }
     }
@@ -59,6 +61,34 @@ impl RemoteVia {
 pub struct RemoteOrigin {
     pub client: RemoteClient,
     pub via: RemoteVia,
+    /// The client process the agent was identified behind, filled in when
+    /// the identification is published (runtime only, never on the wire):
+    /// typed input goes to the foreground only while that same process
+    /// leads it (src/app/agents.rs `runtime_hosts_remote_agent`).
+    pub client_process: Option<RemoteClientProcess>,
+}
+
+/// A client process by pid and start token
+/// ([`crate::platform::process_start_token`]), so a reused pid or another
+/// client is not taken for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RemoteClientProcess {
+    pub pid: u32,
+    pub start_token: Option<u64>,
+}
+
+impl RemoteOrigin {
+    /// This origin pinned to the client process `pid` (reads its start
+    /// token: call once per publication, not per probe).
+    pub fn with_client_process(self, pid: u32) -> Self {
+        Self {
+            client_process: Some(RemoteClientProcess {
+                pid,
+                start_token: crate::platform::process_start_token(pid),
+            }),
+            ..self
+        }
+    }
 }
 
 /// Nested `sh -c '…'` levels followed inside a remote command.
@@ -79,8 +109,16 @@ pub fn remote_client(process: &crate::platform::ForegroundProcess) -> Option<Rem
         .find_map(|name| client_from_name(super::path_basename(name)))
 }
 
+/// Fork: `argv0` (a path or a name) is a remote-shell client.
+pub fn is_remote_client_argv0(argv0: &str) -> bool {
+    client_from_name(super::path_basename(argv0)).is_some()
+}
+
 fn client_from_name(name: &str) -> Option<RemoteClient> {
-    match name.to_ascii_lowercase().as_str() {
+    let name = name.to_ascii_lowercase();
+    // Windows OpenSSH runs as `ssh.exe`.
+    let name = name.strip_suffix(".exe").unwrap_or(&name);
+    match name {
         "ssh" => Some(RemoteClient::Ssh),
         "mosh" | "mosh-client" => Some(RemoteClient::Mosh),
         "et" => Some(RemoteClient::Et),
@@ -101,7 +139,7 @@ pub fn remote_agent_from_process(
 
 /// The command line a client asks the remote side to run, or `None` for an
 /// interactive login (or a client invocation that runs no command).
-pub fn remote_command(client: RemoteClient, argv: &[String]) -> Option<String> {
+fn remote_command(client: RemoteClient, argv: &[String]) -> Option<String> {
     let name = argv
         .first()
         .map(|arg| super::path_basename(arg).to_ascii_lowercase());
@@ -110,7 +148,7 @@ pub fn remote_command(client: RemoteClient, argv: &[String]) -> Option<String> {
         RemoteClient::Mosh if name.as_deref() == Some("mosh-client") => {
             mosh_client_remote_command(argv.get(1..)?)
         }
-        RemoteClient::Mosh => mosh_remote_command(argv.get(1..)?),
+        RemoteClient::Mosh => mosh_remote_command(argv.get(1..)?, false),
         RemoteClient::Et => et_remote_command(argv.get(1..)?),
     }
 }
@@ -194,8 +232,11 @@ fn ssh_remote_command_option(value: &str) -> Option<String> {
     (!command.is_empty() && !command.eq_ignore_ascii_case("none")).then(|| command.to_string())
 }
 
-/// `mosh [options] [--] host [command…]`.
-fn mosh_remote_command(args: &[String]) -> Option<String> {
+/// `mosh [options] [--] host [command…]`. `split_values`: the words were
+/// re-split from text that lost its quoting, so a `--ssh "ssh -J jump"`
+/// value now reads as words of their own; OpenSSH's value options and
+/// their values are skipped too, so `jump` is not taken for the host.
+fn mosh_remote_command(args: &[String], split_values: bool) -> Option<String> {
     let mut index = 0;
     let mut host = None;
     while index < args.len() {
@@ -215,7 +256,7 @@ fn mosh_remote_command(args: &[String]) -> Option<String> {
                     | "--family"
                     | "--bind-server"
                     | "--experimental-remote-ip"
-            );
+            ) || (split_values && is_ssh_value_option(arg));
             index += if takes_value { 2 } else { 1 };
             continue;
         }
@@ -240,7 +281,18 @@ fn mosh_client_remote_command(args: &[String]) -> Option<String> {
     let original = original.trim();
     let original = original.strip_suffix('|').unwrap_or(original).trim();
     let words: Vec<String> = original.split_whitespace().map(str::to_string).collect();
-    mosh_remote_command(&words)
+    mosh_remote_command(&words, true)
+}
+
+/// A lone OpenSSH option letter that takes the next word as its value
+/// (`-J`, `-p`, `-o`).
+fn is_ssh_value_option(arg: &str) -> bool {
+    let mut chars = arg.chars();
+    chars.next() == Some('-')
+        && chars
+            .next()
+            .is_some_and(|option| ssh_option_takes_value(option))
+        && chars.next().is_none()
 }
 
 /// `et [options] host` runs a command only with `-c` / `--command`.
@@ -262,32 +314,33 @@ fn et_remote_command(args: &[String]) -> Option<String> {
     None
 }
 
-/// The first agent a shell command line runs as a command word.
-pub fn agent_in_command_line(command: &str) -> Option<Agent> {
+/// The agent a shell command line runs as the command word of its last
+/// simple command. An agent that runs earlier (`claude; bash`,
+/// `claude || exec $SHELL`) leaves a remote shell in front once it exits,
+/// which the client's command line cannot tell apart, so it names nothing.
+fn agent_in_command_line(command: &str) -> Option<Agent> {
     agent_in_command_line_at(command, 0)
 }
 
 fn agent_in_command_line_at(command: &str, depth: u8) -> Option<Agent> {
     let tokens = shell_tokens(command);
-    let mut index = 0;
-    while index < tokens.len() {
-        let end = tokens[index..]
-            .iter()
-            .position(|token| matches!(token, ShellToken::Operator))
-            .map_or(tokens.len(), |offset| index + offset);
-        let words: Vec<&str> = tokens[index..end]
-            .iter()
-            .filter_map(|token| match token {
-                ShellToken::Word(word) => Some(word.as_str()),
-                ShellToken::Operator => None,
-            })
-            .collect();
-        if let Some(agent) = agent_in_simple_command(&words, depth) {
-            return Some(agent);
-        }
-        index = end + 1;
-    }
-    None
+    let last = tokens
+        .split(|token| matches!(token, ShellToken::Operator))
+        .map(|command| {
+            command
+                .iter()
+                .filter_map(|token| match token {
+                    ShellToken::Word(word) => Some(word.as_str()),
+                    ShellToken::Operator => None,
+                })
+                .collect::<Vec<&str>>()
+        })
+        // A closing keyword ends the compound command whose body ran last
+        // (`{ claude; }`, `if …; then claude; fi`).
+        .rfind(|words| {
+            !words.is_empty() && !matches!(words.as_slice(), ["}" | "fi" | "done" | "esac"])
+        })?;
+    agent_in_simple_command(&last, depth)
 }
 
 /// One simple command's words: skip the prefixes that run the next word
@@ -303,6 +356,15 @@ fn agent_in_simple_command(words: &[&str], depth: u8) -> Option<Agent> {
             "exec" | "command" | "nohup" | "builtin" | "time" | "then" | "do" | "else" | "{"
             | "!" | "(" => {
                 index += 1;
+                // `command -v claude` / `command -V claude` only look it up.
+                if *word == "command"
+                    && words[index..]
+                        .iter()
+                        .take_while(|option| option.starts_with('-'))
+                        .any(|option| option[1..].contains(['v', 'V']))
+                {
+                    return None;
+                }
                 // `exec -a name cmd`, `command -p cmd`.
                 while let Some(option) = words.get(index).filter(|word| word.starts_with('-')) {
                     index += if *option == "-a" { 2 } else { 1 };
@@ -343,16 +405,22 @@ fn shell_command_string<'a>(command: &str, args: &[&'a str]) -> Option<&'a str> 
         return None;
     }
     let mut runs_script = false;
-    for arg in args {
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
         if *arg == "--" {
             break;
         }
         if arg.starts_with("--") {
             continue;
         }
-        if let Some(flags) = arg.strip_prefix('-') {
-            if flags.contains('c') {
+        if let Some(flags) = arg.strip_prefix(['-', '+']) {
+            if arg.starts_with('-') && flags.contains('c') {
                 runs_script = true;
+            }
+            // `-o pipefail`, `+o posix`, `-euo pipefail`, `-O extglob`: the
+            // option name is the next word.
+            if flags.ends_with(['o', 'O']) {
+                args.next();
             }
             continue;
         }
@@ -391,7 +459,9 @@ enum ShellToken {
 }
 
 /// A small POSIX-shell word splitter: quotes and backslashes are honoured,
-/// control operators end a simple command. Expansions are left as text.
+/// control operators end a simple command. Expansions are left as text,
+/// including a command substitution (`$(…)`, `` `…` ``), whose commands
+/// run inside the word, not as commands of their own.
 fn shell_tokens(command: &str) -> Vec<ShellToken> {
     let mut tokens = Vec::new();
     let mut word = String::new();
@@ -438,6 +508,45 @@ fn shell_tokens(command: &str) -> Vec<ShellToken> {
                         word.push(escaped);
                     }
                 }
+            }
+            '$' if chars.peek() == Some(&'(') => {
+                in_word = true;
+                word.push(ch);
+                let mut depth = 0usize;
+                for inner in chars.by_ref() {
+                    word.push(inner);
+                    match inner {
+                        '(' => depth += 1,
+                        ')' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            '`' => {
+                in_word = true;
+                word.push(ch);
+                while let Some(inner) = chars.next() {
+                    word.push(inner);
+                    match inner {
+                        '`' => break,
+                        '\\' => {
+                            if let Some(escaped) = chars.next() {
+                                word.push(escaped);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            // `2>&1`, `>&2`, `&>log`: a redirection, not a control operator.
+            '&' if (in_word && word.ends_with(['>', '<'])) || chars.peek() == Some(&'>') => {
+                in_word = true;
+                word.push(ch);
             }
             '#' if !in_word => {
                 // A comment runs to the end of the line.
@@ -619,6 +728,123 @@ mod tests {
         assert_eq!(
             remote_agent_from_process(&process("et", &["et", "-p", "2022", "claude"])),
             None
+        );
+    }
+
+    #[test]
+    fn only_an_agent_in_the_last_command_counts() {
+        // The remote shell outlives an agent that runs before it.
+        for command in [
+            "claude; bash",
+            "claude || exec $SHELL",
+            "claude && bash -l",
+            "claude | tee log",
+        ] {
+            assert_eq!(ssh(&["-t", "host", command]), None, "{command}");
+        }
+        for command in [
+            "cd w && claude",
+            "claude;",
+            "claude\n",
+            "claude # resume later",
+            "claude 2>&1",
+            "claude &>log",
+            "{ claude; }",
+            "bash -lc 'claude; true' && cd w && claude",
+        ] {
+            assert_eq!(
+                ssh(&["-t", "host", command]),
+                Some(Agent::Claude),
+                "{command}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_command_substitution_runs_no_command_of_its_own() {
+        for command in [
+            "V=$(claude --version); bash",
+            "echo $(claude --version)",
+            "echo `ls; claude --version`",
+            "echo $(cd w; claude)",
+        ] {
+            assert_eq!(ssh(&["host", command]), None, "{command}");
+        }
+        assert_eq!(ssh(&["host", "cd $(pwd)/w && claude"]), Some(Agent::Claude));
+    }
+
+    #[test]
+    fn command_v_only_looks_the_agent_up() {
+        for command in [
+            "command -v claude",
+            "command -V claude",
+            "command -pv claude",
+        ] {
+            assert_eq!(ssh(&["host", command]), None, "{command}");
+        }
+        assert_eq!(ssh(&["host", "command -p claude"]), Some(Agent::Claude));
+    }
+
+    #[test]
+    fn shell_option_values_are_not_the_script() {
+        for command in [
+            "bash -o pipefail -c 'claude'",
+            "bash -euo pipefail -c 'claude'",
+            "bash +o posix -c 'claude'",
+            "bash -O extglob -c 'claude'",
+        ] {
+            assert_eq!(ssh(&["host", command]), Some(Agent::Claude), "{command}");
+        }
+        assert_eq!(ssh(&["host", "bash -o pipefail claude.sh"]), None);
+    }
+
+    #[test]
+    fn windows_openssh_is_a_remote_client() {
+        assert_eq!(
+            remote_agent_from_process(&process(
+                "ssh.exe",
+                &["C:\\Windows\\System32\\OpenSSH\\ssh.exe", "host", "claude"]
+            )),
+            Some((Agent::Claude, RemoteClient::Ssh))
+        );
+        assert_eq!(client_from_name("SSH.EXE"), Some(RemoteClient::Ssh));
+        assert!(is_remote_client_argv0("/usr/bin/ssh"));
+        assert!(!is_remote_client_argv0("claude"));
+    }
+
+    #[test]
+    fn mosh_client_text_skips_ssh_options_inside_the_ssh_value() {
+        // `mosh --ssh "ssh -J jump" pi`: the quoting is gone in `-#`.
+        assert_eq!(
+            remote_agent_from_process(&process(
+                "mosh-client",
+                &[
+                    "mosh-client",
+                    "-# --ssh ssh -J jump pi |",
+                    "10.0.0.2",
+                    "60001"
+                ]
+            )),
+            None
+        );
+        assert_eq!(
+            remote_agent_from_process(&process(
+                "mosh-client",
+                &[
+                    "mosh-client",
+                    "-# --ssh ssh -J jump host claude |",
+                    "10.0.0.2",
+                    "60001"
+                ]
+            )),
+            Some((Agent::Claude, RemoteClient::Mosh))
+        );
+        assert_eq!(
+            remote_agent_from_process(&process(
+                "mosh-client",
+                &["mosh-client", "-# host claude |", "10.0.0.2", "60001"]
+            )),
+            Some((Agent::Claude, RemoteClient::Mosh))
         );
     }
 

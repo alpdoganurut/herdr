@@ -273,7 +273,8 @@ async fn a_remote_claude_takes_no_quiet_messages() {
         Agent::Claude,
         Some(crate::detect::remote::RemoteOrigin {
             client: crate::detect::remote::RemoteClient::Ssh,
-            via: crate::detect::remote::RemoteVia::SshCommand,
+            via: crate::detect::remote::RemoteVia::ClientCommand,
+            client_process: None,
         }),
     );
     let reply = send(&mut app, &lead, &fixer, "x", true, false);
