@@ -112,6 +112,8 @@ struct Inner {
     supervisor: AtomicBool,
     /// The safe fixes after a herdr update ran (once per process, on the first start).
     auto_repaired: std::sync::Once,
+    /// A browser start asked for the safe fixes (tests check the paths that do).
+    auto_repair_asked: AtomicBool,
     /// Skip the executable check and the `hello` node checks (fake host tests).
     test_mode: AtomicBool,
     /// Serializes the whole persistence transaction (snapshot, save, append,
@@ -309,6 +311,7 @@ impl BrowserHub {
                 respawns: Mutex::new(VecDeque::new()),
                 supervisor: AtomicBool::new(false),
                 auto_repaired: std::sync::Once::new(),
+                auto_repair_asked: AtomicBool::new(false),
                 test_mode: AtomicBool::new(false),
                 flush_lock: Mutex::new(()),
                 read_cache: Mutex::new(ReadCaches::default()),
@@ -638,6 +641,11 @@ impl BrowserHub {
     }
 
     #[cfg(test)]
+    pub fn auto_repair_asked_for_test(&self) -> bool {
+        self.inner.auto_repair_asked.load(Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
     pub fn release_attempts_for_test(&self, pane: &str) -> Option<u32> {
         self.inner
             .release_backoff
@@ -651,7 +659,8 @@ impl BrowserHub {
     /// `npm ci` when the lock changed, runtime.json) run by themselves on
     /// the start thread — never a user file, never on the App thread (a
     /// `stop` can reach `ensure_host` from there), once per process.
-    fn auto_repair_once(&self) {
+    pub(super) fn auto_repair_once(&self) {
+        self.inner.auto_repair_asked.store(true, Ordering::Relaxed);
         if self.inner.test_mode.load(Ordering::Relaxed) {
             return;
         }

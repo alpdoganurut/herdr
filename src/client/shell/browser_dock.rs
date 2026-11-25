@@ -1440,7 +1440,7 @@ impl ClientShellState {
                             ..Placeholder::say(vec![
                                 title("The companion has not docked".into()),
                                 body(if companion.update_ready {
-                                    "a newer companion is installed: Restart applies it"
+                                    "a newer companion is ready: Restart applies it"
                                 } else {
                                     "Restart it if this lasts"
                                 }),

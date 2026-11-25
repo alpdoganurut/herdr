@@ -17,6 +17,7 @@ const {
   watchdogFor,
   onQuitSignals,
   QUIT_SIGNALS,
+  quitOnce,
 } = require('../src/managed.js');
 const { HerdrLink } = require('../src/host.js');
 
@@ -179,4 +180,64 @@ test('the link registers with the launch token and unregisters on stop', async (
   assert.equal(link.stopped, true);
   await new Promise((r) => herdr.server.close(r));
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// before-quit: bounded, so a quit signal always ends the process.
+function quitHarness(shutdown) {
+  const timers = [];
+  const calls = [];
+  const handler = quitOnce({
+    shutdown,
+    quit: () => calls.push('quit'),
+    exit: () => calls.push('exit'),
+    graceMs: 3000,
+    backstopMs: 8000,
+    setTimer: (fn, ms) => timers.push({ fn, ms }),
+  });
+  const event = () => {
+    const e = { prevented: false, preventDefault() { this.prevented = true; } };
+    handler(e);
+    return e;
+  };
+  const fire = (ms) => timers.filter((t) => t.ms === ms).forEach((t) => t.fn());
+  return { event, fire, calls, timers };
+}
+const tick = () => new Promise((r) => setImmediate(r));
+
+test('a quit runs the shutdown once, then quits for real', async () => {
+  let shutdowns = 0;
+  const h = quitHarness(async () => { shutdowns++; });
+  assert.equal(h.event().prevented, true);
+  await tick();
+  assert.deepEqual(h.calls, ['quit']);
+  // the real quit and a second signal go through
+  assert.equal(h.event().prevented, false);
+  assert.equal(shutdowns, 1);
+  h.fire(3000);
+  assert.deepEqual(h.calls, ['quit'], 'quits once');
+});
+
+test('a shutdown that never ends (no herdr answers) quits after the grace', async () => {
+  const h = quitHarness(() => new Promise(() => {}));
+  h.event();
+  await tick();
+  assert.deepEqual(h.calls, []);
+  h.fire(3000);
+  assert.deepEqual(h.calls, ['quit']);
+});
+
+test('a failing shutdown still quits', async () => {
+  const h = quitHarness(() => { throw new Error('boom'); });
+  h.event();
+  await tick();
+  assert.deepEqual(h.calls, ['quit']);
+});
+
+test('a quit something holds up ends with exit after the backstop', async () => {
+  const h = quitHarness(async () => {});
+  h.event();
+  await tick();
+  // the real quit was cancelled (a window that would not close): the backstop exits
+  h.fire(8000);
+  assert.deepEqual(h.calls, ['quit', 'exit']);
 });

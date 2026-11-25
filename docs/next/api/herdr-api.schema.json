@@ -15641,8 +15641,15 @@
               "description": "`not_installed`, `stopped`, `starting`, `running`, `reconnecting`,\n`stopping`, `crashed` (a restart is scheduled), `failed` (herdr gave\nup restarting it), `external` (started by hand: herdr routes to it\nbut never stops or restarts it) or, in a `browser.companion` reply\nonly, `disabled` (the config keeps it off; the note says why).",
               "type": "string"
             },
+            "update": {
+              "description": "While `update_ready`: the app version a restart applies. Older\nservers leave it out (their update is `installed`).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "update_ready": {
-              "description": "Newer app files are installed than the running process uses: a\nrestart applies them (nothing restarts by itself).",
+              "description": "The running managed process uses other app files than this herdr\ncarries (a herdr update): a restart applies them (nothing restarts\nby itself).",
               "type": "boolean"
             },
             "version": {

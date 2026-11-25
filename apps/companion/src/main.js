@@ -11,7 +11,7 @@ const { ViewManager, within, frameKey } = require('./views.js');
 const { DialogBook } = require('./dialogs.js');
 const { HerdrLink } = require('./host.js');
 const { resolveSocketPath, serialized } = require('./herdr-api.js');
-const { parseManaged, registerFields, startupWindow, watchdogFor, onQuitSignals } = require('./managed.js');
+const { parseManaged, registerFields, startupWindow, watchdogFor, onQuitSignals, quitOnce } = require('./managed.js');
 const { PlacementFeed, anyDockPlacement } = require('./dock/placements.js');
 const { WindowProbe } = require('./dock/window-probe.js');
 const { DockController, RAISED } = require('./dock/dock.js');
@@ -930,6 +930,7 @@ class Companion {
   onViewGone(id) {
     // the app quitting takes its pages down too: herdr keeps them for the next start
     if (this.shuttingDown) return;
+    log('view gone (its page was closed outside the companion)', id);
     if (!this.closeView(id)) this.pushStrip();
   }
 
@@ -2170,13 +2171,16 @@ if (SOCKET) {
     app.quit();
   } else {
     const companion = new Companion();
-    let quitting = false;
-    app.on('before-quit', (e) => {
-      if (quitting) return;
-      e.preventDefault();
-      quitting = true;
-      companion.shutdown().finally(() => app.quit());
-    });
+    // bounded: a quit (the control page's, a signal) always ends the process, herdr there or not
+    app.on(
+      'before-quit',
+      quitOnce({
+        shutdown: () => companion.shutdown(),
+        quit: () => app.quit(),
+        exit: () => app.exit(0),
+        log,
+      }),
+    );
     app.on('window-all-closed', () => app.quit());
     // herdr's stop (after the control page's quit) and a terminal's ^C: a clean quit that
     // unregisters first (before-quit above)

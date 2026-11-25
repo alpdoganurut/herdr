@@ -661,10 +661,15 @@ pub struct BrowserCompanionAppInfo {
     /// The installed Electron version.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub electron: Option<String>,
-    /// Newer app files are installed than the running process uses: a
-    /// restart applies them (nothing restarts by itself).
+    /// The running managed process uses other app files than this herdr
+    /// carries (a herdr update): a restart applies them (nothing restarts
+    /// by itself).
     #[serde(default, skip_serializing_if = "super::is_false")]
     pub update_ready: bool,
+    /// While `update_ready`: the app version a restart applies. Older
+    /// servers leave it out (their update is `installed`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update: Option<String>,
     /// When the running process started.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_unix: Option<u64>,

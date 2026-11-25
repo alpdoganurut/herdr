@@ -236,7 +236,11 @@ pub(crate) fn companion_overlay_rows(
         rows.push(note(
             format!(
                 "update ready: {} — Restart applies it",
-                companion.installed.as_deref().unwrap_or("?")
+                companion
+                    .update
+                    .as_deref()
+                    .or(companion.installed.as_deref())
+                    .unwrap_or("?")
             ),
             CompanionTone::Warn,
         ));

@@ -715,10 +715,9 @@ class ViewManager {
   }
 
   // Its WebContents was destroyed without destroy() (window.close(), a CDP close): forgotten as destroy()
-  // does, then main hears it (hooks.onGone) and closes its tab.
+  // does, then main hears it (hooks.onGone), logs it and closes its tab (not while the app quits).
   _gone(viewId, rec) {
     if (this.live.get(viewId) !== rec) return; // destroy() went first
-    this.log('view gone (its page was closed outside the companion)', viewId);
     this._forget(viewId, rec, null);
     if (this.hooks.onGone) this.hooks.onGone(viewId);
   }

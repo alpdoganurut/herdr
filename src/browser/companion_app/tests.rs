@@ -875,40 +875,121 @@ fn launches_for_agents_pane_callers_and_autostart_pass_background() {
 }
 
 #[test]
-fn new_app_files_make_an_update_ready_without_a_restart() {
+fn a_herdr_update_shows_the_bundled_update_and_one_restart_applies_it() {
+    use crate::integration::companion_assets::{companion_app_sha256, COMPANION_APP_VERSION};
     let (hub, home, _) = companion_hub("update", true);
     let spawner = FakeSpawner::new(&hub, true);
     hub.companion_start(StartReason::User).unwrap();
     wait_for("the registration", Duration::from_secs(5), || {
         hub.companion_app_info().state == "running"
     });
-    assert!(!hub.companion_app_info().update_ready);
-    // a newer herdr installed newer app files under the running one
+    let info = hub.companion_app_info();
+    assert!(!info.update_ready);
+    assert_eq!(info.update, None);
+    assert!(
+        hub.auto_repair_asked_for_test(),
+        "the companion's attach runs the safe fixes after a herdr update"
+    );
+
+    // the companion was launched by the previous herdr: its run record and
+    // install.json name that herdr's app files; this herdr bundles newer ones
     let companion_home = hub.companion_home();
+    let mut run = read_run_record(&companion_home).expect("run.json");
+    run.app = "0.0.1".into();
+    run.app_sha256 = "a".repeat(64);
+    write_run_record(&companion_home, &run).unwrap();
     let mut record = companion_install::read_install(&companion_home).unwrap();
-    record.app = "0.2.1".into();
-    record.app_sha256 = "b".repeat(64);
-    std::thread::sleep(Duration::from_millis(20));
+    record.app = "0.0.1".into();
+    record.app_sha256 = "a".repeat(64);
+    // the previous herdr's app files, which the companion runs from
+    let old_dir = record.app_dir(&companion_home);
+    std::fs::create_dir_all(&old_dir).unwrap();
+    std::fs::write(old_dir.join("package.json"), "{\"version\":\"0.0.1\"}").unwrap();
+    run.app_dir = old_dir.display().to_string();
+    write_run_record(&companion_home, &run).unwrap();
     std::fs::write(
         companion_home.join(companion_install::INSTALL_FILE),
         serde_json::to_string_pretty(&record).unwrap(),
     )
     .unwrap();
-    let info = hub.companion_app_info();
-    assert!(info.update_ready);
-    assert_eq!(info.installed.as_deref(), Some("0.2.1"));
+
+    // the new herdr takes over (a live handoff) and adopts it
+    let next = BrowserHub::with_home(companion_config(), home.clone());
+    let (_shared, stream) = crate::browser::tests::fake_host(&next);
+    std::mem::forget(stream);
+    next.launcher().set_socket(home.join("herdr-test.sock"));
+    next.launcher().set_spawner(spawner.clone());
+    *spawner.hub.lock().unwrap() = Some(next.clone());
+    next.adopt_companion();
+    register_with(&next, "swapped", Some(&run.launch_token), run.pid);
+    let info = next.companion_app_info();
     assert_eq!(info.state, "running", "nothing restarts by itself");
+    assert!(info.managed);
+    assert!(info.update_ready, "{info:?}");
+    assert_eq!(info.update.as_deref(), Some(COMPANION_APP_VERSION));
+    assert_eq!(info.installed.as_deref(), Some("0.0.1"));
+    assert_eq!(
+        next.companion_update_ready().as_deref(),
+        Some(COMPANION_APP_VERSION)
+    );
     // the lease answer tells the app (its update chip)
-    let lease_id = {
-        let token = hub.launcher().lock().token.clone();
-        assert!(token.is_some());
-        hub.companion_lease_id_for_test().expect("a lease")
-    };
-    let lease = hub.host_heartbeat(&lease_id).unwrap();
-    assert_eq!(lease.update.as_deref(), Some("0.2.1"));
+    let lease_id = next.companion_lease_id_for_test().expect("a lease");
+    let lease = next.host_heartbeat(&lease_id).unwrap();
+    assert_eq!(lease.update.as_deref(), Some(COMPANION_APP_VERSION));
     assert_eq!(spawner.spawns(), 1);
     assert!(spawner.signals().is_empty());
+
+    // one restart: the launch refreshes the app files to the bundled ones
+    assert_eq!(next.companion_restart(StartReason::User).unwrap(), None);
+    wait_for("the relaunch", Duration::from_secs(20), || {
+        spawner.spawns() == 2 && next.companion_app_info().state == "running"
+    });
+    let installed = companion_install::read_install(&companion_home).unwrap();
+    assert_eq!(installed.app_sha256, companion_app_sha256());
+    assert_eq!(installed.app, COMPANION_APP_VERSION);
+    let relaunched = read_run_record(&companion_home).expect("run.json");
+    assert_eq!(relaunched.app_sha256, companion_app_sha256());
+    let info = next.companion_app_info();
+    assert!(!info.update_ready, "{info:?}");
+    assert_eq!(info.update, None);
+    assert_eq!(info.installed.as_deref(), Some(COMPANION_APP_VERSION));
+    assert_eq!(next.companion_update_ready(), None);
+    assert_eq!(spawner.spawns(), 2, "one restart, one launch");
+    quick_stop(&next);
     let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn an_update_is_the_bundled_app_unless_this_herdr_is_older() {
+    use crate::integration::companion_assets::{companion_app_sha256, COMPANION_APP_VERSION};
+    let run = |app: &str, sha: String| CompanionRunRecord {
+        app: app.into(),
+        app_sha256: sha,
+        ..Default::default()
+    };
+    // the bundled files run: nothing to apply
+    assert_eq!(
+        update_for(&run(COMPANION_APP_VERSION, companion_app_sha256())),
+        None
+    );
+    // older files, or the same version with other files (a JS change without a bump)
+    assert_eq!(
+        update_for(&run("0.0.1", "a".repeat(64))).as_deref(),
+        Some(COMPANION_APP_VERSION)
+    );
+    assert_eq!(
+        update_for(&run(COMPANION_APP_VERSION, "a".repeat(64))).as_deref(),
+        Some(COMPANION_APP_VERSION)
+    );
+    // an older herdr took over a newer companion: a restart would go back
+    assert_eq!(update_for(&run("999.0.0", "a".repeat(64))), None);
+    assert!(version_older("0.2.9", "0.2.10"));
+    assert!(!version_older("0.2.10", "0.2.9"));
+    assert!(!version_older("0.2.10", "0.2.10"));
+    assert!(
+        !version_older("0.2.10", ""),
+        "an unreadable version is never older"
+    );
 }
 
 // ----- audit 1 -----------------------------------------------------------------

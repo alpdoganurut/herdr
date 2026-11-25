@@ -670,7 +670,10 @@ fn the_overlay_companion_block_shows_pid_uptime_restarts_update_and_last_error()
     state.compose(110, 30).expect("composed frame");
     let mut info = companion_info(1, "running");
     if let Some(companion) = info.companion_app.as_mut() {
-        companion.installed = Some("0.2.1".into());
+        // after a herdr update the installed files lag until the restart:
+        // the update names the version the restart applies
+        companion.installed = Some("0.2.0".into());
+        companion.update = Some("0.2.1".into());
         companion.update_ready = true;
         companion.restarts = 1;
         companion.last_error = Some("exited with status 1 — boom".into());

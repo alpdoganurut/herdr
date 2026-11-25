@@ -9,6 +9,7 @@ import path from 'node:path';
 import http from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { createMockHerdr } from './mock-herdr.mjs';
+import { reapOnExit, awaitExit } from './e2e-reap.mjs';
 
 const require = createRequire(import.meta.url);
 const electronBin = require('electron');
@@ -58,6 +59,7 @@ async function api(method, params) {
 const ctl = async (expr) => (await api('mock.control', { expression: expr })).value;
 
 let child = null;
+reapOnExit(() => [child]);
 const logFile = path.join(tmp, 'companion.log');
 function startCompanion() {
   const out = fs.openSync(logFile, 'a');
@@ -88,9 +90,9 @@ async function quitCompanion() {
   } catch {
     await quitDirect().catch((e) => console.log('direct quit failed:', e.message));
   }
-  const code = await Promise.race([child.exited, sleep(30000).then(() => 'timeout')]);
+  const code = await awaitExit(child, child.exited);
   if (code === 'timeout') {
-    console.log(`companion did not exit; abandoned pid ${child.pid}`);
+    console.log(`companion did not exit, even on SIGTERM: pid ${child.pid}`);
     return false;
   }
   child = null;

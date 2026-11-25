@@ -24,6 +24,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createMockHerdr } from './mock-herdr.mjs';
+import { reapOnExit, awaitExit } from './e2e-reap.mjs';
 import { firstShot, CaptureLane } from '../../../src/integration/assets/browser/activity.mjs';
 
 const require = createRequire(import.meta.url);
@@ -78,6 +79,7 @@ const pageFile = () => {
 };
 
 let child = null;
+reapOnExit(() => [child]);
 const logFile = path.join(tmp, 'companion.log');
 function startCompanion() {
   const out = fs.openSync(logFile, 'a');
@@ -262,8 +264,8 @@ try {
   try {
     await ctl('__herdrCompanion.quit()');
   } catch {}
-  const code = child ? await Promise.race([child.exited, sleep(30000).then(() => 'timeout')]) : 0;
-  if (code === 'timeout') console.log(`companion did not exit; abandoned pid ${child.pid}`);
+  const code = child ? await awaitExit(child, child.exited) : 0;
+  if (code === 'timeout') console.log(`companion did not exit, even on SIGTERM: pid ${child.pid}`);
   await mock.close().catch(() => {});
   console.log(failed ? `${failed} FAILED (log ${logFile})` : 'all ok');
   process.exit(failed ? 1 : 0);

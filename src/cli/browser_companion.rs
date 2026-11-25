@@ -158,7 +158,10 @@ pub(crate) fn status_line(info: &BrowserCompanionAppInfo, now: u64) -> String {
     if info.update_ready {
         line.push_str(&format!(
             " (update ready: {})",
-            info.installed.as_deref().unwrap_or("?")
+            info.update
+                .as_deref()
+                .or(info.installed.as_deref())
+                .unwrap_or("?")
         ));
     }
     line
@@ -176,7 +179,7 @@ pub(crate) fn detail_lines(info: &BrowserCompanionAppInfo) -> Vec<String> {
         );
     }
     if info.update_ready {
-        out.push("an update is installed; `herdr browser companion restart` applies it".into());
+        out.push("an update is ready; `herdr browser companion restart` applies it".into());
     }
     if let Some(log) = info.log.as_deref() {
         out.push(format!("log: {log}"));
@@ -289,6 +292,16 @@ mod tests {
         assert_eq!(
             status_line(&info, 1000 + 2 * 3600 + 3 * 60),
             "companion running · pid 51234 · up 2h 3m · 0 restarts · v0.2.0 (update ready: 0.2.1)"
+        );
+        // a herdr update: the installed files lag, the update names the bundled version
+        let swapped = BrowserCompanionAppInfo {
+            installed: Some("0.2.0".into()),
+            update: Some("0.2.2".into()),
+            ..info.clone()
+        };
+        assert_eq!(
+            status_line(&swapped, 1000 + 2 * 3600 + 3 * 60),
+            "companion running · pid 51234 · up 2h 3m · 0 restarts · v0.2.0 (update ready: 0.2.2)"
         );
         let crashed = BrowserCompanionAppInfo {
             state: "crashed".into(),

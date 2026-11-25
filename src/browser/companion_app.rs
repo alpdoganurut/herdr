@@ -42,6 +42,7 @@ use super::hub::{BrowserHub, COMPANION_PROFILE};
 use super::{unix_now, BrowserError};
 use crate::api::schema::BrowserCompanionAppInfo;
 use crate::config::{BrowserConfig, BrowserHostMode};
+use crate::integration::companion_assets;
 
 /// The run record's file under the companion home.
 pub const RUN_FILE: &str = "run.json";
@@ -1078,6 +1079,31 @@ impl Launcher {
     }
 }
 
+/// The bundled app version a process running `run`'s app files moves to
+/// on its next launch: its files differ from this herdr's and this herdr's
+/// version is not older (an older herdr that took over shows no update).
+pub(crate) fn update_for(run: &CompanionRunRecord) -> Option<String> {
+    let bundled = companion_assets::COMPANION_APP_VERSION;
+    (run.app_sha256 != companion_assets::companion_app_sha256()
+        && !version_older(bundled, &run.app))
+    .then(|| bundled.to_string())
+}
+
+/// `a` is an older dotted version than `b`; an unreadable one is never older.
+pub(crate) fn version_older(a: &str, b: &str) -> bool {
+    let parse = |v: &str| -> Option<Vec<u64>> {
+        v.trim()
+            .trim_start_matches('v')
+            .split('.')
+            .map(|part| part.parse().ok())
+            .collect()
+    };
+    match (parse(a), parse(b)) {
+        (Some(a), Some(b)) => a < b,
+        _ => false,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Errors (exact texts: the design's §2.2). `user`: the user's own call (the
 // TUI, the CLI from a plain terminal) is told what to run; an agent is told
@@ -1512,12 +1538,11 @@ impl BrowserHub {
         self.companion_changed();
     }
 
-    /// The installed version a running managed companion is not on yet.
+    /// The app version a restart of the running managed companion applies:
+    /// this herdr's bundled app files, when the process runs older ones.
     pub(crate) fn companion_update_ready(&self) -> Option<String> {
-        let install = self.launcher().install_record(&self.companion_home())?;
         let core = self.launcher().lock();
-        let run = core.run.as_ref()?;
-        (core.pid.is_some() && run.app_sha256 != install.app_sha256).then_some(install.app)
+        core.pid.and(core.run.as_ref()).and_then(update_for)
     }
 
     /// Run a launch: resolve the install (this herdr's app files first),
@@ -1949,12 +1974,14 @@ impl BrowserHub {
         } else {
             core.phase.as_str().to_string()
         };
-        let update_ready = !external
-            && core.pid.is_some()
-            && install
-                .as_ref()
-                .zip(core.run.as_ref())
-                .is_some_and(|(install, run)| install.app_sha256 != run.app_sha256);
+        // what a restart launches: `companion_launch` refreshes the app
+        // files to this herdr's bundled ones first (not install.json, which
+        // a herdr update leaves behind until then)
+        let update = if external {
+            None
+        } else {
+            core.pid.and(core.run.as_ref()).and_then(update_for)
+        };
         BrowserCompanionAppInfo {
             state,
             managed,
@@ -1969,7 +1996,8 @@ impl BrowserHub {
             },
             installed: install.as_ref().map(|i| i.app.clone()),
             electron: install.as_ref().map(|i| i.electron.clone()),
-            update_ready,
+            update_ready: update.is_some(),
+            update,
             started_unix: if external { None } else { core.started_unix },
             since_unix: Some(core.since_unix),
             restarts: core.crashes_in_window(Instant::now()),

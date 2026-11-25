@@ -537,6 +537,11 @@ impl BrowserHub {
         if already_attached {
             return Ok(());
         }
+        // The first attach after a herdr update (with the herdr+ window off
+        // every browser use comes here, never past `ensure_running`'s
+        // companion return): the safe fixes before the sidecar starts, as
+        // for a launched browser. Once per process.
+        self.auto_repair_once();
         self.ensure_host()?;
         let args = json!({ "port": port, "kind": "companion", "nonce": nonce });
         let mut attempt = 0;

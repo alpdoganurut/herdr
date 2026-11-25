@@ -132,7 +132,43 @@ function onQuitSignals(proc, quit) {
   for (const signal of QUIT_SIGNALS) proc.on(signal, () => quit(signal));
 }
 
+// The app's before-quit: the first quit runs `shutdown` (it unregisters from herdr) for at most
+// `graceMs`, then quits for real; a quit something still holds up after `backstopMs` (no herdr
+// answering, a page or window that keeps the app open) ends with `exit`. A quit signal always
+// ends the process. Later quits (the real one, a second signal) go through.
+const QUIT_GRACE_MS = 3000;
+const QUIT_BACKSTOP_MS = 8000;
+function quitOnce({ shutdown, quit, exit, log = () => {}, graceMs = QUIT_GRACE_MS, backstopMs = QUIT_BACKSTOP_MS, setTimer = setTimeout }) {
+  let quitting = false;
+  return (e) => {
+    if (quitting) return;
+    e.preventDefault();
+    quitting = true;
+    setTimer(() => {
+      log(`quit not done after ${backstopMs} ms: exiting`);
+      exit();
+    }, backstopMs);
+    let done = false;
+    const go = () => {
+      if (done) return;
+      done = true;
+      quit();
+    };
+    setTimer(() => {
+      if (!done) log(`shutdown not done after ${graceMs} ms: quitting anyway`);
+      go();
+    }, graceMs);
+    Promise.resolve()
+      .then(shutdown)
+      .catch((err) => log('shutdown failed', err && err.message))
+      .finally(go);
+  };
+}
+
 module.exports = {
+  quitOnce,
+  QUIT_GRACE_MS,
+  QUIT_BACKSTOP_MS,
   parseManaged,
   registerFields,
   probeSocket,

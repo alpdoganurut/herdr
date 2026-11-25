@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { reapOnExit, awaitExit } from './e2e-reap.mjs';
 
 const require = createRequire(import.meta.url);
 const electronBin = require('electron');
@@ -137,6 +138,7 @@ const W = `http://127.0.0.1:${web.address().port}`;
 // ---------- the companion (headless Electron) and an inspector on its CDP port ----------
 
 let child = null;
+reapOnExit(() => [child]);
 const SYNC_BUDGET = 1500;
 let insp = null; // {browser, control(), strip()}
 function startCompanion() {
@@ -168,9 +170,9 @@ async function quitCompanion() {
   } catch {}
   await within(insp.browser.close(), 10000, 'inspector close').catch(() => {});
   insp = null;
-  const code = await Promise.race([child.exited, sleep(30000).then(() => 'timeout')]);
+  const code = await awaitExit(child, child.exited);
   if (code === 'timeout') {
-    console.log(`companion did not exit; abandoned pid ${child.pid}`);
+    console.log(`companion did not exit, even on SIGTERM: pid ${child.pid}`);
     return false;
   }
   child = null;
