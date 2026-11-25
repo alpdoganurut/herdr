@@ -14,6 +14,14 @@ pub(super) struct ClientRemoteCollapsedGroups {
     pub(super) collapsed_groups: Vec<String>,
 }
 
+/// Fork (machine tabs): a saved machine's `expanded_runs`.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub(super) struct ClientRemoteExpandedRuns {
+    pub(super) profile_id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) expanded_runs: Vec<String>,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub(super) struct ClientChromePreferences {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -48,6 +56,9 @@ pub(super) struct ClientChromePreferences {
     /// tab's id.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) expanded_runs: Vec<String>,
+    /// Fork (machine tabs): the saved machines' `expanded_runs`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) remote_expanded_runs: Vec<ClientRemoteExpandedRuns>,
 }
 
 pub(super) fn path_for_local_endpoint(socket_path: &Path) -> PathBuf {

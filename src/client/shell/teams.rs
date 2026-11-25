@@ -310,8 +310,7 @@ impl ClientShellState {
             }
         }
         self.teams.insert(endpoint_id.clone(), state);
-        self.sidebar_model.mark_dirty();
-        true
+        self.endpoint_push_shown(endpoint_id)
     }
 
     /// Send one request; `false` when it could not be sent.

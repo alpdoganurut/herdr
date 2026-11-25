@@ -129,8 +129,7 @@ impl ClientShellState {
         }
         self.quiet
             .insert(endpoint_id.clone(), ClientQuietState::from_payload(payload));
-        self.sidebar_model.mark_dirty();
-        true
+        self.endpoint_push_shown(endpoint_id)
     }
 
     /// Whether `tab_id` is in do-not-disturb on the active endpoint (the

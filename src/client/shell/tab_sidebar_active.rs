@@ -894,8 +894,9 @@ impl ClientShellState {
         else {
             return false;
         };
-        if !self.expanded_runs.remove(&tab_id) {
-            self.expanded_runs.insert(tab_id);
+        let runs = self.active_expanded_runs_mut();
+        if !runs.remove(&tab_id) {
+            runs.insert(tab_id);
         }
         self.sidebar_model.mark_dirty();
         self.persist_chrome_preferences(outcome);
@@ -905,7 +906,10 @@ impl ClientShellState {
 
     /// Unfold `workspace_id`'s group (persisted when it was folded).
     fn open_sidebar_group(&mut self, workspace_id: &str, outcome: &mut ClientShellInput) {
-        if self.collapsed_groups.remove(&group_key(workspace_id)) {
+        if self
+            .active_collapsed_groups_mut()
+            .remove(&group_key(workspace_id))
+        {
             self.persist_chrome_preferences(outcome);
         }
         // The list rows follow fold state.
@@ -926,12 +930,7 @@ impl ClientShellState {
         if let Some(workspace_id) = workspace_id {
             self.open_sidebar_group(&workspace_id, outcome);
         }
-        self.push_endpoint_method(
-            crate::api::schema::Method::TabFocus(crate::api::schema::TabTarget {
-                tab_id: tab_id.clone(),
-            }),
-            outcome,
-        );
+        self.focus_active_tab(tab_id.clone(), outcome);
         self.sidebar_reveal_tab = Some(tab_id);
         outcome.repaint = true;
     }

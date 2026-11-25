@@ -1389,12 +1389,7 @@ impl ClientShellState {
                         match method {
                             Some(method) => self.push_endpoint_method(method, outcome),
                             // A drop that moves nothing (same row, jitter) is a click.
-                            None => self.push_endpoint_method(
-                                crate::api::schema::Method::TabFocus(
-                                    crate::api::schema::TabTarget { tab_id },
-                                ),
-                                outcome,
-                            ),
+                            None => self.focus_active_tab(tab_id, outcome),
                         }
                         outcome.repaint = true;
                     }
@@ -1467,12 +1462,7 @@ impl ClientShellState {
                 return;
             }
             if let Some(press) = self.tab_press.take() {
-                self.push_endpoint_method(
-                    crate::api::schema::Method::TabFocus(crate::api::schema::TabTarget {
-                        tab_id: press.tab_id,
-                    }),
-                    outcome,
-                );
+                self.focus_active_tab(press.tab_id, outcome);
                 return;
             }
         }
@@ -2948,11 +2938,12 @@ impl ClientShellState {
             .as_deref()
             .map(|snapshot| super::tab_sidebar::foldable_group_keys(snapshot).collect::<Vec<_>>())
             .unwrap_or_default();
+        let groups = self.active_collapsed_groups_mut();
         for key in keys {
             if folded {
-                self.collapsed_groups.insert(key);
+                groups.insert(key);
             } else {
-                self.collapsed_groups.remove(&key);
+                groups.remove(&key);
             }
         }
         // Fork (sidebar v2): the list rows follow fold state.
@@ -2969,8 +2960,12 @@ impl ClientShellState {
         if self.sidebar_filter.active() {
             return;
         }
+        let none = HashSet::new();
         let all_folded = self.snapshot.as_deref().and_then(|snapshot| {
-            super::tab_sidebar::all_groups_folded(snapshot, &self.collapsed_groups)
+            super::tab_sidebar::all_groups_folded(
+                snapshot,
+                self.active_collapsed_groups().unwrap_or(&none),
+            )
         });
         if let Some(all_folded) = all_folded {
             self.set_all_groups_folded(!all_folded, outcome);

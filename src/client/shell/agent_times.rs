@@ -168,8 +168,7 @@ impl ClientShellState {
             endpoint_id.clone(),
             ClientAgentTimesState::from_payload(payload, received),
         );
-        self.sidebar_model.mark_dirty();
-        true
+        self.endpoint_push_shown(endpoint_id)
     }
 
     /// When a shown time in state next changes its text (the tabs sidebar's

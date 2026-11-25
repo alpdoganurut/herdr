@@ -101,7 +101,8 @@ impl ClientShellState {
         let surface_available = self.snapshot.is_some() && self.pane_surface.is_some();
         let empty_collapsed_groups = HashSet::new();
         let mut targets = Vec::new();
-        for endpoint in &self.endpoints {
+        // Fork (machine tabs): the spaces the tabs sidebar shows.
+        for endpoint in self.navigable_endpoints() {
             if endpoint.status != ClientEndpointStatus::Online {
                 continue;
             }

@@ -536,13 +536,13 @@ impl ClientShellState {
     }
 
     /// The search field has the keyboard: it is focused and the expanded
-    /// `tabs` sidebar of one machine draws it.
+    /// `tabs` sidebar draws it.
     pub(super) fn sidebar_search_focused(&self) -> bool {
         self.sidebar_filter.focused && self.sidebar_filter_shown()
     }
 
     /// The field lets go of the keyboard once its sidebar is gone (collapsed,
-    /// another layout, several machines, no snapshot), so it never resumes
+    /// another layout, no snapshot), so it never resumes
     /// focus on its own. Called at the top of compose and of key routing.
     pub(super) fn blur_hidden_sidebar_search(&mut self) {
         if self.sidebar_filter.focused && !self.sidebar_filter_shown() {
@@ -563,12 +563,10 @@ impl ClientShellState {
         )
     }
 
-    /// The expanded `tabs` sidebar (one machine) is up, so its toolbar is.
+    /// The expanded `tabs` sidebar is up, so its toolbar is.
     fn sidebar_filter_shown(&self) -> bool {
-        self.config.sidebar_layout == crate::config::SidebarLayoutConfig::Tabs
-            && !self.sidebar_collapsed
-            && self.endpoints.len() == 1
-            && self.snapshot.is_some()
+        self.tabs_sidebar_active()
+            && (!self.multi_endpoint_active() || self.machine_sidebar_shown())
     }
 
     /// Give the field the keyboard (the info dock lets go of it).

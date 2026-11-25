@@ -567,6 +567,13 @@ impl ClientShellState {
         if let PendingEndpointKind::PaneLinkResolve { target } = pending.kind {
             return self.complete_link_hover(target, result);
         }
+        // Fork (machine tabs): a background read a switch or a lost
+        // connection cut off is no action of the user's.
+        if matches!(&result, Err(error) if error.code.as_deref() == Some("endpoint_cancelled"))
+            && self.retry_cancelled_poll(&pending.kind, std::time::Instant::now())
+        {
+            return (false, Vec::new());
+        }
         // Fork: a context menu's session lookup never raises a notice.
         if let PendingEndpointKind::ContextMenuSession { pane_id } = pending.kind {
             return self.complete_context_menu_session(pane_id, result);

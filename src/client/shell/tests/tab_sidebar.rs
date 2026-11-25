@@ -3883,6 +3883,7 @@ mod plan_layout {
             active_cap: super::super::super::tab_sidebar_active::active_cap(height),
             pins_cap: super::super::super::tab_sidebar_pins::pins_cap(height),
             scheduled_cap: super::super::super::tab_sidebar_scheduled::scheduled_cap(height),
+            ..LayoutWants::default()
         }
     }
 

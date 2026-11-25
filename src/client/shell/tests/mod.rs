@@ -284,6 +284,8 @@ mod input_conformance;
 mod input_domain;
 mod keybindings_settings;
 mod link_hover;
+/// Fork (machine tabs): the tabs sidebar with several endpoints.
+mod machine_tabs;
 mod mobile;
 mod mouse_selection;
 mod news;

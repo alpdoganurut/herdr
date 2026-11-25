@@ -861,6 +861,7 @@ fn render_sidebar(
         active_endpoint_id: &shell.active_endpoint_id,
         collapsed_endpoints: &shell.collapsed_endpoints,
         collapsed_groups: &shell.collapsed_groups,
+        active_collapsed_groups: &shell.collapsed_groups,
         expanded_runs: &shell.expanded_runs,
         breathe_phase: 0.0,
         breathe_reset_rgb: None,

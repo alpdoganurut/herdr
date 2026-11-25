@@ -11,7 +11,7 @@ use crate::server::headless::teams::{TeamsPayload, TEAMS_KIND};
 
 /// The ungrouped bucket and a group `demo` with two tabs, each running a
 /// Claude agent.
-fn teams_server() -> (HeadlessServer, String, Vec<String>) {
+pub(super) fn teams_server() -> (HeadlessServer, String, Vec<String>) {
     let mut server = test_headless_server();
     let mut group = crate::workspace::Workspace::test_new("demo");
     group.test_add_tab(None);
@@ -41,7 +41,11 @@ fn teams_server() -> (HeadlessServer, String, Vec<String>) {
 }
 
 /// A request from client shell `client_id` (its own user input).
-fn client_api(server: &mut HeadlessServer, client_id: u64, method: Method) -> serde_json::Value {
+pub(super) fn client_api(
+    server: &mut HeadlessServer,
+    client_id: u64,
+    method: Method,
+) -> serde_json::Value {
     let (respond_to, response_rx) = std::sync::mpsc::channel();
     server.handle_client_shell_api_request(
         client_id,

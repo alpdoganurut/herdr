@@ -1444,7 +1444,7 @@ fn aggregate_agents_use_configured_rows_machine_token_and_status_colors() {
     use crate::api::schema::AgentStatus;
     use crate::config::{AgentSidebarToken, StatusIndicatorStyle};
 
-    let mut config = Config::default();
+    let mut config = spaces_config();
     config.ui.status_indicators = StatusIndicatorStyle::Symbols;
     config.ui.sidebar.agents.rows = vec![vec![
         AgentSidebarToken::StateIcon,
@@ -1508,7 +1508,7 @@ fn current_workspace_agent_view_excludes_same_workspace_id_on_other_machine() {
     use crate::api::schema::AgentStatus;
     use crate::config::AgentSidebarToken;
 
-    let mut config = Config::default();
+    let mut config = spaces_config();
     config.ui.sidebar.agents.rows =
         vec![vec![AgentSidebarToken::Machine, AgentSidebarToken::Agent]];
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
@@ -1574,7 +1574,7 @@ fn current_workspace_or_blocked_keeps_foreign_attention_only() {
     };
     use crate::config::AgentSidebarToken;
 
-    let mut config = Config::default();
+    let mut config = spaces_config();
     config.ui.sidebar.agents.rows =
         vec![vec![AgentSidebarToken::Machine, AgentSidebarToken::Agent]];
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
@@ -1644,7 +1644,7 @@ fn selected_default_view_ignores_inactive_endpoint_projection() {
     };
     use crate::config::AgentSidebarToken;
 
-    let mut config = Config::default();
+    let mut config = spaces_config();
     config.ui.sidebar.agents.rows =
         vec![vec![AgentSidebarToken::Machine, AgentSidebarToken::Agent]];
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
@@ -1741,7 +1741,7 @@ fn legacy_custom_views_keep_v1_per_endpoint_projection() {
     use crate::api::schema::AgentStatus;
     use crate::config::AgentSidebarToken;
 
-    let mut config = Config::default();
+    let mut config = spaces_config();
     config.ui.sidebar.agents.rows =
         vec![vec![AgentSidebarToken::Machine, AgentSidebarToken::Agent]];
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
@@ -1786,7 +1786,7 @@ fn selected_custom_sort_orders_rendering_and_indexed_navigation() {
     };
     use crate::config::AgentSidebarToken;
 
-    let mut config = Config::default();
+    let mut config = spaces_config();
     config.ui.agent_panel_sort = crate::config::AgentPanelSortConfig::Priority;
     config.ui.sidebar.agents.rows =
         vec![vec![AgentSidebarToken::Machine, AgentSidebarToken::Agent]];
@@ -1917,7 +1917,7 @@ fn aggregate_priority_uses_client_observed_recency_across_machines() {
     use crate::api::schema::AgentStatus;
     use crate::config::AgentSidebarToken;
 
-    let mut config = Config::default();
+    let mut config = spaces_config();
     config.ui.agent_panel_sort = crate::config::AgentPanelSortConfig::Priority;
     config.ui.sidebar.agents.rows =
         vec![vec![AgentSidebarToken::Machine, AgentSidebarToken::Agent]];
@@ -2092,8 +2092,10 @@ fn clicking_local_can_cancel_a_remote_switch_while_local_is_still_displayed() {
     }
 }
 
+/// Fork (machine tabs): in the tabs layout only the collapsed rail still
+/// lists every machine's spaces (tests/machine_tabs.rs has the expanded one).
 #[test]
-fn tabs_layout_machine_sidebar_local_workspace_click_focuses_it() {
+fn tabs_layout_machine_rail_local_workspace_click_focuses_it() {
     let (mut state, _) = state_with_remote();
     state.config = ClientShellConfig::from_config(&Config::default());
     assert_eq!(
@@ -2108,31 +2110,32 @@ fn tabs_layout_machine_sidebar_local_workspace_click_focuses_it() {
     second.focused = false;
     local.workspaces.push(second);
     state.set_snapshot(Box::new(local));
+    state.sidebar_collapsed = true;
     state.compose(100, 28).unwrap();
     let rect = state
         .hits
         .workspaces
         .iter()
         .find(|hit| hit.endpoint_id.is_local() && hit.workspace_id == "ws_2")
-        .expect("local workspace row in the machine sidebar")
+        .expect("local workspace row in the machine rail")
         .rect;
     let outcome = state.handle_raw_events(vec![
         RawInputEvent::Mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
-            column: rect.x + 5,
+            column: rect.x + 1,
             row: rect.y,
             modifiers: KeyModifiers::empty(),
         }),
         RawInputEvent::Mouse(MouseEvent {
             kind: MouseEventKind::Up(MouseButton::Left),
-            column: rect.x + 5,
+            column: rect.x + 1,
             row: rect.y,
             modifiers: KeyModifiers::empty(),
         }),
     ]);
     assert!(
         state.collapsed_groups.is_empty(),
-        "the machine sidebar has no group headers to fold"
+        "the machine rail has no group headers to fold"
     );
     assert!(
         matches!(outcome.actions.as_slice(), [ClientShellAction::ActivateEndpoint {

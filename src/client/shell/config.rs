@@ -48,6 +48,22 @@ impl ClientShellState {
             })
             .collect::<Vec<_>>();
         remote_collapsed_groups.sort_by(|left, right| left.profile_id.cmp(&right.profile_id));
+        let mut remote_expanded_runs = self
+            .remote_expanded_runs
+            .iter()
+            .filter_map(|(endpoint_id, runs)| {
+                let ClientEndpointId::Ssh(profile_id) = endpoint_id else {
+                    return None;
+                };
+                let mut expanded_runs = runs.iter().cloned().collect::<Vec<_>>();
+                expanded_runs.sort();
+                (!expanded_runs.is_empty()).then(|| preferences::ClientRemoteExpandedRuns {
+                    profile_id: profile_id.to_string(),
+                    expanded_runs,
+                })
+            })
+            .collect::<Vec<_>>();
+        remote_expanded_runs.sort_by(|left, right| left.profile_id.cmp(&right.profile_id));
         let preferences = preferences::ClientChromePreferences {
             sidebar_width: self.sidebar_width_manual.then_some(self.sidebar_width),
             sidebar_section_split: self
@@ -74,6 +90,7 @@ impl ClientShellState {
                 runs.sort();
                 runs
             },
+            remote_expanded_runs,
         };
         if let Err(error) = preferences::store(path, preferences) {
             self.set_endpoint_error(error);

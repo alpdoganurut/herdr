@@ -94,7 +94,8 @@ impl ClientShellState {
         pane_id: &str,
         body_height: u16,
     ) {
-        if body_height == 0 {
+        // Fork (machine tabs): the tabs sidebar scrolls its own list.
+        if body_height == 0 || self.tabs_layout() {
             return;
         }
         let rows = agent_rows(&self.endpoints, &self.active_endpoint_id, &self.config);

@@ -35,11 +35,12 @@ impl ClientShellState {
         press: ClientWorkspacePress,
         outcome: &mut ClientShellInput,
     ) {
-        // Workspace rows are group headers only in the one-machine tabs
-        // sidebar; the machine sidebar draws real workspace rows.
-        if self.config.sidebar_layout == crate::config::SidebarLayoutConfig::Tabs
-            && self.endpoints.len() == 1
-            && press.endpoint_id.is_local()
+        // Workspace rows are group headers only in the tabs sidebar (of one
+        // machine, or of the active one); the machine list and the collapsed
+        // rail of several machines draw real workspace rows.
+        if self.tabs_layout()
+            && press.endpoint_id == self.active_endpoint_id
+            && (!self.multi_endpoint_active() || self.machine_sidebar_shown())
         {
             // A group header click folds or unfolds that group. The focused
             // tab's group is always drawn open, so toggling it would only flip
@@ -55,7 +56,7 @@ impl ClientShellState {
                 return;
             }
             let key = group_key(&press.workspace_id);
-            self.toggle_collapsed_group(&ClientEndpointId::Local, key);
+            self.toggle_collapsed_group(&press.endpoint_id, key);
             outcome.repaint = true;
             self.persist_chrome_preferences(outcome);
             return;
@@ -141,9 +142,9 @@ impl ClientShellState {
             action,
             KeybindAction::PreviousWorkspace | KeybindAction::NextWorkspace
         ) {
+            // Fork (machine tabs): the spaces the tabs sidebar shows.
             let workspaces = self
-                .endpoints
-                .iter()
+                .navigable_endpoints()
                 .filter(|endpoint| endpoint.status == ClientEndpointStatus::Online)
                 .flat_map(|endpoint| {
                     endpoint

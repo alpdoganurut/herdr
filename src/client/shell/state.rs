@@ -1538,8 +1538,10 @@ pub(crate) struct ClientShellState {
     /// Fork (sidebar v3): the Scheduled block folded (`None` until toggled; persisted).
     pub(super) scheduled_agents_folded: Option<bool>,
     /// Fork: the suspended runs expanded by a click, by their first tab's id
-    /// (persisted).
+    /// (persisted). Local's; the saved machines' are `remote_expanded_runs`.
     pub(super) expanded_runs: HashSet<String>,
+    /// Fork (machine tabs): the saved machines' `expanded_runs` (persisted).
+    pub(super) remote_expanded_runs: HashMap<ClientEndpointId, HashSet<String>>,
     /// Fork (sidebar filters): the tabs sidebar's search and recency
     /// filters (`sidebar_filter.rs`; client-only, never persisted).
     pub(super) sidebar_filter: super::sidebar_filter::SidebarFilter,
@@ -1638,6 +1640,16 @@ impl ClientShellState {
                 .entry(ClientEndpointId::Ssh(profile_id))
                 .or_default()
                 .extend(saved.collapsed_groups);
+        }
+        let mut remote_expanded_runs = HashMap::<ClientEndpointId, HashSet<String>>::new();
+        for saved in preferences.remote_expanded_runs {
+            let Ok(profile_id) = crate::client::endpoint::ProfileId::parse(saved.profile_id) else {
+                continue;
+            };
+            remote_expanded_runs
+                .entry(ClientEndpointId::Ssh(profile_id))
+                .or_default()
+                .extend(saved.expanded_runs);
         }
         Self {
             machine_diagnostics: Default::default(),
@@ -1773,6 +1785,7 @@ impl ClientShellState {
             pinned_agents_folded,
             scheduled_agents_folded,
             expanded_runs,
+            remote_expanded_runs,
             sidebar_filter: super::sidebar_filter::SidebarFilter::default(),
             pins_expanded: false,
             scheduled_expanded: false,

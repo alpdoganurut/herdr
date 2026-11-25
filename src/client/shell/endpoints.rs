@@ -106,6 +106,7 @@ impl ClientShellState {
 
     pub(crate) fn select_unavailable_local(&mut self) {
         self.reset_endpoint_projection();
+        self.forget_endpoint_view();
         self.active_endpoint_id = ClientEndpointId::Local;
         self.mode = ClientShellMode::Terminal;
         self.snapshot = None;
@@ -239,10 +240,12 @@ impl ClientShellState {
             self.active_endpoint_id = endpoint_id.clone();
             self.pane_surface = None;
             self.pending_pane_surface = None;
+            self.forget_endpoint_view();
         }
         self.apply_active_snapshot(snapshot, generation);
-        if switching_endpoint {
+        if switching_endpoint && !self.tabs_layout() {
             // The aggregate agent list belongs to the client, not one endpoint.
+            // Fork (machine tabs): the tabs sidebar's list is the endpoint's.
             self.agent_scroll = agent_scroll;
         }
         if let Some((_, pane_id)) = pending_agent_reveal {

@@ -235,7 +235,11 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) active_endpoint_id: &'a ClientEndpointId,
     pub(super) collapsed_endpoints: &'a HashSet<ClientEndpointId>,
     pub(super) collapsed_groups: &'a HashSet<String>,
-    /// Fork: the expanded suspended runs (`ClientShellState::expanded_runs`).
+    /// Fork (machine tabs): the active endpoint's collapsed groups (the tabs
+    /// sidebar's folds; `collapsed_groups` stays Local's).
+    pub(super) active_collapsed_groups: &'a HashSet<String>,
+    /// Fork: the active endpoint's expanded suspended runs
+    /// (`ClientShellState::expanded_runs`).
     pub(super) expanded_runs: &'a HashSet<String>,
     /// Fork: the breathing glyph's phase and the RGB of the terminal's
     /// default background (`breathe.rs`).
@@ -325,7 +329,11 @@ pub(super) fn render_sidebar_column(
     if area.width == 0 {
         return;
     }
-    if state.endpoints.len() > 1 {
+    // Fork (machine tabs): the expanded tabs sidebar shows the active
+    // machine, however many there are.
+    let tabs_sidebar = !state.sidebar_collapsed
+        && config.sidebar_layout == crate::config::SidebarLayoutConfig::Tabs;
+    if state.endpoints.len() > 1 && !tabs_sidebar {
         if state.sidebar_collapsed {
             super::endpoint_sidebar::render_collapsed(buffer, area, config, state, hits);
         } else {
@@ -338,9 +346,7 @@ pub(super) fn render_sidebar_column(
                 hits,
             );
         }
-    } else if !state.sidebar_collapsed
-        && config.sidebar_layout == crate::config::SidebarLayoutConfig::Tabs
-    {
+    } else if tabs_sidebar {
         let coordinator_row = state.coordinator_row.take();
         let teams = state.teams;
         hits.coordinator_row = super::tab_sidebar::render_tab_sidebar_with(

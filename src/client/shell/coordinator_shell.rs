@@ -101,12 +101,7 @@ impl ClientShellState {
             CoordinatorEffect::Request(request) => {
                 self.push_coordinator_request(request, outcome);
             }
-            CoordinatorEffect::FocusTab(tab_id) => {
-                self.push_endpoint_method(
-                    Method::TabFocus(crate::api::schema::TabTarget { tab_id }),
-                    outcome,
-                );
-            }
+            CoordinatorEffect::FocusTab(tab_id) => self.focus_active_tab(tab_id, outcome),
             CoordinatorEffect::OpenSettings => {
                 self.open_settings_overlay();
                 self.select_settings_section(ClientSettingsSection::Coordinator, outcome);

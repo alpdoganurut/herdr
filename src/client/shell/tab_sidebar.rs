@@ -57,8 +57,8 @@
 //! (Browser, News, coordinator) rows keep `sidebar_bg`, the divider is
 //! `surface1`.
 //!
-//! Fork, sidebar v3 (the layout, `plan_layout`), top to bottom: toolbar,
-//! the list, the Active block, the Pinned block (`tab_sidebar_pins.rs`), the Scheduled
+//! Fork, sidebar v3 (the layout, `plan_layout`), top to bottom: the machine
+//! row (`machine_tabs.rs`), toolbar, the list, the Active block, the Pinned block (`tab_sidebar_pins.rs`), the Scheduled
 //! block (`tab_sidebar_scheduled.rs`), the fixed rows, the status footer,
 //! the menu row.
 
@@ -209,7 +209,7 @@ pub(super) fn render_tab_sidebar_with(
         coordinator.row.and_then(|row| row.tab_id.as_deref()),
     );
     // Fork (sidebar v2): rows and per-tab facts come from the model compose
-    // ensured; a caller without one (several endpoints, tests) gets a
+    // ensured; a caller without one (tests) gets a
     // one-off build with the real voice, pins and mutes (the times and the
     // context use are left out), one set lookup per tab more while some tab
     // is pinned or muted.
@@ -227,7 +227,7 @@ pub(super) fn render_tab_sidebar_with(
                 expanded_runs: Some(state.expanded_runs),
                 filter: state.sidebar_filter,
                 now: Some(state.now),
-                ..super::sidebar_model::ModelInputs::new(snapshot, state.collapsed_groups)
+                ..super::sidebar_model::ModelInputs::new(snapshot, state.active_collapsed_groups)
             });
             &one_off
         }
@@ -238,6 +238,7 @@ pub(super) fn render_tab_sidebar_with(
     let plan = plan_layout(
         content,
         LayoutWants {
+            machine_rows: super::machine_tabs::machine_rows(state),
             fixed: u16::try_from(pinned.len()).unwrap_or(u16::MAX),
             status_lines: status_lines.len(),
             active_cap: super::tab_sidebar_active::active_cap(content.height),
@@ -256,6 +257,7 @@ pub(super) fn render_tab_sidebar_with(
     // The chrome rows first; the blocks draw on top of their background.
     let chrome = Style::default().bg(palette.sidebar_chrome());
     for rect in [
+        plan.machines,
         plan.toolbar,
         plan.active,
         plan.pins,
@@ -277,8 +279,8 @@ pub(super) fn render_tab_sidebar_with(
     }
     render_toolbar(
         buffer,
-        content,
-        all_groups_folded(snapshot, state.collapsed_groups),
+        plan.toolbar,
+        all_groups_folded(snapshot, state.active_collapsed_groups),
         (state.history_back, state.history_forward),
         config,
         hits,
@@ -485,7 +487,7 @@ pub(super) fn render_tab_sidebar_with(
                     .push((rect, workspace.workspace_id.clone()));
                 hits.workspaces.push(WorkspaceHit {
                     rect,
-                    endpoint_id: ClientEndpointId::Local,
+                    endpoint_id: state.active_endpoint_id.clone(),
                     workspace_id: workspace.workspace_id.clone(),
                     indented: false,
                     group_toggle: None,
@@ -649,6 +651,17 @@ pub(super) fn render_tab_sidebar_with(
         "«",
         Style::default().fg(palette.overlay0),
     );
+    // Fork (machine tabs): a machine that is not online keeps its last rows,
+    // dimmed; its row in `plan.machines` stays plain.
+    if super::machine_tabs::shows_cached_machine(state.endpoints, state.active_endpoint_id) {
+        let cached = Rect::new(
+            content.x,
+            plan.toolbar.y,
+            content.width,
+            content.bottom().saturating_sub(plan.toolbar.y),
+        );
+        buffer.set_style(cached, Style::default().add_modifier(Modifier::DIM));
+    }
     coordinator_rect
 }
 
@@ -664,11 +677,14 @@ pub(super) fn sidebar_sections(config: &ClientShellConfig) -> super::sidebar_mod
 }
 
 /// Fork (sidebar v2): the tabs sidebar's rows, top to bottom (`plan_layout`).
-/// Every rect spans the content width. `toolbar`, `active`, `pins`,
-/// `scheduled`, `detail`, `footer` and `menu` are chrome rows (painted with
-/// `Palette::sidebar_chrome()` before anything draws on them).
+/// Every rect spans the content width. `machines`, `toolbar`, `active`,
+/// `pins`, `scheduled`, `detail`, `footer` and `menu` are chrome rows
+/// (painted with `Palette::sidebar_chrome()` before anything draws on them).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct SidebarPlan {
+    /// Fork (machine tabs): the machine row at the very top
+    /// (`LayoutWants::machine_rows` high while a list row is left), or empty.
+    pub(super) machines: Rect,
     pub(super) toolbar: Rect,
     /// The scrolling list.
     pub(super) list: Rect,
@@ -694,6 +710,9 @@ pub(super) struct SidebarPlan {
 /// What the optional rows of `plan_layout` ask for.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct LayoutWants {
+    /// Fork (machine tabs): rows for the machine row
+    /// (`machine_tabs::machine_rows`).
+    pub(super) machine_rows: u16,
     /// The Pinned block's line cap (`pins_cap`).
     pub(super) pins_cap: u16,
     /// The Scheduled block's line cap (`scheduled_cap`).
@@ -736,8 +755,9 @@ impl<'f> SectionRows<'f> {
 /// is short (before the Active block's).
 const SECTION_CAP_STEPS: [u16; 2] = [2, 1];
 
-/// The height budget of `content` (pure). The toolbar and the menu row take
-/// one row each; the status footer one row per line
+/// The height budget of `content` (pure). The machine row takes the top rows
+/// it wants while the toolbar, one list row and the menu row fit below it.
+/// The toolbar and the menu row take one row each; the status footer one row per line
 /// from `SPACIOUS_HEIGHT` rows, else one row for all of them; the Active,
 /// Pinned and Scheduled blocks the rows `rows` asks for at their caps; the
 /// fixed rows one each while the
@@ -749,7 +769,10 @@ const SECTION_CAP_STEPS: [u16; 2] = [2, 1];
 /// footer (one row, then none).
 pub(super) fn plan_layout(content: Rect, wants: LayoutWants, rows: SectionRows<'_>) -> SidebarPlan {
     let height = content.height;
-    let room = height.saturating_sub(TOOLBAR_ROWS + FOOTER_ROWS);
+    let machine_rows = wants
+        .machine_rows
+        .min(height.saturating_sub(TOOLBAR_ROWS + FOOTER_ROWS + 1));
+    let room = height.saturating_sub(machine_rows + TOOLBAR_ROWS + FOOTER_ROWS);
     let status_lines = wants.status_lines.min(MAX_STATUS_ROWS);
     let footer = if height < SPACIOUS_HEIGHT {
         status_lines.min(1)
@@ -815,7 +838,8 @@ pub(super) fn plan_layout(content: Rect, wants: LayoutWants, rows: SectionRows<'
     let list_height = budget.list(room);
 
     let row = |y: u16, height: u16| Rect::new(content.x, y, content.width, height);
-    let toolbar = row(content.y, TOOLBAR_ROWS.min(height));
+    let machines = row(content.y, machine_rows);
+    let toolbar = row(machines.bottom(), TOOLBAR_ROWS.min(height));
     let list = row(toolbar.bottom(), list_height);
     let active = row(list.bottom(), budget.active);
     let pins = row(active.bottom(), budget.pins);
@@ -828,6 +852,7 @@ pub(super) fn plan_layout(content: Rect, wants: LayoutWants, rows: SectionRows<'
         FOOTER_ROWS.min(height),
     );
     SidebarPlan {
+        machines,
         toolbar,
         list,
         active,
@@ -1264,7 +1289,7 @@ fn put_status_spans(buffer: &mut Buffer, x: u16, y: u16, width: u16, spans: &[Sp
 /// pane is open) and `+` on the right, all one row.
 fn render_toolbar(
     buffer: &mut Buffer,
-    content: Rect,
+    toolbar: Rect,
     all_folded: Option<bool>,
     history: (bool, bool),
     config: &ClientShellConfig,
@@ -1272,8 +1297,8 @@ fn render_toolbar(
 ) {
     let palette = &config.palette;
     let style = Style::default().fg(palette.overlay0);
-    let y = content.y;
-    let x = content.x.saturating_add(1);
+    let y = toolbar.y;
+    let x = toolbar.x.saturating_add(1);
     if let Some(all_folded) = all_folded {
         let toggle = if all_folded {
             UNFOLD_ALL_LABEL
@@ -1286,7 +1311,7 @@ fn render_toolbar(
             hits.group_toggle_all = Rect::new(x, y, toggle_width, 1);
         }
     }
-    if let Some((back, forward)) = super::sidebar_filter::history_button_rects(content) {
+    if let Some((back, forward)) = super::sidebar_filter::history_button_rects(toolbar) {
         for (rect, glyph, lit) in [
             (back, super::sidebar_filter::HISTORY_BACK_GLYPH, history.0),
             (
@@ -1308,7 +1333,7 @@ fn render_toolbar(
         }
     }
     let new_width = display_width(NEW_TAB_LABEL);
-    let new_x = content.right().saturating_sub(new_width + 1);
+    let new_x = toolbar.right().saturating_sub(new_width + 1);
     put_text(buffer, new_x, y, new_width, NEW_TAB_LABEL, style);
     if config.mouse_capture {
         hits.group_new = Rect::new(new_x, y, new_width, 1);

@@ -47,29 +47,37 @@ impl ClientShellState {
         }
     }
 
-    /// Fork (sidebar v2): whether the expanded tabs sidebar draws (one
-    /// machine, `sidebar_layout = "tabs"`, not collapsed), ensuring its
-    /// derived model when it does. Shared by `compose` and the healthy-Local
-    /// pane-surface gap in `compose_unavailable`.
+    /// Fork (sidebar v2): whether the expanded tabs sidebar draws
+    /// (`sidebar_layout = "tabs"`, not collapsed; the active machine's with
+    /// several), ensuring its derived model when it does. Shared by `compose`
+    /// and the pane-surface gap in `compose_unavailable`.
     pub(super) fn ensure_tabs_sidebar_model(
         &mut self,
         news_row: Option<&super::news::NewsRow>,
         coordinator_row: Option<&super::coordinator::CoordinatorRow>,
     ) -> bool {
-        if self.config.sidebar_layout != crate::config::SidebarLayoutConfig::Tabs
-            || self.sidebar_collapsed
-            || self.endpoints.len() != 1
-        {
+        if !self.tabs_sidebar_active() {
             return false;
         }
+        let none = HashSet::new();
         let Some(snapshot) = self.snapshot.as_deref() else {
             return false;
         };
         self.sidebar_model
             .ensure(super::sidebar_model::ModelInputs {
                 snapshot,
-                collapsed_groups: &self.collapsed_groups,
-                expanded_runs: Some(&self.expanded_runs),
+                collapsed_groups: super::machine_tabs::endpoint_set(
+                    &self.active_endpoint_id,
+                    &self.collapsed_groups,
+                    &self.remote_collapsed_groups,
+                    &none,
+                ),
+                expanded_runs: Some(super::machine_tabs::endpoint_set(
+                    &self.active_endpoint_id,
+                    &self.expanded_runs,
+                    &self.remote_expanded_runs,
+                    &none,
+                )),
                 voice: super::voice::active_voice_of(
                     &self.voice,
                     &self.active_endpoint_id,
@@ -134,14 +142,25 @@ impl ClientShellState {
         // A resize invalidates pane geometry, not the healthy Local workspace chrome.
         // Fork: that chrome is the sidebar the full compose draws (any
         // `sidebar_layout`, collapsed or not), never the machine list.
-        let local_healthy = self.snapshot.is_some()
-            && self.endpoints.len() == 1
-            && self.endpoint_status(&self.active_endpoint_id) == Some(ClientEndpointStatus::Online);
+        let online =
+            self.endpoint_status(&self.active_endpoint_id) == Some(ClientEndpointStatus::Online);
+        let local_healthy = self.snapshot.is_some() && self.endpoints.len() == 1 && online;
+        // Fork (machine tabs): with several machines the `tabs` layout keeps
+        // the column of the one shown, from its last snapshot while it is
+        // not online (a hidden sidebar then leaves the machine list as the
+        // way out; the phone layout keeps it too).
+        let own_column = local_healthy
+            || (self.snapshot.is_some()
+                && self.multi_endpoint_active()
+                && self.tabs_layout()
+                && layout.mobile_header.is_empty()
+                && (online || layout.sidebar.width > 0));
         let news_row = self.news_row();
         let coordinator_row = self.coordinator_row();
-        let tabs_sidebar = local_healthy
+        let tabs_sidebar = own_column
             && self.ensure_tabs_sidebar_model(news_row.as_ref(), coordinator_row.as_ref());
-        let local_snapshot = self.snapshot.as_deref().filter(|_| local_healthy);
+        let local_snapshot = self.snapshot.as_deref().filter(|_| own_column);
+        let none = HashSet::new();
         let pending_workspace_highlight =
             self.pending_workspace_highlight.as_ref().filter(|pending| {
                 self.mode != ClientShellMode::Navigate
@@ -165,7 +184,18 @@ impl ClientShellState {
             active_endpoint_id: &self.active_endpoint_id,
             collapsed_endpoints: &self.collapsed_endpoints,
             collapsed_groups: &self.collapsed_groups,
-            expanded_runs: &self.expanded_runs,
+            active_collapsed_groups: super::machine_tabs::endpoint_set(
+                &self.active_endpoint_id,
+                &self.collapsed_groups,
+                &self.remote_collapsed_groups,
+                &none,
+            ),
+            expanded_runs: super::machine_tabs::endpoint_set(
+                &self.active_endpoint_id,
+                &self.expanded_runs,
+                &self.remote_expanded_runs,
+                &none,
+            ),
             breathe_phase,
             breathe_reset_rgb,
             idle_reminders: &self.idle_reminders,
@@ -275,7 +305,7 @@ impl ClientShellState {
         } else {
             Rect::new(0, 0, cols, 1)
         };
-        if local_snapshot.is_none() || self.endpoint_error.is_some() {
+        if local_snapshot.is_none() || !online || self.endpoint_error.is_some() {
             render::put_text(
                 &mut buffer,
                 message_area.x,
@@ -388,6 +418,7 @@ impl ClientShellState {
         let scheduled_view = self.scheduled_view();
         // Fork (tab history): the toolbar's back / forward buttons.
         let (history_back, history_forward) = self.tab_history_available();
+        let none = HashSet::new();
         let mut buffer = Buffer::empty(Rect::new(0, 0, cols, rows));
         self.hits = render::render_shell(
             &mut buffer,
@@ -400,7 +431,18 @@ impl ClientShellState {
                 active_endpoint_id: &self.active_endpoint_id,
                 collapsed_endpoints: &self.collapsed_endpoints,
                 collapsed_groups: &self.collapsed_groups,
-                expanded_runs: &self.expanded_runs,
+                active_collapsed_groups: super::machine_tabs::endpoint_set(
+                    &self.active_endpoint_id,
+                    &self.collapsed_groups,
+                    &self.remote_collapsed_groups,
+                    &none,
+                ),
+                expanded_runs: super::machine_tabs::endpoint_set(
+                    &self.active_endpoint_id,
+                    &self.expanded_runs,
+                    &self.remote_expanded_runs,
+                    &none,
+                ),
                 breathe_phase,
                 breathe_reset_rgb,
                 idle_reminders: &self.idle_reminders,

@@ -508,7 +508,7 @@ impl ClientShellState {
             .map(|snapshot| snapshot.boot_id.clone())
     }
 
-    fn browser_refresh_interval(&self) -> std::time::Duration {
+    pub(super) fn browser_refresh_interval(&self) -> std::time::Duration {
         let busy = self.browser.info.as_ref().is_some_and(|info| {
             info.profiles
                 .iter()

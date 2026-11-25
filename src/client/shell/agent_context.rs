@@ -124,8 +124,7 @@ impl ClientShellState {
             endpoint_id.clone(),
             ClientAgentContextState::from_payload(payload),
         );
-        self.sidebar_model.mark_dirty();
-        true
+        self.endpoint_push_shown(endpoint_id)
     }
 }
 

@@ -221,12 +221,7 @@ impl ClientShellState {
             return;
         };
         match row.tab_id {
-            Some(tab_id) => {
-                self.push_endpoint_method(
-                    Method::TabFocus(crate::api::schema::TabTarget { tab_id }),
-                    outcome,
-                );
-            }
+            Some(tab_id) => self.focus_active_tab(tab_id, outcome),
             None => {
                 self.push_endpoint_method_with_kind(
                     Method::NewsOpen(NewsOpenParams::default()),

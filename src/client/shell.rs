@@ -43,6 +43,8 @@ mod idle_reminders;
 mod input;
 mod input_source;
 mod link_hover;
+/// Fork (machine tabs): the tabs layout with several endpoints.
+mod machine_tabs;
 mod mobile;
 mod mouse;
 mod news;
