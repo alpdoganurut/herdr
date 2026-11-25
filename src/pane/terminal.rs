@@ -649,6 +649,11 @@ impl PaneTerminal {
         self.ghostty.program_status_root_packed()
     }
 
+    /// Fork (remote agents): the root record's app and report time (core lock).
+    pub(super) fn program_status_root_report(&self) -> Option<super::remote_agent::RootReport> {
+        self.ghostty.program_status_root_report()
+    }
+
     pub fn keyboard_protocol(
         &self,
         fallback: crate::input::KeyboardProtocol,
@@ -1397,6 +1402,22 @@ impl GhosttyPaneTerminal {
             .lock()
             .map(|core| core.agent_osc_state.program_status().session_counters())
             .unwrap_or_default()
+    }
+
+    /// Fork (remote agents): the root record's app and report time (one
+    /// short core lock; only for a probe with a remote-shell client in front).
+    pub fn program_status_root_report(&self) -> Option<super::remote_agent::RootReport> {
+        let core = match self.core.lock() {
+            Ok(core) => core,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        core.agent_osc_state
+            .program_status()
+            .root_app_and_time()
+            .map(|(app, updated_at)| super::remote_agent::RootReport {
+                app: app.map(str::to_string),
+                updated_at,
+            })
     }
 
     /// Fork (OSC 7501): the packed root record, lock-free.

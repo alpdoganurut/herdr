@@ -9,9 +9,11 @@
 //! or `ssh -i ~/.ssh/claude h` name no agent. A remote token is never
 //! resolved against the local file system.
 //!
-//! An agent found this way is [`RemoteVia::SshCommand`]. herdr never acts
-//! on the local process for it (it is the client): no suspend, restart,
-//! resume, handoff or hook-only feature.
+//! An agent found this way is [`RemoteVia::SshCommand`]; one adopted from
+//! its own OSC 7501 status reports while a client is in front is
+//! [`RemoteVia::ProgramStatus`] (src/pane/remote_agent.rs). Either way herdr
+//! never acts on the local process for it (it is the client): no suspend,
+//! restart, resume, handoff or hook-only feature.
 
 use super::Agent;
 
@@ -38,12 +40,16 @@ impl RemoteClient {
 pub enum RemoteVia {
     /// The client's remote command line runs the agent.
     SshCommand,
+    /// The agent's own OSC 7501 status reports named it while the client
+    /// led the foreground (src/pane/remote_agent.rs).
+    ProgramStatus,
 }
 
 impl RemoteVia {
     pub fn label(self) -> &'static str {
         match self {
             Self::SshCommand => "ssh_command",
+            Self::ProgramStatus => "program_status",
         }
     }
 }

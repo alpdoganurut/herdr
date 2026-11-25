@@ -32,6 +32,7 @@ mod kitty_keyboard;
 mod osc;
 pub(crate) mod program_status;
 mod program_status_log;
+mod remote_agent;
 mod state;
 mod terminal;
 mod xtgettcap;
@@ -592,6 +593,10 @@ struct ForegroundAgentObservation {
     agent_pid: Option<u32>,
     process_group_id: Option<u32>,
     foreground_is_pane_shell: bool,
+    /// Fork: the agent identified from its status reports lost them
+    /// (src/pane/remote_agent.rs): report its exit now, as when the pane's
+    /// shell is back in front.
+    identity_released: bool,
 }
 
 /// Applies one foreground probe to the pane's agent presence. Returns the
@@ -626,7 +631,7 @@ fn observe_foreground_agent(
     let action = foreground_shell_agent_action(
         previous_agent,
         observation.agent,
-        observation.foreground_is_pane_shell,
+        observation.foreground_is_pane_shell || observation.identity_released,
         *foreground_shell_exit_reported,
         agent_job_status,
     );
@@ -816,6 +821,10 @@ struct ProcessProbeResult {
     process_name: Option<String>,
     /// Fork: `agent` runs behind a remote-shell client (src/detect/remote.rs).
     remote: Option<crate::detect::remote::RemoteOrigin>,
+    /// Fork: no agent was found and the job is led by a remote-shell client
+    /// (with its pid) that is not the pane's own process
+    /// (src/pane/remote_agent.rs reads its status reports).
+    remote_client: Option<(crate::detect::remote::RemoteClient, u32)>,
 }
 
 fn agent_hint_for_foreground_job_members(
@@ -863,7 +872,24 @@ fn process_probe_result(
         agent_pid: Some(agent_pid),
         process_name: Some(process_name),
         remote: None,
+        remote_client: None,
     }
+}
+
+/// Fork: the remote-shell client leading `job`, when it is not the pane's
+/// own process (`pid`).
+fn remote_client_leading(
+    job: &crate::platform::ForegroundJob,
+    pid: u32,
+) -> Option<(crate::detect::remote::RemoteClient, u32)> {
+    if job.process_group_id == pid || job.processes.iter().any(|process| process.pid == pid) {
+        return None;
+    }
+    job.processes
+        .iter()
+        .find(|process| process.pid == job.process_group_id)
+        .and_then(crate::detect::remote::remote_client)
+        .map(|client| (client, job.process_group_id))
 }
 
 /// Fork: the job's leader is a remote-shell client whose command line runs
@@ -950,6 +976,7 @@ fn probe_foreground_process_from_jobs(
             agent_pid: None,
             process_name: None,
             remote: None,
+            remote_client: remote_client_leading(job, pid),
         };
     }
 
@@ -960,6 +987,7 @@ fn probe_foreground_process_from_jobs(
         agent_pid: None,
         process_name: None,
         remote: None,
+        remote_client: None,
     }
 }
 
@@ -1019,6 +1047,7 @@ fn spawn_basic_detection_task(
         let mut last_self_reported_shell_check = None;
         let mut agent_job = AgentJobTracker::default();
         let mut status_disagreement = program_status_log::DisagreementTracker::new(pane_id);
+        let mut status_identity = remote_agent::ProgramStatusIdentity::default();
 
         loop {
             let sleep_duration = if pending_idle.active() {
@@ -1054,6 +1083,7 @@ fn spawn_basic_detection_task(
                     pending_idle.clear();
                     agent_job = AgentJobTracker::default();
                     program_status_log::reset(&mut status_disagreement, std::time::Instant::now());
+                    status_identity = remote_agent::ProgramStatusIdentity::default();
                 }
             }
 
@@ -1084,6 +1114,17 @@ fn spawn_basic_detection_task(
                 .flatten();
             let process_group_changed =
                 foreground_group_changed(foreground_pgid, last_foreground_pgid);
+            // Fork (remote agents): a status report from behind a remote-shell
+            // client is checked at once, not at the next scheduled probe.
+            status_identity.note_screen(
+                agent,
+                last_visible_idle || last_visible_working || last_visible_blocker,
+                now,
+            );
+            let status_report_changed = status_identity.report_changed(
+                terminal.program_status_root_packed(),
+                program_status::enabled(),
+            );
             let should_check_process = pid > 0 && {
                 let process_probe_input = ProcessProbeInput {
                     current_agent: agent,
@@ -1103,12 +1144,15 @@ fn spawn_basic_detection_task(
                     process_probe_input,
                 )
             };
+            let should_check_process = should_check_process || (pid > 0 && status_report_changed);
 
             if should_check_process {
                 last_process_check = now;
                 let had_process_probe = has_process_probe;
                 has_process_probe = true;
-                let probe = probe_foreground_process(pid, foreground_pgid);
+                let mut probe = probe_foreground_process(pid, foreground_pgid);
+                let identity_released =
+                    remote_agent::apply_to_probe(&mut status_identity, &mut probe, &terminal, now);
                 let process_group_id = probe.process_group_id;
                 let tracked_process_group_id =
                     process_group_for_change_tracking(foreground_pgid, process_group_id);
@@ -1134,6 +1178,7 @@ fn spawn_basic_detection_task(
                         agent_pid: new_agent.and(probe.agent_pid),
                         process_group_id,
                         foreground_is_pane_shell,
+                        identity_released,
                     },
                     &PlatformAgentProcesses,
                     pane_id,
@@ -1150,6 +1195,7 @@ fn spawn_basic_detection_task(
                 }
                 if changed {
                     agent = agent_presence.current_agent();
+                    status_identity.agent_changed(agent, agent.and(probe_remote));
                     agent_changed = previous_agent != agent
                         || foreground_action
                             == ForegroundShellAgentAction::ReportReplacementProcess;
@@ -2999,6 +3045,7 @@ impl PaneRuntime {
                 let mut last_self_reported_shell_check = None;
                 let mut agent_job = AgentJobTracker::default();
                 let mut status_disagreement = program_status_log::DisagreementTracker::new(pane_id);
+                let mut status_identity = remote_agent::ProgramStatusIdentity::default();
 
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -3044,6 +3091,7 @@ impl PaneRuntime {
                             pending_idle.clear();
                             agent_job = AgentJobTracker::default();
                             program_status_log::reset(&mut status_disagreement, std::time::Instant::now());
+                            status_identity = remote_agent::ProgramStatusIdentity::default();
                         }
                     }
 
@@ -3108,6 +3156,17 @@ impl PaneRuntime {
                     }
                     let process_group_changed =
                         foreground_group_changed(foreground_pgid, last_foreground_pgid);
+                    // Fork (remote agents): a status report from behind a remote-shell
+                    // client is checked at once, not at the next scheduled probe.
+                    status_identity.note_screen(
+                        agent,
+                        last_visible_idle || last_visible_working || last_visible_blocker,
+                        now,
+                    );
+                    let status_report_changed = status_identity.report_changed(
+                        terminal.program_status_root_packed(),
+                        program_status::enabled(),
+                    );
                     let should_check_process = pid > 0 && {
                         let process_probe_input = ProcessProbeInput {
                             foreground_pgid,
@@ -3119,6 +3178,8 @@ impl PaneRuntime {
                             process_probe_input,
                         )
                     };
+                    let should_check_process =
+                        should_check_process || (pid > 0 && status_report_changed);
 
                     let mut agent_changed = false;
                     if should_check_process {
@@ -3126,7 +3187,13 @@ impl PaneRuntime {
                         let had_process_probe = has_process_probe;
                         has_process_probe = true;
                         if pid > 0 {
-                            let probe = probe_foreground_process(pid, foreground_pgid);
+                            let mut probe = probe_foreground_process(pid, foreground_pgid);
+                            let identity_released = remote_agent::apply_to_probe(
+                                &mut status_identity,
+                                &mut probe,
+                                &terminal,
+                                now,
+                            );
                             let process_name = probe.process_name;
                             let process_group_id = probe.process_group_id;
                             let tracked_process_group_id = process_group_for_change_tracking(
@@ -3159,6 +3226,7 @@ impl PaneRuntime {
                                     agent_pid: new_agent.and(probe.agent_pid),
                                     process_group_id,
                                     foreground_is_pane_shell,
+                                    identity_released,
                                 },
                                 &PlatformAgentProcesses,
                                 pane_id,
@@ -3176,6 +3244,7 @@ impl PaneRuntime {
                             pending_restore_probe = false;
                             if changed {
                                 agent = agent_presence.current_agent();
+                                status_identity.agent_changed(agent, agent.and(probe_remote));
                                 if agent != previous_agent
                                     || foreground_action
                                         == ForegroundShellAgentAction::ReportReplacementProcess
@@ -5878,11 +5947,40 @@ mod tests {
                         agent_pid: agent.map(|_| agent_pid),
                         process_group_id: Some(foreground_group),
                         foreground_is_pane_shell: foreground_group == SHELL,
+                        identity_released: false,
                     },
                     &self.processes,
                     PaneId::from_raw(1),
                 );
                 // The loop publishes the pending exit before the next probe.
+                if self.pending_clear {
+                    self.exit_reported = true;
+                }
+                result
+            }
+
+            /// The process `agent_pid` still leads `foreground_group` but the
+            /// identity it carried was released (src/pane/remote_agent.rs).
+            pub(super) fn probe_released(
+                &mut self,
+                foreground_group: u32,
+            ) -> (ForegroundShellAgentAction, bool) {
+                let result = observe_foreground_agent(
+                    &mut self.presence,
+                    &mut self.job,
+                    &mut self.pending_clear,
+                    &mut self.exit_reported,
+                    ForegroundAgentObservation {
+                        shell_pid: SHELL,
+                        agent: None,
+                        agent_pid: None,
+                        process_group_id: Some(foreground_group),
+                        foreground_is_pane_shell: false,
+                        identity_released: true,
+                    },
+                    &self.processes,
+                    PaneId::from_raw(1),
+                );
                 if self.pending_clear {
                     self.exit_reported = true;
                 }
@@ -5930,6 +6028,29 @@ mod tests {
         // The remote Claude exits, so ssh exits and the shell is back.
         pane.processes.exit(SSH);
         pane.assert_exit_reported_then_cleared();
+    }
+
+    #[test]
+    fn fork_smoke_a_released_status_identity_reports_the_exit_while_ssh_stays_in_front() {
+        // `ssh host`, then `claude`: identified from its status reports.
+        const SSH: u32 = 40;
+        let mut pane = held_agent::Pane::empty();
+        pane.processes.spawn(SSH, 8_000, SSH);
+        assert_eq!(
+            pane.probe_process(Some(Agent::Claude), SSH, SSH),
+            (ForegroundShellAgentAction::ObserveProbe, true)
+        );
+        // A plain miss would wait for several probes; a cleared record
+        // reports the exit at once and then clears, with ssh still in front.
+        assert_eq!(
+            pane.probe_released(SSH),
+            (ForegroundShellAgentAction::ReportProcessExit, false)
+        );
+        assert_eq!(
+            pane.probe_released(SSH),
+            (ForegroundShellAgentAction::ClearAgent, true)
+        );
+        assert_eq!(pane.presence.current_agent(), None);
     }
 
     #[test]
@@ -6279,10 +6400,33 @@ mod tests {
             processes: vec![ssh_process(99, &["ssh", "host"])],
         };
 
-        let result = probe_foreground_process_from_jobs(42, Some(99), Some(job), || None, |_| None);
+        let result = probe_foreground_process_from_jobs(
+            42,
+            Some(99),
+            Some(job.clone()),
+            || Some(job),
+            |_| None,
+        );
 
         assert_eq!(result.agent, None);
         assert_eq!(result.remote, None);
+        assert_eq!(
+            result.remote_client,
+            Some((crate::detect::remote::RemoteClient::Ssh, 99))
+        );
+    }
+
+    #[test]
+    fn a_pane_whose_own_process_is_ssh_offers_no_status_identity() {
+        let job = crate::platform::ForegroundJob {
+            process_group_id: 42,
+            processes: vec![ssh_process(42, &["ssh", "host"])],
+        };
+
+        let result = probe_foreground_process_from_jobs(42, Some(42), None, || Some(job), |_| None);
+
+        assert_eq!(result.agent, None);
+        assert_eq!(result.remote_client, None);
     }
 
     #[test]

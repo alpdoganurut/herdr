@@ -561,6 +561,17 @@ impl ProgramStatusStore {
         self.records.get("").map(|stored| &stored.record)
     }
 
+    /// Fork (remote agents): the root's app and when it was last reported,
+    /// hidden like [`Self::root`] while the records predate the switch.
+    pub(crate) fn root_app_and_time(&self) -> Option<(Option<&str>, Instant)> {
+        if !self.records_current() {
+            return None;
+        }
+        self.records
+            .get("")
+            .map(|stored| (stored.record.app.as_deref(), stored.updated_at))
+    }
+
     fn child_count(&self) -> usize {
         if !self.records_current() {
             return 0;

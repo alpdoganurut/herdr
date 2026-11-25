@@ -378,7 +378,8 @@ pub struct AgentRemoteInfo {
     /// The local client in front: `ssh`, `mosh` or `et`.
     pub client: String,
     /// How the agent was identified: `ssh_command` (the client's remote
-    /// command runs it).
+    /// command runs it) or `program_status` (its own OSC 7501 status
+    /// reports, which anything on the other side can print).
     pub via: String,
 }
 
