@@ -1688,6 +1688,8 @@ src/cli/tab.rs  additive: agent mute: run_tab_command dispatches mute, unmute an
 src/cli/spec.rs  additive: agent mute: QUIET_TARGET_HELP directly before tab_command(); the `tab mute`, `tab unmute` and `tab dnd` subcommands directly after `remind`
 docs/next/website/src/content/docs/cli-reference.mdx  additive: agent mute: `tab mute`, `tab unmute` and `tab dnd` in the Tabs block after `tab remind`; their paragraph directly before the `tab closed` one
 docs/next/website/src/content/docs/socket-api.mdx  additive: agent mute: the `agents.set_quiet` paragraph directly after the `tab.set_dnd` one
+docs/next/website/src/content/docs/socket-api.mdx  additive: agents show: the `agents.show` paragraph directly after the `agents.set_quiet` one
+docs/next/website/src/content/docs/socket-api.mdx  additive: remote agents: the `remote_agent` paragraph directly after "If no native session reference is stored, the field is omitted."
 src/server/headless.rs  additive: notes reveal: `pub mod notes_reveal;` (with its doc line) directly after `mod news_notify;`
 src/server/headless/render.rs  additive: notes reveal: notes_reveal_frame directly after agent_context_frame; the notes_reveal::sync_client call directly after the agent_context one
 src/server/clients.rs  additive: notes reveal: ClientConnection.shell_notes_reveal_sent directly after shell_agent_context_sent (struct and new())
