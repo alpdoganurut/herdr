@@ -1022,6 +1022,13 @@ impl BrowserHub {
     > {
         let path = check_show_file(show.file)?;
         let file = path.display().to_string();
+        // Fork (remote browser): a linked browser loads it from here through
+        // the link, under a token; the Mac never sees the path.
+        if is_companion(profile) {
+            if let super::link_hub::LinkRoute::Up(link) = self.link_route() {
+                return self.execute_show_remote(&link, actor, pane, &path, show, deadline, now);
+            }
+        }
         // Fork (page API): never with network (remote scripts would run in
         // the page that holds the bridge); only an agent's page, only in
         // the companion, only while `[browser] page_api` is on.

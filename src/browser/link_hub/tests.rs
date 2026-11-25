@@ -732,3 +732,232 @@ fn the_link_key_says_who_may_serve() {
     let err = FakeMac::open(&hub, "mac-a", "mbp").map(|_| ()).unwrap_err();
     assert_eq!(err.code, "link_in_use");
 }
+
+// ---- files and pictures (SV3)
+
+/// A directory with a page and its script; removed when dropped.
+struct Site(std::path::PathBuf);
+
+impl Drop for Site {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn site(name: &str) -> Site {
+    let dir = std::env::temp_dir().join(format!("herdr-link-site-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("index.html"), "<script src=app.js></script>").unwrap();
+    std::fs::write(dir.join("app.js"), "console.log(1)").unwrap();
+    Site(std::fs::canonicalize(dir).unwrap())
+}
+
+fn show(hub: &BrowserHub, file: &std::path::Path, extra: serde_json::Value) -> BrowserRunResult {
+    let mut op = json!({ "op": "show", "file": file.display().to_string() });
+    for (key, value) in extra.as_object().unwrap() {
+        op[key] = value.clone();
+    }
+    run(hub, serde_json::from_value(op).unwrap()).expect("shown")
+}
+
+fn pull(mac: &FakeMac, token: &str, path: &str) -> crate::browser::link_proto::FileReply {
+    let before = mac.state.lock().unwrap().files.len();
+    mac.say(&HelperFrame::File(
+        crate::browser::link_proto::FileRequest {
+            id: 40 + before as u64,
+            token: token.into(),
+            path: path.into(),
+            offset: 0,
+        },
+    ));
+    wait_for("its answer", || {
+        mac.state.lock().unwrap().files.len() > before
+    });
+    mac.state.lock().unwrap().files[before].clone()
+}
+
+#[test]
+fn fork_smoke_a_file_shown_on_a_linked_browser_loads_from_here_once() {
+    let (hub, shared, mac) = linked("link-show");
+    let site = site("show");
+    let page = site.0.join("index.html");
+    let shown = show(&hub, &page, json!({}));
+    assert_eq!(
+        shown.text,
+        "showing index.html (network blocked); loads once; show it again after changes"
+    );
+    assert_eq!(shown.data["watching"], false);
+    assert_eq!(shown.data["file"], page.display().to_string());
+    assert_eq!(shown.data["kind"], "html_view");
+    let op = mac.state.lock().unwrap().ops.last().unwrap().clone();
+    assert_eq!(op.op, "show_remote");
+    let token = op.args["token"].as_str().unwrap().to_string();
+    assert_eq!(op.args["rel"], "index.html");
+    assert_eq!(op.args["opened_by"], "agent:w2:pD");
+    let sent = serde_json::to_string(&op).unwrap();
+    assert!(
+        !sent.contains(site.0.to_str().unwrap()),
+        "no path of this machine: {sent}"
+    );
+    assert!(sidecar_ops(&shared).is_empty());
+    // the page and what it loads come from here
+    let script = pull(&mac, &token, "app.js");
+    assert_eq!(
+        (script.status, script.data.as_slice()),
+        (200, &b"console.log(1)"[..])
+    );
+    assert_eq!(pull(&mac, &token, "..%2fapp.js").status, 403);
+    assert_eq!(pull(&mac, &token, "gone.js").status, 404);
+    // its page is the file here, in events and answers
+    mac.say(&HelperFrame::Ev {
+        event: json!({
+            "event": "tab", "target": "V1", "kind": "navigated",
+            "url": format!("herdr-file://{token}/index.html"), "initiator": "other"
+        }),
+    });
+    let file_url = format!("file://{}", page.display());
+    hub.with_state(|state| {
+        assert_eq!(state.tabs[&TabKey::new("companion", "V1")].url, file_url);
+    });
+    // the flags it cannot have are named, and nothing fails for them
+    let both = show(
+        &hub,
+        &page,
+        json!({ "page_api": true, "allow_network": true, "watch": true }),
+    );
+    assert_eq!(both.text, "showing index.html (network blocked); loads once; show it again after changes (page_api is off for pages on a remote browser; ignored) (allow_network is off for pages on a remote browser; ignored)");
+    let op = mac.state.lock().unwrap().ops.last().unwrap().clone();
+    assert_eq!(op.args["token"], token, "one token for the directory");
+    for absent in [
+        "page_api",
+        "allow_network",
+        "watch",
+        "file",
+        "root",
+        "opener",
+    ] {
+        assert!(op.args.get(absent).is_none(), "{absent}");
+    }
+}
+
+#[test]
+fn a_token_of_an_older_link_reads_nothing() {
+    let (hub, _shared, mac) = linked("link-show-epoch");
+    let site = site("show-epoch");
+    let page = site.0.join("index.html");
+    show(&hub, &page, json!({}));
+    let old = mac.state.lock().unwrap().ops.last().unwrap().args["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(pull(&mac, &old, "index.html").status, 200);
+    mac.close(LinkEnd::Lost("test".into()));
+    let back = FakeMac::open(&hub, "mac-a", "mbp").expect("back");
+    back.up("i1", &["V1"]);
+    wait_for("host_ok", || !back.state.lock().unwrap().leases.is_empty());
+    assert_eq!(pull(&back, &old, "index.html").status, 403);
+    show(&hub, &page, json!({}));
+    let new = back.state.lock().unwrap().ops.last().unwrap().args["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_ne!(new, old);
+    assert_eq!(pull(&back, &new, "index.html").status, 200);
+    // the old page's URL still names the file
+    back.say(&HelperFrame::Ev {
+        event: json!({
+            "event": "tab", "target": "V1", "kind": "navigated",
+            "url": format!("herdr-file://{old}/index.html"), "initiator": "other"
+        }),
+    });
+    hub.with_state(|state| {
+        assert_eq!(
+            state.tabs[&TabKey::new("companion", "V1")].url,
+            format!("file://{}", page.display())
+        );
+    });
+}
+
+fn screenshot(
+    hub: &BrowserHub,
+    out: Option<&std::path::Path>,
+) -> Result<BrowserRunResult, BrowserError> {
+    let mut op = json!({ "op": "screenshot", "format": "png" });
+    if let Some(out) = out {
+        op["out"] = json!(out.display().to_string());
+    }
+    run(hub, serde_json::from_value(op).unwrap())
+}
+
+/// Every file of a directory, also the hidden ones.
+fn files_in(dir: &std::path::Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    names.sort();
+    names
+}
+
+#[test]
+fn fork_smoke_a_linked_screenshot_lands_here_whole() {
+    let (hub, _shared, mac) = linked("link-shot");
+    open(&hub).expect("open");
+    let taken = screenshot(&hub, None).expect("taken");
+    let path = std::path::PathBuf::from(taken.data["path"].as_str().unwrap());
+    let inline = std::path::PathBuf::from(taken.data["inline_path"].as_str().unwrap());
+    assert_eq!(std::fs::read(&path).unwrap(), b"the full picture");
+    assert_eq!(std::fs::read(&inline).unwrap(), b"tiny");
+    assert_eq!(taken.image_path.as_deref(), path.to_str());
+    let shots = path.parent().unwrap();
+    assert!(
+        files_in(shots).iter().all(|name| !name.starts_with('.')),
+        "{:?}",
+        files_in(shots)
+    );
+    // the Mac got no path of this machine
+    let op = mac.state.lock().unwrap().ops.last().unwrap().clone();
+    assert!(op.args.get("path").is_none() && op.args.get("inline_path").is_none());
+    // --out
+    let site = site("shot-out");
+    let out = site.0.join("mine.png");
+    let taken = screenshot(&hub, Some(&out)).expect("taken");
+    assert_eq!(taken.data["path"], out.display().to_string());
+    assert_eq!(std::fs::read(&out).unwrap(), b"the full picture");
+    assert_eq!(files_in(&site.0), ["app.js", "index.html", "mine.png"]);
+    // no picture: nothing saved, and it says so
+    mac.state.lock().unwrap().picture = None;
+    let err = screenshot(&hub, Some(&site.0.join("none.png"))).unwrap_err();
+    assert_eq!(err.code, "host_failed");
+    assert_eq!(
+        err.message,
+        "the screenshot did not arrive from mbp; nothing was saved"
+    );
+    assert_eq!(files_in(&site.0), ["app.js", "index.html", "mine.png"]);
+}
+
+#[test]
+fn a_picture_cut_off_leaves_nothing() {
+    let (hub, _shared, mac) = linked("link-shot-cut");
+    open(&hub).expect("open");
+    mac.state.lock().unwrap().picture_cut = true;
+    let site = site("shot-cut");
+    let out = site.0.join("cut.png");
+    let pending = {
+        let hub = hub.clone();
+        let out = out.clone();
+        std::thread::spawn(move || screenshot(&hub, Some(&out)))
+    };
+    wait_for("its first piece", || files_in(&site.0).len() == 3);
+    assert!(files_in(&site.0)
+        .iter()
+        .any(|name| name.starts_with(".cut.png.part-")));
+    mac.close(LinkEnd::Lost("test".into()));
+    assert_eq!(pending.join().unwrap().unwrap_err().code, "host_link_lost");
+    assert_eq!(files_in(&site.0), ["app.js", "index.html"]);
+}

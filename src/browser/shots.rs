@@ -69,6 +69,25 @@ pub fn paths(
     Ok((full.display().to_string(), inline.display().to_string()))
 }
 
+/// Fork (remote browser): a picture that arrives in pieces is written
+/// beside where it goes, under a name no screenshot has, and moved there
+/// only once whole ([`publish`]).
+pub fn part_path(dest: &Path) -> PathBuf {
+    let name = dest
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    dest.with_file_name(format!(".{name}.part-{}", super::session::random_hex(8)))
+}
+
+/// Fork (remote browser): the whole picture goes where it belongs; never
+/// over a file that is there (a link, then the part goes).
+pub fn publish(part: &Path, dest: &Path) -> std::io::Result<()> {
+    let linked = fs::hard_link(part, dest);
+    let _ = fs::remove_file(part);
+    linked
+}
+
 /// `YYYYMMDD-HHMMSS` local.
 pub fn stamp(now: u64) -> String {
     time::OffsetDateTime::from_unix_timestamp(now as i64)
@@ -157,6 +176,28 @@ mod tests {
         assert!(
             matches!(paths(&dir, "t1", "png", Some("/nope/dir/x.png"), 1), Err(err) if err.code == "invalid_request")
         );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_picture_in_pieces_appears_whole_and_never_over_another() {
+        let dir = temp("publish");
+        fs::create_dir_all(&dir).unwrap();
+        let dest = dir.join("20260930-120000-t1.png");
+        let part = part_path(&dest);
+        assert_eq!(part.parent(), Some(dir.as_path()));
+        assert!(!is_herdr_named(
+            &part.file_name().unwrap().to_string_lossy()
+        ));
+        fs::write(&part, "whole").unwrap();
+        publish(&part, &dest).unwrap();
+        assert_eq!(fs::read_to_string(&dest).unwrap(), "whole");
+        assert!(!part.exists());
+        let again = part_path(&dest);
+        fs::write(&again, "other").unwrap();
+        assert!(publish(&again, &dest).is_err());
+        assert_eq!(fs::read_to_string(&dest).unwrap(), "whole");
+        assert!(!again.exists());
         let _ = fs::remove_dir_all(&dir);
     }
 

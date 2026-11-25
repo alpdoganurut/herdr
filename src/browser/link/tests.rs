@@ -669,6 +669,13 @@ pub(crate) mod fake_mac {
         pub instance: String,
         /// The pages its companion has (`host_up`).
         pub tabs: Vec<String>,
+        /// Its screenshots: the full picture's bytes, sent in 3 chunks
+        /// (none: only the small one comes), and whether it stops after
+        /// the first chunk.
+        pub picture: Option<Vec<u8>>,
+        pub picture_cut: bool,
+        /// The answers to its `file` pulls.
+        pub files: Vec<FileReply>,
         pub next_target: u32,
     }
 
@@ -686,7 +693,9 @@ pub(crate) mod fake_mac {
             host_id: &str,
             label: &str,
         ) -> Result<Self, BrowserError> {
-            Self::open_with(hub, mac_params(host_id, label))
+            Self::open_with(hub, mac_params(host_id, label)).inspect(|mac| {
+                lock(&mac.state).picture = Some(b"the full picture".to_vec());
+            })
         }
 
         pub fn open_with(
@@ -762,6 +771,55 @@ pub(crate) mod fake_mac {
         }
     }
 
+    /// A screenshot's answer: its pictures in chunks, then the `re`.
+    fn picture(state: &MacState, id: u64, url: &str) -> Vec<HelperFrame> {
+        let chunks = |name: BlobName, bytes: &[u8], parts: usize, cut: bool| {
+            let size = bytes.len() as u64;
+            let step = bytes.len().div_ceil(parts).max(1);
+            let pieces: Vec<&[u8]> = if bytes.is_empty() {
+                vec![&[][..]]
+            } else {
+                bytes.chunks(step).collect()
+            };
+            let count = pieces.len();
+            pieces
+                .into_iter()
+                .enumerate()
+                .take(if cut { 1 } else { count })
+                .map(|(seq, data)| {
+                    HelperFrame::Blob(BlobChunk {
+                        op: id,
+                        name,
+                        seq: seq as u64,
+                        data: data.to_vec(),
+                        last: seq + 1 == count,
+                        size,
+                    })
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut frames = Vec::new();
+        if let Some(full) = &state.picture {
+            frames.extend(chunks(BlobName::Full, full, 3, state.picture_cut));
+        }
+        if state.picture_cut {
+            return frames;
+        }
+        frames.extend(chunks(BlobName::Inline, b"tiny", 1, false));
+        frames.push(HelperFrame::Re(LinkReply {
+            id,
+            ok: true,
+            result: serde_json::json!({ "width": 800, "height": 600, "bytes": 16 }),
+            page: Some(crate::browser::link_proto::LinkPage {
+                url: url.to_string(),
+                title: "T".into(),
+                ..Default::default()
+            }),
+            error: None,
+        }));
+        frames
+    }
+
     fn up(instance: &str, targets: &[&str]) -> HostUp {
         HostUp {
             instance: instance.into(),
@@ -796,7 +854,10 @@ pub(crate) mod fake_mac {
                 }
                 let mut result =
                     serde_json::json!({ "kind": "click", "content": "text", "total_chars": 4 });
-                if name == "open" {
+                if name == "screenshot" {
+                    return picture(&state, id, &url);
+                }
+                if name == "open" || name == "show_remote" {
                     state.next_target += 1;
                     result["target"] = format!("V{}", state.next_target).into();
                 }
@@ -837,6 +898,10 @@ pub(crate) mod fake_mac {
             }
             ServerFrame::HostOk { lease_id } => {
                 state.leases.push(lease_id);
+                Vec::new()
+            }
+            ServerFrame::FileRe(reply) => {
+                state.files.push(reply);
                 Vec::new()
             }
             ServerFrame::Bye(bye) => {

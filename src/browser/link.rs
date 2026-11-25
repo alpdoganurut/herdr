@@ -10,6 +10,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{self, Read, Write};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, sync_channel, SyncSender, TrySendError};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
@@ -253,6 +254,25 @@ pub struct Link {
     next_id: AtomicU64,
     pending: Mutex<HashMap<u64, mpsc::Sender<LinkReply>>>,
     ensure: Mutex<Option<EnsureWait>>,
+    /// Where the pictures of the calls in flight go.
+    sinks: Mutex<HashMap<(u64, BlobName), Sink>>,
+}
+
+/// One picture of a call: written beside where it goes, moved there whole.
+struct Sink {
+    dest: PathBuf,
+    part: PathBuf,
+    file: Option<std::fs::File>,
+    done: bool,
+}
+
+impl Sink {
+    fn discard(&mut self) {
+        self.file = None;
+        if !self.done {
+            let _ = std::fs::remove_file(&self.part);
+        }
+    }
 }
 
 /// The `ensure` under way: everyone who needs the browser waits for the one.
@@ -314,6 +334,9 @@ impl Link {
         self.queue.end(end);
         lock(&self.pending).clear();
         lock(&self.ensure).take();
+        for (_, mut sink) in lock(&self.sinks).drain() {
+            sink.discard();
+        }
     }
 
     fn send(&self, frame: &ServerFrame) -> Result<(), CallError> {
@@ -326,7 +349,11 @@ impl Link {
             })
     }
 
-    /// One op: sent, then its answer within `wait`. Never retried.
+    /// One op: sent, then its answer within `wait`. Never retried. Its
+    /// pictures go to files: each one that arrived whole is where `sinks`
+    /// says (never over a file) and named in the answer; nothing is left of
+    /// the others.
+    #[allow(clippy::too_many_arguments)] // one op's parts, as the frame has them
     pub fn call(
         &self,
         op: &str,
@@ -335,7 +362,8 @@ impl Link {
         activity: Option<serde_json::Value>,
         deadline: Duration,
         wait: Duration,
-    ) -> Result<LinkReply, CallError> {
+        sinks: &[(BlobName, PathBuf)],
+    ) -> Result<(LinkReply, Vec<BlobName>), CallError> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = mpsc::channel();
         {
@@ -345,6 +373,46 @@ impl Link {
             }
             pending.insert(id, tx);
         }
+        if !sinks.is_empty() {
+            let mut open = lock(&self.sinks);
+            for (name, dest) in sinks {
+                open.insert(
+                    (id, *name),
+                    Sink {
+                        part: super::shots::part_path(dest),
+                        dest: dest.clone(),
+                        file: None,
+                        done: false,
+                    },
+                );
+            }
+        }
+        let outcome = self.call_sent(id, rx, op, target, args, activity, deadline, wait);
+        let mut written = Vec::new();
+        let mut open = lock(&self.sinks);
+        for (name, _) in sinks {
+            if let Some(mut sink) = open.remove(&(id, *name)) {
+                if sink.done {
+                    written.push(*name);
+                }
+                sink.discard();
+            }
+        }
+        outcome.map(|reply| (reply, written))
+    }
+
+    #[allow(clippy::too_many_arguments)] // the rest of call
+    fn call_sent(
+        &self,
+        id: u64,
+        rx: mpsc::Receiver<LinkReply>,
+        op: &str,
+        target: Option<&str>,
+        args: serde_json::Value,
+        activity: Option<serde_json::Value>,
+        deadline: Duration,
+        wait: Duration,
+    ) -> Result<LinkReply, CallError> {
         let sent = self.send(&ServerFrame::Op(LinkOp {
             id,
             echo: self.echo.load(Ordering::Acquire),
@@ -417,6 +485,46 @@ impl Link {
         let mut under_way = lock(&self.ensure);
         if under_way.as_ref().is_some_and(|ensure| ensure.id == id) {
             *under_way = None;
+        }
+    }
+
+    /// A chunk of a picture a call waits for (in its order: [`Blobs`]
+    /// checked it); one nobody waits for is dropped.
+    fn write_blob(&self, chunk: &BlobChunk) {
+        let mut open = lock(&self.sinks);
+        let Some(sink) = open.get_mut(&(chunk.op, chunk.name)) else {
+            return;
+        };
+        if chunk.seq == 0 {
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+            sink.file = options.open(&sink.part).ok();
+        }
+        let written = sink
+            .file
+            .as_mut()
+            .is_some_and(|file| file.write_all(&chunk.data).is_ok());
+        if !written {
+            tracing::warn!(
+                event = "browser.link.blob",
+                epoch = self.epoch,
+                op = chunk.op,
+                "a picture could not be written; dropped"
+            );
+            sink.discard();
+            open.remove(&(chunk.op, chunk.name));
+            return;
+        }
+        if chunk.last {
+            sink.file = None;
+            match super::shots::publish(&sink.part, &sink.dest) {
+                Ok(()) => sink.done = true,
+                Err(err) => {
+                    tracing::warn!(event = "browser.link.blob", epoch = self.epoch, op = chunk.op, %err, "a picture could not be put in place; dropped")
+                }
+            }
         }
     }
 
@@ -493,6 +601,8 @@ struct SlotState {
 /// The server's one link.
 pub struct LinkSlot {
     boot_id: String,
+    /// The directories shown over the links of this process.
+    files: super::link_files::FileGrants,
     state: Mutex<SlotState>,
 }
 
@@ -500,6 +610,7 @@ impl Default for LinkSlot {
     fn default() -> Self {
         Self {
             boot_id: random_hex(16),
+            files: Default::default(),
             state: Mutex::default(),
         }
     }
@@ -590,6 +701,7 @@ impl LinkSlot {
             next_id: AtomicU64::new(1),
             pending: Mutex::default(),
             ensure: Mutex::default(),
+            sinks: Mutex::default(),
         });
         state.live = Some(Arc::clone(&link));
         Ok(link)
@@ -611,6 +723,11 @@ impl LinkSlot {
     /// The link, while there is one.
     pub fn live(&self) -> Option<Arc<Link>> {
         lock(&self.state).live.clone()
+    }
+
+    /// The files shown over the links of this process.
+    pub fn files(&self) -> &super::link_files::FileGrants {
+        &self.files
     }
 
     /// Whether `link` is the live one.
@@ -872,6 +989,7 @@ impl LinkReader {
                     if let Err(why) = self.blobs.check(&chunk) {
                         return Some(LinkEnd::Protocol(why));
                     }
+                    link.write_blob(&chunk);
                     self.handler.blob(link, &chunk);
                 }
                 if chunk.name == BlobName::Unknown {

@@ -339,10 +339,11 @@ fn nothing_is_served_before_there_is_a_browser() {
     link.send(
         &json!({ "t": "file", "id": 9, "token": "a".repeat(24), "path": "x.html", "offset": 0 }),
     );
+    // a token this server never gave
     let reply = link.read();
     assert_eq!(
         (&reply["t"], &reply["id"], &reply["status"]),
-        (&json!("file_re"), &json!(9), &json!(404))
+        (&json!("file_re"), &json!(9), &json!(403))
     );
     link.send(&json!({ "t": "api", "id": 4, "method": "pane.list", "params": {} }));
     let reply = link.read();

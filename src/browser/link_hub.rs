@@ -15,12 +15,16 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
-use super::companion_host::{CompanionLease, LinkLease, COMPANION_PROFILE, REPORT_RATE_PER_S};
-use super::{is_companion, BrowserHub, HostEvent, HostReply, ACTIVITY, REPLY_GRACE};
+use super::companion_host::{
+    CompanionLease, LinkLease, ShowRequest, COMPANION_PROFILE, REPORT_RATE_PER_S,
+};
+use super::{is_companion, BrowserHub, HostEvent, HostReply, TabKey, ACTIVITY, REPLY_GRACE};
+use crate::api::schema::BrowserRunResult;
 use crate::browser::link::{self, CallError, Link, LinkEnd, LinkHandler, LinkSlot, OpenFacts};
 use crate::browser::link_proto::{
-    bye, code, op_rule, text, BrowserLinkOpenParams, BrowserLinkReady, EnsureReply, HostUp, OpGate,
-    RefuseRule, ServerFrame, ENSURE_MS, RELEASE_MAX_KEYS, REPLY_EXTRA_MS,
+    bye, code, op_rule, text, BlobName, BrowserLinkOpenParams, BrowserLinkReady, EnsureReply,
+    FileReply, FileRequest, HostUp, OpGate, RefuseRule, ServerFrame, ENSURE_MS, RELEASE_MAX_KEYS,
+    REPLY_EXTRA_MS,
 };
 use crate::browser::state::ProfileStatus;
 use crate::browser::{unix_now, BrowserError};
@@ -36,6 +40,57 @@ pub(crate) enum LinkRoute {
     Reconnecting { label: String },
     /// No link: this machine's companion, if any.
     Local,
+}
+
+/// A screenshot's `path` and `inline_path`, taken out of its arguments.
+fn take_paths(args: &mut Value) -> Vec<(BlobName, std::path::PathBuf)> {
+    let Some(fields) = args.as_object_mut() else {
+        return Vec::new();
+    };
+    [("path", BlobName::Full), ("inline_path", BlobName::Inline)]
+        .into_iter()
+        .filter_map(|(key, name)| {
+            let path = fields.remove(key)?;
+            Some((name, std::path::PathBuf::from(path.as_str()?)))
+        })
+        .collect()
+}
+
+/// The files a screenshot's pictures went to, in its result as a local
+/// sidecar names them; without the full picture there is none.
+fn put_paths(
+    result: &mut Value,
+    sinks: &[(BlobName, std::path::PathBuf)],
+    written: &[BlobName],
+    label: &str,
+) -> Result<(), BrowserError> {
+    if !result.is_object() {
+        *result = json!({});
+    }
+    let path = |name: BlobName| {
+        sinks
+            .iter()
+            .find(|(sink, _)| *sink == name && written.contains(&name))
+            .map(|(_, path)| path.display().to_string())
+    };
+    let Some(full) = path(BlobName::Full) else {
+        // the small one alone is no screenshot
+        for name in written {
+            if let Some((_, dest)) = sinks.iter().find(|(sink, _)| sink == name) {
+                let _ = std::fs::remove_file(dest);
+            }
+        }
+        return Err(BrowserError::host_failed(format!(
+            "the screenshot did not arrive from {label}; nothing was saved"
+        )));
+    };
+    if let Some(fields) = result.as_object_mut() {
+        fields.remove("full");
+        fields.remove("inline");
+        fields.insert("path".into(), json!(full));
+        fields.insert("inline_path".into(), json!(path(BlobName::Inline)));
+    }
+    Ok(())
 }
 
 /// The linked browser closed between two steps of one call.
@@ -253,9 +308,28 @@ impl BrowserHub {
         }
         let activity = ACTIVITY.with(|slot| slot.borrow().clone());
         let wait = deadline + REPLY_GRACE + Duration::from_millis(REPLY_EXTRA_MS);
-        match link.call(op, target, args, activity, deadline, wait) {
-            Ok(reply) if reply.ok => Ok(reply.into()),
-            Ok(reply) => {
+        // a screenshot's pictures come in pieces and go where the hub says;
+        // no path of this machine goes to the Mac
+        let mut args = args;
+        let sinks = if op == "screenshot" {
+            take_paths(&mut args)
+        } else {
+            Vec::new()
+        };
+        match link.call(op, target, args, activity, deadline, wait, &sinks) {
+            Ok((reply, written)) if reply.ok => {
+                let mut reply: HostReply = reply.into();
+                if let Some(page) = reply.page.as_mut() {
+                    if let Some(url) = self.inner.link.files().to_file_url(&page.url) {
+                        page.url = url;
+                    }
+                }
+                if !sinks.is_empty() {
+                    put_paths(&mut reply.result, &sinks, &written, label)?;
+                }
+                Ok(reply)
+            }
+            Ok((reply, _)) => {
                 let error = reply.error.unwrap_or_default();
                 let code = if error.code.is_empty() {
                     "browser_error"
@@ -279,6 +353,94 @@ impl BrowserHub {
                 deadline.as_millis()
             ))),
         }
+    }
+
+    /// `show` on a linked browser: the file's directory is granted to the
+    /// Mac for this epoch and the page loads from it once (no watch, no
+    /// network, no page API: the notes say so).
+    #[allow(clippy::too_many_arguments)] // execute_show's own
+    pub(super) fn execute_show_remote(
+        &self,
+        link: &Arc<Link>,
+        actor: &crate::api::schema::BrowserActor,
+        pane: Option<&str>,
+        path: &std::path::Path,
+        show: ShowRequest<'_>,
+        deadline: Duration,
+        now: u64,
+    ) -> Result<(BrowserRunResult, Option<TabKey>, String), BrowserError> {
+        let file = path.display().to_string();
+        let Some(shown) = self.inner.link.files().shown(path, link.epoch) else {
+            return Err(BrowserError::new(
+                "file_not_found",
+                format!("no file {file}"),
+            ));
+        };
+        let basename = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| file.clone());
+        let reply = self.link_call(
+            link,
+            "show_remote",
+            None,
+            json!({
+                "tab_id": actor.tab_id(),
+                "opened_by": actor.pane_id().map(|pane| format!("agent:{pane}")),
+                "token": shown.token,
+                "rel": shown.rel,
+                "title": show.title,
+                "focus": show.focus,
+            }),
+            deadline,
+        )?;
+        let target = reply.result["target"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        if target.is_empty() {
+            return Err(BrowserError::host_failed("show returned no target"));
+        }
+        let key = TabKey::new(COMPANION_PROFILE, &target);
+        let page = reply.page.clone().unwrap_or_default();
+        {
+            let mut state = self.inner.state.lock().unwrap();
+            state.adopt_tab(
+                &key,
+                &crate::browser::state::HostTab {
+                    target: target.clone(),
+                    url: page.url.clone(),
+                    title: page.title.clone(),
+                    selected: show.focus,
+                    dialog_open: page.dialog_open,
+                },
+                actor,
+                now,
+            );
+            if let Some(pane) = pane {
+                state.set_cursor(pane, &key, actor.tab_id(), now);
+            }
+        }
+        self.inner.html_views.lock().unwrap().insert(key.clone());
+        let record = self.record(&key)?;
+        let mut data = json!({
+            "tab": record.id(),
+            "kind": "html_view",
+            "watching": false,
+            "file": file,
+        });
+        if let Some(view) = reply.result["view_id"].as_str() {
+            data["view_id"] = json!(view);
+        }
+        let mut text = format!("showing {basename} (network blocked); {}", text::LOADS_ONCE);
+        if show.page_api {
+            text.push_str(&format!(" ({})", text::PAGE_API_OFF));
+        }
+        if show.allow_network {
+            text.push_str(&format!(" ({})", text::ALLOW_NETWORK_OFF));
+        }
+        let result = super::shape::simple_result(&record, Some(&page), &text, data);
+        Ok((result, Some(key), format!("show: {basename}")))
     }
 
     /// Tab groups of gone panes, over the link; at most 64 a frame.
@@ -447,6 +609,11 @@ impl LinkHandler for BrowserHub {
         self.flush();
     }
 
+    /// A page of a shown file pulls the next piece of it.
+    fn file(&self, link: &Arc<Link>, request: &FileRequest) -> FileReply {
+        self.inner.link.files().serve(request, link.epoch)
+    }
+
     fn host_down(&self, link: &Arc<Link>, reason: &str) {
         self.drop_link_lease(link, reason);
     }
@@ -461,6 +628,14 @@ impl LinkHandler for BrowserHub {
             return;
         };
         fields.insert("profile".into(), json!(COMPANION_PROFILE));
+        // a shown file's page is the file here
+        let file_url = fields
+            .get("url")
+            .and_then(Value::as_str)
+            .and_then(|url| self.inner.link.files().to_file_url(url));
+        if let Some(url) = file_url {
+            fields.insert("url".into(), json!(url));
+        }
         match serde_json::from_value::<HostEvent>(event) {
             // its browser's coming and going is host_up, host_down and the link
             Ok(HostEvent::Browser { .. }) => {}
