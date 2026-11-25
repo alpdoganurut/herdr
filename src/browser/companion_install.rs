@@ -564,8 +564,14 @@ fn install_electron(
     let dir = electron_dir(home);
     // every step below (the clone, keeping the binary aside, npm ci) removes
     // or rewrites under dir/node_modules: never through a link out of herdr's home
-    setup::guard_npm_dir(&dir, &env.browser_home)
-        .map_err(|error| failed(format!("companion: {error}")))?;
+    setup::check_npm_dir_logged(&dir, &env.browser_home)
+        .map_err(|error| failed(format!("companion: Electron not installed: {error}")))?;
+    // nor through a linked node_modules/electron (the dist under it is removed)
+    let electron_package = dir.join("node_modules").join("electron");
+    setup::inside_root(&electron_package, &env.browser_home).map_err(|error| {
+        tracing::warn!(event = "browser.npm_guard", dir = %electron_package.display(), %error, "refusing to install Electron outside herdr's browser home");
+        failed(format!("companion: Electron not installed: {error}"))
+    })?;
     if let Some(source) = options.dist_override.as_deref() {
         if electron_installed(home).as_deref() == Some(ELECTRON_VERSION) {
             return Ok((String::new(), String::new()));

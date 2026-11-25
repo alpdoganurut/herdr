@@ -314,6 +314,26 @@ fn the_electron_install_never_writes_through_a_symlinked_node_modules() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[cfg(unix)]
+#[test]
+fn the_electron_install_never_writes_through_a_symlinked_electron_package() {
+    let dir = temp("linked-electron");
+    let env = env_in(&dir);
+    let dist = fake_dist(&dir, ELECTRON_VERSION);
+    // a real node_modules, but its electron package linked elsewhere
+    let elsewhere = dir.join("checkout/electron");
+    std::fs::create_dir_all(elsewhere.join("dist")).unwrap();
+    std::fs::write(elsewhere.join("dist/sentinel"), "keep me").unwrap();
+    let modules = electron_dir(&companion_home(&env.browser_home)).join("node_modules");
+    std::fs::create_dir_all(&modules).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, modules.join("electron")).unwrap();
+    let err = setup_companion(&env, &BrowserConfig::default(), &options(&dist)).unwrap_err();
+    assert!(err.to_string().contains("outside"), "{err}");
+    assert!(elsewhere.join("dist/sentinel").exists());
+    assert!(!elsewhere.join("dist/version").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn a_failed_companion_reads_as_failed_with_its_last_error() {
     let dir = temp("failed");

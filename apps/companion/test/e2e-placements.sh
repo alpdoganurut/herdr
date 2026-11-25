@@ -59,10 +59,13 @@ cp "$T/config/herdr/config.toml" "$T/config/herdr-dev/config.toml"
 for state in herdr herdr-dev; do
   HOST_DIR="$T/state/$state/browser/host"
   mkdir -p "$HOST_DIR"
-  # A copy (an APFS clone where it can), never a link: herdr's repair runs npm ci
-  # here, which would empty the link's target, this checkout's node_modules.
-  cp -c -R "$APP_DIR/node_modules" "$HOST_DIR/node_modules" 2>/dev/null \
-    || { rm -rf "$HOST_DIR/node_modules"; cp -R "$APP_DIR/node_modules" "$HOST_DIR/node_modules"; }
+  # The embedded package.json and lock (byte-identical, so the repair sees no lock
+  # change) and a copy of this app's playwright-core (the pin): no npm ci runs. Never a
+  # link: a repair's npm ci would empty the link's target, this checkout's node_modules.
+  mkdir -p "$HOST_DIR/node_modules"
+  cp "$REPO/src/integration/assets/browser/package.json" "$REPO/src/integration/assets/browser/package-lock.json" "$HOST_DIR/"
+  cp -c -R "$APP_DIR/node_modules/playwright-core" "$HOST_DIR/node_modules/" 2>/dev/null \
+    || { rm -rf "$HOST_DIR/node_modules/playwright-core"; cp -R "$APP_DIR/node_modules/playwright-core" "$HOST_DIR/node_modules/"; }
   printf '{"version":1,"node":"%s","playwright_core":"1.63.0","assets_sha256":"","installed_at":0}\n' "$NODE" > "$HOST_DIR/runtime.json"
 done
 

@@ -837,14 +837,14 @@ pub fn helper_lock(browser_home: &Path) -> Result<HelperLock, String> {
 /// `node_modules` that is a symlink (a dangling one too), and a `dir` or
 /// `node_modules` whose canonical path is outside `root` (the browser home).
 /// A missing `dir` or `node_modules` is fine: the install creates them.
-pub fn npm_dir_guard(dir: &Path, root: &Path) -> Result<(), String> {
+fn check_npm_dir(dir: &Path, root: &Path) -> Result<(), String> {
     let modules = dir.join("node_modules");
     if std::fs::symlink_metadata(&modules).is_ok_and(|meta| meta.file_type().is_symlink()) {
         let target = std::fs::read_link(&modules)
             .map(|t| t.display().to_string())
             .unwrap_or_else(|_| "?".into());
         return Err(format!(
-            "npm ci skipped: {} is a symlink (→ {target}) and npm ci would empty its target; remove the link, then `herdr browser setup`",
+            "{} is a symlink (→ {target}) and npm ci would empty its target; remove the link, then `herdr browser setup`",
             modules.display()
         ));
     }
@@ -853,31 +853,20 @@ pub fn npm_dir_guard(dir: &Path, root: &Path) -> Result<(), String> {
 
 /// The deepest existing one of `dir` and its ancestors resolves inside `root`
 /// (both canonical: a symlinked state dir is fine, a link out of it is not).
-fn inside_root(dir: &Path, root: &Path) -> Result<(), String> {
-    let root_real = std::fs::canonicalize(root).map_err(|err| {
-        format!(
-            "npm ci skipped: {} cannot be resolved ({err})",
-            root.display()
-        )
-    })?;
+pub(crate) fn inside_root(dir: &Path, root: &Path) -> Result<(), String> {
+    let root_real = std::fs::canonicalize(root)
+        .map_err(|err| format!("{} cannot be resolved ({err})", root.display()))?;
     let Some(existing) = dir
         .ancestors()
         .find(|p| std::fs::symlink_metadata(p).is_ok())
     else {
-        return Err(format!(
-            "npm ci skipped: {} has no existing parent",
-            dir.display()
-        ));
+        return Err(format!("{} has no existing parent", dir.display()));
     };
-    let real = std::fs::canonicalize(existing).map_err(|err| {
-        format!(
-            "npm ci skipped: {} cannot be resolved ({err})",
-            existing.display()
-        )
-    })?;
+    let real = std::fs::canonicalize(existing)
+        .map_err(|err| format!("{} cannot be resolved ({err})", existing.display()))?;
     if !real.starts_with(&root_real) {
         return Err(format!(
-            "npm ci skipped: {} resolves to {}, outside {}; herdr only installs into its own browser home",
+            "{} resolves to {}, outside {}; herdr only installs into its own browser home",
             existing.display(),
             real.display(),
             root_real.display()
@@ -886,9 +875,9 @@ fn inside_root(dir: &Path, root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// `npm_dir_guard` with the warning every refusal logs.
-pub(crate) fn guard_npm_dir(dir: &Path, root: &Path) -> Result<(), String> {
-    npm_dir_guard(dir, root).inspect_err(|error| {
+/// `check_npm_dir` with the warning every refusal logs.
+pub(crate) fn check_npm_dir_logged(dir: &Path, root: &Path) -> Result<(), String> {
+    check_npm_dir(dir, root).inspect_err(|error| {
         tracing::warn!(event = "browser.npm_guard", dir = %dir.display(), %error, "refusing to run npm ci through a symlink or outside herdr's browser home");
     })
 }
@@ -900,10 +889,12 @@ pub fn install_helper(
 ) -> Result<String, String> {
     let _lock = helper_lock(&env.browser_home)?;
     let host_dir = env.host_dir();
-    // a host/ linked out of the home: the asset writes would land there too
-    inside_root(&host_dir, &env.browser_home).inspect_err(|error| {
-        tracing::warn!(event = "browser.npm_guard", dir = %host_dir.display(), %error, "refusing to install the browser helper outside herdr's browser home");
-    })?;
+    // Before anything is written: a host/ linked out of the home would get
+    // the assets, and a linked node_modules npm ci. Refused whether or not
+    // this run needs npm ci, so a repair never records success (setup.json)
+    // with the link still there; it runs again once the link is gone.
+    check_npm_dir_logged(&host_dir, &env.browser_home)
+        .map_err(|error| format!("helper: not installed: {error}"))?;
     let lock_before = std::fs::read_to_string(host_dir.join("package-lock.json")).ok();
     let written = browser_assets::install(&host_dir)
         .map_err(|err| format!("assets: cannot write {} ({err})", host_dir.display()))?;
@@ -940,7 +931,6 @@ pub fn install_helper(
                 node.path.display()
             ));
         };
-        guard_npm_dir(&host_dir, &env.browser_home)?;
         let mut command = std::process::Command::new(npm);
         command
             .args([
@@ -2150,6 +2140,54 @@ esac
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The second repair: the lock is already this herdr's and the linked
+    /// target has playwright-core at the pin, so no npm ci is due — the
+    /// repair must still refuse rather than record success with the link
+    /// in place (and must not write the assets through it).
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_node_modules_at_the_pin_is_refused_on_every_repair_and_never_recorded() {
+        let dir = temp("npm-symlink-pinned");
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        std::fs::write(dir.join("bin/herdr"), "v1").unwrap();
+        let mut env = env_in(&dir);
+        env.node_override = Some(fake_node_and_npm(&dir).display().to_string());
+        let elsewhere = dir.join("checkout/node_modules");
+        std::fs::create_dir_all(elsewhere.join("playwright-core")).unwrap();
+        std::fs::write(
+            elsewhere.join("playwright-core/package.json"),
+            format!(
+                "{{\"name\":\"playwright-core\",\"version\":\"{}\"}}\n",
+                browser_assets::PLAYWRIGHT_CORE_VERSION
+            ),
+        )
+        .unwrap();
+        std::fs::write(elsewhere.join("sentinel"), "keep me").unwrap();
+        let host = env.host_dir();
+        std::fs::create_dir_all(&host).unwrap();
+        // this herdr's lock already in place: no lock change either
+        browser_assets::install(&host).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, host.join("node_modules")).unwrap();
+        std::fs::write(
+            host.join("runtime.json"),
+            "{\"version\":1,\"node\":\"/x/node\",\"playwright_core\":\"1.0.0\",\"assets_sha256\":\"\",\"installed_at\":0}\n",
+        )
+        .unwrap();
+        for round in 0..2 {
+            let outcome = auto_repair(&BrowserConfig::default(), &env).expect("the repair ran");
+            let error = outcome.expect_err("refused");
+            assert!(error.contains("symlink"), "round {round}: {error}");
+            assert!(
+                read_setup_record(&env.browser_home).is_none(),
+                "round {round}: a refused repair is not recorded"
+            );
+        }
+        assert!(elsewhere.join("sentinel").exists());
+        assert!(elsewhere.join("playwright-core/package.json").exists());
+        assert!(!dir.join("npm-ran").exists(), "npm never ran");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[cfg(unix)]
     #[test]
     fn the_npm_guard_refuses_links_and_paths_outside_the_home() {
@@ -2160,27 +2198,27 @@ esac
         let outside = dir.join("outside");
         std::fs::create_dir_all(&outside).unwrap();
         // nothing there yet, or a real node_modules: fine
-        assert!(npm_dir_guard(&host, &home).is_ok());
-        assert!(npm_dir_guard(&home.join("missing"), &home).is_ok());
+        assert!(check_npm_dir(&host, &home).is_ok());
+        assert!(check_npm_dir(&home.join("missing"), &home).is_ok());
         std::fs::create_dir_all(host.join("node_modules")).unwrap();
-        assert!(npm_dir_guard(&host, &home).is_ok());
+        assert!(check_npm_dir(&host, &home).is_ok());
         // a symlinked home is resolved on both sides
         let linked_home = dir.join("linked-home");
         std::os::unix::fs::symlink(&home, &linked_home).unwrap();
-        assert!(npm_dir_guard(&linked_home.join("host"), &linked_home).is_ok());
-        assert!(npm_dir_guard(&host, &linked_home).is_ok());
+        assert!(check_npm_dir(&linked_home.join("host"), &linked_home).is_ok());
+        assert!(check_npm_dir(&host, &linked_home).is_ok());
         // node_modules a link (inside or outside, dangling too): refused
         std::fs::remove_dir_all(host.join("node_modules")).unwrap();
         std::os::unix::fs::symlink(&outside, host.join("node_modules")).unwrap();
-        assert!(npm_dir_guard(&host, &home).unwrap_err().contains("symlink"));
+        assert!(check_npm_dir(&host, &home).unwrap_err().contains("symlink"));
         std::fs::remove_file(host.join("node_modules")).unwrap();
         std::os::unix::fs::symlink(dir.join("gone"), host.join("node_modules")).unwrap();
-        assert!(npm_dir_guard(&host, &home).is_err());
+        assert!(check_npm_dir(&host, &home).is_err());
         std::fs::remove_file(host.join("node_modules")).unwrap();
         // the dir itself linked out of the home: refused
         let linked_host = home.join("linked-host");
         std::os::unix::fs::symlink(&outside, &linked_host).unwrap();
-        assert!(npm_dir_guard(&linked_host, &home)
+        assert!(check_npm_dir(&linked_host, &home)
             .unwrap_err()
             .contains("outside"));
         let _ = std::fs::remove_dir_all(&dir);

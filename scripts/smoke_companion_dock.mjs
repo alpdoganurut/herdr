@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const T = process.env.HERDR_SMOKE_TMP;
 const BIN = process.env.HERDR_SMOKE_BIN;
@@ -56,22 +57,27 @@ for (const d of ['home', 'config/herdr', 'config/herdr-dev', 'state', 'data', 'c
 const config = `onboarding = false\n\n[browser]\nenabled = true\nwindow = false\nhost = "companion"\nnode = "${process.execPath}"\n\n[ui]\nsidebar_layout = "tabs"\n`;
 for (const d of ['herdr', 'herdr-dev']) fs.writeFileSync(path.join(T, 'config', d, 'config.toml'), config);
 const SOCKETS = ['herdr', 'herdr-dev'].map((d) => path.join(T, 'config', d, 'herdr.sock'));
-// The sidecar runtime herdr drives the companion through: this app's node_modules
-// (playwright-core at the pin), as the e2e tests do.
+// The sidecar runtime herdr drives the companion through: this app's playwright-core
+// (the pin), as the e2e tests do.
+const EMBEDDED = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'src', 'integration', 'assets', 'browser');
 for (const d of ['herdr', 'herdr-dev']) {
   const host = path.join(T, 'state', d, 'browser', 'host');
   fs.mkdirSync(host, { recursive: true });
-  // A copy (an APFS clone where it can), never a link: herdr's repair runs npm ci
-  // there, which would empty the link's target, this checkout's node_modules.
+  // The embedded package.json and lock (byte-identical, so the repair sees no lock
+  // change) and a copy of this app's playwright-core (the pin): no npm ci runs. Never a
+  // link: a repair's npm ci would empty the link's target, this checkout's node_modules.
   const modules = path.join(host, 'node_modules');
   // a link an older run of this script left in a reused HERDR_SMOKE_TMP goes
   if (fs.lstatSync(modules, { throwIfNoEntry: false })?.isSymbolicLink()) fs.unlinkSync(modules);
-  if (!fs.existsSync(modules)) {
+  fs.mkdirSync(modules, { recursive: true });
+  for (const f of ['package.json', 'package-lock.json']) fs.copyFileSync(path.join(EMBEDDED, f), path.join(host, f));
+  const pw = path.join(modules, 'playwright-core');
+  if (!fs.existsSync(pw)) {
     try {
-      execFileSync('cp', ['-c', '-R', path.join(APP, 'node_modules'), modules], { stdio: 'ignore' });
+      execFileSync('cp', ['-c', '-R', path.join(APP, 'node_modules', 'playwright-core'), pw], { stdio: 'ignore' });
     } catch {
-      fs.rmSync(modules, { recursive: true, force: true });
-      fs.cpSync(path.join(APP, 'node_modules'), modules, { recursive: true, verbatimSymlinks: true });
+      fs.rmSync(pw, { recursive: true, force: true });
+      fs.cpSync(path.join(APP, 'node_modules', 'playwright-core'), pw, { recursive: true, verbatimSymlinks: true });
     }
   }
   fs.writeFileSync(path.join(host, 'runtime.json'), JSON.stringify({ version: 1, node: process.execPath, playwright_core: '1.63.0', assets_sha256: '', installed_at: 0 }) + '\n');

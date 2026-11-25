@@ -226,9 +226,12 @@ Try it visibly against an isolated herdr (its own HOME, config, state and socket
 with a running herdr). From `apps/companion`, after `cargo build --release` at the repo root:
 
 ```sh
-T=$(mktemp -d /tmp/hcv-XXXXXX); H=$T/state/herdr/browser/host; mkdir -p $T/config/herdr $H
+T=$(mktemp -d /tmp/hcv-XXXXXX); H=$T/state/herdr/browser/host; mkdir -p $T/config/herdr $H/node_modules
 printf '[browser]\nenabled = true\nwindow = true\nhost = "auto"\n' > $T/config/herdr/config.toml
-ln -s "$PWD/node_modules" $H/node_modules     # the sidecar's playwright-core (same pin)
+# the sidecar: the embedded package.json and lock plus a copy of playwright-core (same pin),
+# never a link (a repair's npm ci would empty the link's target, this node_modules)
+cp ../../src/integration/assets/browser/package.json ../../src/integration/assets/browser/package-lock.json $H/
+cp -c -R node_modules/playwright-core $H/node_modules/ 2>/dev/null || cp -R node_modules/playwright-core $H/node_modules/
 printf '{"version":1,"node":"%s","playwright_core":"1.63.0","assets_sha256":"","installed_at":0}\n' "$(command -v node)" > $H/runtime.json
 # terminal 1: the isolated herdr TUI
 env -u HERDR_SOCKET_PATH -u HERDR_CLIENT_SOCKET_PATH -u HERDR_PANE_ID HOME=$T XDG_CONFIG_HOME=$T/config XDG_STATE_HOME=$T/state ../../target/release/herdr
