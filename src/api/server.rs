@@ -538,6 +538,23 @@ fn serve_connection(
             let response = crate::browser::serve::placement_report(request_id.clone(), params);
             finish_wait_response(&mut stream, Some(response), &request_id, method, changes_ui)
         }
+        // Fork (remote browser): the connection becomes the browser link.
+        Method::BrowserLinkOpen(params) => {
+            let stopping = || {
+                !running.load(Ordering::Relaxed)
+                    || server_stop.is_some_and(ServerStop::is_requested)
+            };
+            let result = crate::browser::link::serve(stream, &request_id, &params, stopping);
+            match &result {
+                Ok(outcome) => {
+                    crate::logging::api_request_completed(&request_id, method, outcome, changes_ui)
+                }
+                Err(err) => {
+                    crate::logging::api_request_failed(&request_id, method, &err.to_string())
+                }
+            }
+            result.map(|_| ())
+        }
         method_body => {
             let (response_write_tx, response_write_rx) = std::sync::mpsc::channel();
             let stop_caller = matches!(method_body, Method::ServerStop(_))

@@ -1410,6 +1410,13 @@ impl App {
                     "browser.run is handled on its connection thread, not by the app runtime",
                 );
             }
+            Method::BrowserLinkOpen(_) => {
+                return responses::encode_error(
+                    request.id,
+                    "browser_lane",
+                    "browser.link_open is handled on its connection thread, not by the app runtime",
+                );
+            }
             Method::BrowserHostRegister(_)
             | Method::BrowserHostHeartbeat(_)
             | Method::BrowserHostUnregister(_) => {

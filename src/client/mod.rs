@@ -13,6 +13,8 @@
 //! - Displays sound/toast notifications forwarded from server
 
 mod attach;
+#[cfg(unix)]
+mod browser_link;
 mod catalog_reload;
 mod clipboard_forwarding;
 mod clipboard_images;

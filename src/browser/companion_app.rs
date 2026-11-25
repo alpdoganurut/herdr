@@ -1287,7 +1287,7 @@ impl BrowserHub {
     }
 
     /// `browser.get` must re-pull: the launcher changed.
-    fn companion_changed(&self) {
+    pub(crate) fn companion_changed(&self) {
         self.launcher().notify();
         self.note_session_change();
     }
@@ -1356,9 +1356,19 @@ impl BrowserHub {
         if self.companion_live() {
             return Ok(());
         }
+        // Fork (remote browser): the Mac's, when it is linked.
+        if self.ensure_link("open")? {
+            return Ok(());
+        }
         // a companion this config refuses to register is never started
         if let Some(err) = companion_off_by_config(&self.config(), user) {
             return Err(err);
+        }
+        // Fork (remote browser): `link = "only"` starts none here.
+        if self.config().link_only() {
+            return Err(self
+                .no_link_error()
+                .unwrap_or_else(super::hub::host_unavailable));
         }
         let home = self.companion_home();
         let launcher = self.launcher();
@@ -1394,7 +1404,15 @@ impl BrowserHub {
                     if let Some(socket) = self.companion_other_session(&home) {
                         return Err(other_session_error(&socket));
                     }
-                    self.companion_launchable(&home, user)?;
+                    if let Err(err) = self.companion_launchable(&home, user) {
+                        // Fork (remote browser): a server that had a Mac's
+                        // browser is not told to install one.
+                        let installed = !matches!(
+                            companion_install::resolve(&home),
+                            Err(InstallProblem::NotInstalled)
+                        );
+                        return Err(self.no_link_error().filter(|_| !installed).unwrap_or(err));
+                    }
                     let ticket = launcher.lock().begin_spawn(
                         StartReason::OnDemand,
                         Instant::now(),
@@ -1432,6 +1450,7 @@ impl BrowserHub {
         if let Some(err) = companion_off_by_config(&self.config(), user) {
             return Err(err);
         }
+        self.companion_not_linked()?;
         let facts = self.companion_lease_facts();
         if facts.live && !self.lease_is_managed(&facts) {
             return Ok(()); // a companion started by hand runs: nothing to start
@@ -1461,6 +1480,7 @@ impl BrowserHub {
     /// SIGKILL) on its own thread; one started by hand is only detached
     /// (it re-registers) and the answer says so.
     pub fn companion_stop(&self) -> Result<Option<String>, BrowserError> {
+        self.companion_not_linked()?;
         let facts = self.companion_lease_facts();
         if facts.live && !self.lease_is_managed(&facts) {
             self.detach_external_companion();
@@ -1482,6 +1502,7 @@ impl BrowserHub {
         if let Some(err) = companion_off_by_config(&self.config(), user) {
             return Err(err);
         }
+        self.companion_not_linked()?;
         let facts = self.companion_lease_facts();
         if facts.live && !self.lease_is_managed(&facts) {
             return Ok(Some(EXTERNAL_NOTE.into()));
@@ -1505,6 +1526,10 @@ impl BrowserHub {
     /// focus), an agent's only orders it front. A user focus of a stopped
     /// companion starts it (its window shows).
     pub fn companion_focus(&self, user: bool) -> Result<(), BrowserError> {
+        // Fork (remote browser): a linked one is started by the ops, on the Mac.
+        if let Some(Err(err)) = self.link_attached() {
+            return Err(err);
+        }
         if !self.companion_live() {
             if user {
                 return self.companion_start(StartReason::User);
@@ -1947,7 +1972,9 @@ impl BrowserHub {
     /// background) when it is installed and nothing was adopted.
     pub fn companion_autostart(&self) {
         let config = self.config();
+        // Fork (remote browser): `link = "only"` starts none here.
         if !config.companion_autostart
+            || config.link_only()
             || companion_off_by_config(&config, false).is_some()
             || self.launcher().lock().busy()
         {
@@ -2055,7 +2082,8 @@ impl BrowserHub {
 
     fn companion_drive_once(&self) {
         let launcher = self.launcher();
-        let lease_live = self.companion_live();
+        // Fork (remote browser): a linked Mac's lease is not this process's
+        let lease_live = self.local_companion_live();
         let repairing = self.auto_repair_running();
         let actions = {
             let now = Instant::now();
@@ -2071,7 +2099,10 @@ impl BrowserHub {
                     // the config turned the companion off since the crash:
                     // the scheduled restart goes (a launched one could
                     // never register)
-                    if companion_off_by_config(&self.config(), false).is_some() {
+                    // (a linked Mac's browser refuses it too)
+                    if companion_off_by_config(&self.config(), false).is_some()
+                        || self.linked_to().is_some()
+                    {
                         launcher.lock().reset_backoff(unix_now());
                         self.companion_changed();
                         continue;

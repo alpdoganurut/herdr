@@ -1114,6 +1114,8 @@ impl BrowserState {
             window_off: false,
             // the hub fills this in from the placement board (companion launcher)
             placements: Vec::new(),
+            // the App fills this in (remote browser)
+            link: None,
         }
     }
 

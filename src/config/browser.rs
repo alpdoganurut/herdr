@@ -143,6 +143,17 @@ pub struct BrowserConfig {
     /// advertise `page_messages` and the server refuses every page
     /// message (`page_messages_off`). Default: true.
     pub page_api: bool,
+    /// Fork (remote browser): whether the Mac that has this machine saved
+    /// may serve this server's browser over its connection: `auto` (while it
+    /// is connected, else this machine's own companion), `only` (nothing
+    /// else: this machine's companion is never started for an agent) or
+    /// `off`. Anything else is a diagnostic and reads as `auto`.
+    /// Default: `auto`.
+    pub link: String,
+    /// Fork (remote browser): this Mac serves the browser of the saved
+    /// machines it is connected to (the client starts a helper per machine).
+    /// Default: true.
+    pub remote_machines: bool,
     /// Not a key: the effective `[agents] wrap` (`Config::agents_wrap`),
     /// filled in by the config loaders so the browser hub, which only
     /// receives this section, reports and applies the resolved value.
@@ -173,6 +184,33 @@ impl BrowserHostMode {
             Self::Auto => "auto",
             Self::Companion => "companion",
             Self::Window => "window",
+        }
+    }
+}
+
+/// `[browser] link` (fork, remote browser).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrowserLinkMode {
+    Auto,
+    Only,
+    Off,
+}
+
+impl BrowserLinkMode {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            "auto" | "" => Some(Self::Auto),
+            "only" => Some(Self::Only),
+            "off" => Some(Self::Off),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Only => "only",
+            Self::Off => "off",
         }
     }
 }
@@ -236,6 +274,8 @@ impl Default for BrowserConfig {
             page_errors: PAGE_ERRORS_AGENT.into(),
             companion_autostart: false,
             page_api: true,
+            link: BrowserLinkMode::Auto.as_str().into(),
+            remote_machines: true,
             effective_wrap: false,
         }
     }
@@ -408,6 +448,12 @@ impl BrowserConfig {
                 self.host
             ));
         }
+        if BrowserLinkMode::parse(&self.link).is_none() {
+            diagnostics.push(format!(
+                "browser.link = {:?} is not auto, only or off; using auto",
+                self.link
+            ));
+        }
         // Fork (companion launcher): the window is off.
         if !self.window && BrowserHostMode::parse(&self.host) == Some(BrowserHostMode::Window) {
             diagnostics.push(
@@ -438,6 +484,21 @@ impl BrowserConfig {
     /// `[browser] host`; an unknown value reads as `companion` (the default).
     pub fn host_mode(&self) -> BrowserHostMode {
         BrowserHostMode::parse(&self.host).unwrap_or(BrowserHostMode::Companion)
+    }
+
+    /// `[browser] link`; an unknown value reads as `auto` (the default).
+    pub fn link_mode(&self) -> BrowserLinkMode {
+        BrowserLinkMode::parse(&self.link).unwrap_or(BrowserLinkMode::Auto)
+    }
+
+    /// `[browser] link = "off"`.
+    pub fn link_off(&self) -> bool {
+        self.link_mode() == BrowserLinkMode::Off
+    }
+
+    /// `[browser] link = "only"`.
+    pub fn link_only(&self) -> bool {
+        self.link_mode() == BrowserLinkMode::Only
     }
 
     /// `[browser] page_errors = "agent"` (anything but `off`).
@@ -690,6 +751,29 @@ mod tests {
         assert_eq!(diagnostics.len(), 2, "{diagnostics:?}");
         assert!(diagnostics[0].contains("browser.host"));
         assert!(diagnostics[1].contains("browser.page_errors"));
+    }
+
+    /// Fork (remote browser): a linked Mac may serve the browser by
+    /// default; `only` and `off` read as such, anything else as `auto`
+    /// with a diagnostic; this Mac serves its saved machines by default.
+    #[test]
+    fn the_link_is_auto_and_remote_machines_on_by_default() {
+        let config = BrowserConfig::default();
+        assert_eq!(config.link_mode(), BrowserLinkMode::Auto);
+        assert!(!config.link_off() && !config.link_only());
+        assert!(config.remote_machines);
+        let config: BrowserConfig =
+            toml::from_str("link = \"only\"\nremote_machines = false\n").unwrap();
+        assert!(config.link_only() && !config.remote_machines);
+        assert!(config.diagnostics().is_empty());
+        let config: BrowserConfig = toml::from_str("link = \" off \"\n").unwrap();
+        assert!(config.link_off());
+        let config: BrowserConfig = toml::from_str("link = \"never\"\n").unwrap();
+        assert_eq!(config.link_mode(), BrowserLinkMode::Auto);
+        assert_eq!(
+            config.diagnostics(),
+            ["browser.link = \"never\" is not auto, only or off; using auto"]
+        );
     }
 
     /// Fork (companion launcher): the herdr+ window is off and agents use

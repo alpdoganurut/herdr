@@ -80,6 +80,7 @@ fn running_info(seq: u64, touched_at: u64) -> BrowserGetInfo {
         companion_app: None,
         window_off: false,
         placements: Vec::new(),
+        link: None,
         profiles: vec![BrowserProfileInfo {
             name: "main".into(),
             state: "running".into(),

@@ -90,11 +90,30 @@ pub(super) struct CompanionLease {
     pub launch_token: Option<String>,
     /// The process id the registration named (informational).
     pub pid: Option<u32>,
+    /// Fork (remote browser): the Mac that serves it over the link; `port`,
+    /// `nonce`, `pid` and `launch_token` are a local companion's.
+    pub link: Option<LinkLease>,
+}
+
+/// Fork (remote browser): the link a lease came over.
+#[derive(Debug, Clone)]
+pub(super) struct LinkLease {
+    pub epoch: u64,
+    pub host_id: String,
+    pub label: String,
+    /// When that link opened (`14:02`).
+    pub since: String,
 }
 
 impl CompanionLease {
-    fn live(&self, now: Instant) -> bool {
+    pub(super) fn live(&self, now: Instant) -> bool {
         self.expires_at > now
+    }
+
+    /// Fork (remote browser): the lease lives another [`LEASE_TTL_MS`].
+    pub(super) fn renew(&mut self) {
+        self.expires_at = Instant::now() + Duration::from_millis(LEASE_TTL_MS);
+        self.expires_unix = unix_now() + LEASE_TTL_MS / 1000;
     }
 }
 
@@ -159,6 +178,13 @@ impl BrowserHub {
         let now = Instant::now();
         let replaced_port = {
             let mut slot = self.inner.companion_host.lock().unwrap();
+            // Fork (remote browser): a linked Mac serves it (one host).
+            if let Some(label) = self.linked_label(slot.as_ref(), now) {
+                return Err(BrowserError::new(
+                    "host_in_use",
+                    crate::browser::link_proto::text::control_there(&label),
+                ));
+            }
             let mut replaced_port = None;
             if let Some(lease) = slot.as_ref() {
                 if lease.live(now) && lease.instance != params.instance {
@@ -191,6 +217,7 @@ impl BrowserHub {
                     .filter(|token| !token.is_empty())
                     .map(str::to_string),
                 pid: params.pid,
+                link: None,
             });
             replaced_port
         };
@@ -235,7 +262,7 @@ impl BrowserHub {
         {
             let mut slot = self.inner.companion_host.lock().unwrap();
             match slot.as_mut() {
-                Some(lease) if lease.instance == params.instance => {
+                Some(lease) if lease.instance == params.instance && lease.link.is_none() => {
                     lease.lease_id = Some(lease_id.clone());
                     lease.expires_at = Instant::now() + ttl;
                     lease.expires_unix = expires_unix;
@@ -274,7 +301,12 @@ impl BrowserHub {
         let (expires_unix, token) = {
             let mut slot = self.inner.companion_host.lock().unwrap();
             match slot.as_mut() {
-                Some(lease) if lease.lease_id.as_deref() == Some(lease_id) && lease.live(now) => {
+                // Fork (remote browser): a linked one is renewed by its link.
+                Some(lease)
+                    if lease.lease_id.as_deref() == Some(lease_id)
+                        && lease.live(now)
+                        && lease.link.is_none() =>
+                {
                     lease.expires_at = now + Duration::from_millis(LEASE_TTL_MS);
                     lease.expires_unix = unix_now() + LEASE_TTL_MS / 1000;
                     (lease.expires_unix, lease.launch_token.clone())
@@ -295,7 +327,7 @@ impl BrowserHub {
 
     /// `browser.host_unregister`: the companion is closing.
     pub fn host_unregister(&self, lease_id: &str) -> Result<(), BrowserError> {
-        if !self.lease_matches(lease_id) {
+        if !self.lease_matches(lease_id) || self.lease_is_linked() {
             return Err(lease_unknown());
         }
         // Fork (companion launcher): the process quits on its own (not a crash).
@@ -418,7 +450,10 @@ impl BrowserHub {
         }
         match config.host_mode() {
             BrowserHostMode::Window => Ok(config.default_profile().to_string()),
-            BrowserHostMode::Auto if self.companion_live() => Ok(COMPANION_PROFILE.into()),
+            // Fork (remote browser): a linked Mac's browser counts as one.
+            BrowserHostMode::Auto if self.companion_live() || self.linked_to().is_some() => {
+                Ok(COMPANION_PROFILE.into())
+            }
             BrowserHostMode::Auto => Ok(config.default_profile().to_string()),
             BrowserHostMode::Companion if self.companion_live() => Ok(COMPANION_PROFILE.into()),
             BrowserHostMode::Companion => {
@@ -517,12 +552,16 @@ impl BrowserHub {
     /// `ensure_running` for the companion profile: never launches; attaches
     /// the sidecar (kind companion, the nonce) while a registration lives.
     pub(super) fn ensure_companion_attached(&self) -> Result<(), BrowserError> {
+        // Fork (remote browser): nothing to attach here, or why not.
+        if let Some(attached) = self.link_attached() {
+            return attached;
+        }
         let (port, nonce) = {
             let now = Instant::now();
             let slot = self.inner.companion_host.lock().unwrap();
             match slot.as_ref().filter(|lease| lease.live(now)) {
                 Some(lease) => (lease.port, lease.nonce.clone()),
-                None => return Err(host_unavailable()),
+                None => return Err(self.no_link_error().unwrap_or_else(host_unavailable)),
             }
         };
         let already_attached = {
@@ -611,7 +650,7 @@ impl BrowserHub {
     }
 
     /// [`Self::drop_registration`] after the lease slot was emptied.
-    fn release_registration(&self, status: ProfileStatus, detach: bool) {
+    pub(super) fn release_registration(&self, status: ProfileStatus, detach: bool) {
         // The companion's views go with it (the sidecar's disconnect path
         // emits no `closed` for them).
         self.inner
@@ -684,7 +723,14 @@ impl BrowserHub {
 
     /// The sidecar lost the companion's CDP connection: the lease goes now.
     pub(super) fn companion_disconnected(&self) {
-        let registered = self.inner.companion_host.lock().unwrap().is_some();
+        // Fork (remote browser): a linked browser is not the sidecar's.
+        let registered = self
+            .inner
+            .companion_host
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|lease| lease.link.is_none());
         if !registered {
             return;
         }
@@ -718,6 +764,7 @@ impl BrowserHub {
             report_refill: now,
             launch_token: None,
             pid: None,
+            link: None,
         });
     }
 
@@ -739,6 +786,7 @@ impl BrowserHub {
             report_refill: now,
             launch_token: None,
             pid: None,
+            link: None,
         });
     }
 
@@ -974,6 +1022,13 @@ impl BrowserHub {
     > {
         let path = check_show_file(show.file)?;
         let file = path.display().to_string();
+        // Fork (remote browser): a linked browser loads it from here through
+        // the link, under a token; the Mac never sees the path.
+        if is_companion(profile) {
+            if let super::link_hub::LinkRoute::Up(link) = self.link_route() {
+                return self.execute_show_remote(&link, actor, pane, &path, show, deadline, now);
+            }
+        }
         // Fork (page API): never with network (remote scripts would run in
         // the page that holds the bridge); only an agent's page, only in
         // the companion, only while `[browser] page_api` is on.
@@ -1333,7 +1388,11 @@ impl BrowserHub {
     /// A target already known as an HTML view (a `show` this run, which
     /// armed its own watch or was asked not to) is never re-armed.
     pub fn rewatch_html_views(&self, views: Vec<(String, String)>) {
-        if views.is_empty() || self.inner.host.lock().unwrap().is_none() {
+        // Fork (remote browser): a linked browser's views load once.
+        if views.is_empty()
+            || self.linked_to().is_some()
+            || self.inner.host.lock().unwrap().is_none()
+        {
             return;
         }
         let views: Vec<(String, String)> = {

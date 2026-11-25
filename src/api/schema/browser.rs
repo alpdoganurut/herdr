@@ -8,6 +8,9 @@
 
 use serde::{Deserialize, Serialize};
 
+// Fork (remote browser): defined with the link's frames.
+pub use crate::browser::link_proto::{BrowserLinkInfo, BrowserLinkOpenParams, BrowserLinkStatus};
+
 /// Who is calling: the pane whose environment the CLI or the MCP server ran
 /// in (`HERDR_PANE_ID`), or `--pane`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
@@ -605,6 +608,10 @@ pub struct BrowserGetInfo {
     /// why its area is empty. Always current, also on an `unchanged` answer.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub placements: Vec<super::BrowserPlacementStatus>,
+    /// Fork (remote browser): the Mac this server's browser runs on; absent
+    /// while there never was one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<BrowserLinkStatus>,
 }
 
 /// Fork (companion launcher): what `browser.companion` does. The values are
@@ -1046,6 +1053,10 @@ pub struct BrowserHostEntry {
     /// `user` or `agent:<pane_id>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opened_by: Option<String>,
+    /// Fork (remote browser): html_view on a linked browser, its current
+    /// file token (`herdr-file://<token>/…`); never `file` then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub serve: Option<String>,
 }
 
 /// One herdr tab in `browser.host_state`; `key` / `entries` absent when it
