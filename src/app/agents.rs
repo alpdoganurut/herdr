@@ -454,6 +454,9 @@ impl App {
             voice: crate::api::schema::AgentVoiceMode::from_detected(terminal.agent_voice()),
             context: super::agent_context::agent_context_info(terminal.agent_context),
             blocked_since: self.agent_blocked_since(terminal),
+            remote_agent: terminal
+                .agent_remote()
+                .map(crate::api::schema::AgentRemoteInfo::from_origin),
             completion_seq: terminal.last_agent_completion_seq,
             cwd: pane.cwd,
             foreground_cwd: pane.foreground_cwd,
@@ -510,6 +513,31 @@ pub(super) fn runtime_hosts_agent(
         return true;
     }
     live_runtime_agent(runtime) == Some(expected)
+}
+
+/// Fork: the pane's foreground job is still led by the remote-shell client
+/// a remote agent was identified behind (src/detect/remote.rs), so typed
+/// input reaches that agent. The agent itself is only on the other side;
+/// its screen, read by the caller's own gates, says whether it can take it.
+pub(super) fn runtime_hosts_remote_agent(
+    runtime: &crate::terminal::TerminalRuntime,
+    remote: Option<crate::detect::remote::RemoteOrigin>,
+) -> bool {
+    let Some(remote) = remote else {
+        return false;
+    };
+    let Some(pid) = runtime.child_pid() else {
+        return false;
+    };
+    let Some(group) = crate::detect::foreground_process_group_id(pid) else {
+        return false;
+    };
+    group != pid
+        && crate::detect::foreground_group_leader_job(group).and_then(|job| {
+            job.processes
+                .first()
+                .and_then(crate::detect::remote::remote_client)
+        }) == Some(remote.client)
 }
 
 fn live_runtime_agent(runtime: &crate::terminal::TerminalRuntime) -> Option<crate::detect::Agent> {

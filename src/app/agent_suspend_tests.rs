@@ -37,6 +37,7 @@ fn detect(app: &mut AppState, pane_id: PaneId, agent: Agent, at: Instant) {
     app.handle_app_event(AppEvent::AgentProcessDetected {
         pane_id,
         agent,
+        remote: None,
         observed_at: at,
     });
 }

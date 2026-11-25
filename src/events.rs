@@ -87,6 +87,8 @@ pub enum AppEvent {
     AgentProcessDetected {
         pane_id: PaneId,
         agent: Agent,
+        /// Fork: the agent runs behind a remote-shell client (src/detect/remote.rs).
+        remote: Option<crate::detect::remote::RemoteOrigin>,
         observed_at: Instant,
     },
     /// The current Codex input screen is visible during managed startup.

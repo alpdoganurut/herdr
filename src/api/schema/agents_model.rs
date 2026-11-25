@@ -823,6 +823,10 @@ pub struct AgentsPaneInfo {
     /// it. Absent when false.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub auto_suspended: bool,
+    /// Fork: the agent runs on another machine behind a remote-shell
+    /// client (`AgentInfo.remote_agent`). Absent for a local agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_agent: Option<super::AgentRemoteInfo>,
     #[serde(default)]
     pub launch_pending: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]

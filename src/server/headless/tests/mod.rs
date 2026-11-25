@@ -2732,6 +2732,7 @@ async fn public_agent_focus_replaces_a_diverged_client_shell_projection() {
         .try_send(AppEvent::AgentProcessDetected {
             pane_id: first_pane,
             agent: crate::detect::Agent::Claude,
+            remote: None,
             observed_at: Instant::now(),
         })
         .unwrap();
@@ -8045,6 +8046,7 @@ fn api_resume_argv_is_ignored_when_its_session_report_is_refused() {
     server.handle_internal_event_with_forwarding(AppEvent::AgentProcessDetected {
         pane_id,
         agent: crate::detect::Agent::Claude,
+        remote: None,
         observed_at: Instant::now(),
     });
     let report = |session: &str| {
@@ -8109,6 +8111,7 @@ fn completion_guard_api_startup_blocker_respects_suppression() {
     server.handle_internal_event_with_forwarding(AppEvent::AgentProcessDetected {
         pane_id,
         agent: crate::detect::Agent::Pi,
+        remote: None,
         observed_at: Instant::now(),
     });
     let public_pane_id = server.app.public_pane_id(0, pane_id).unwrap();
@@ -8272,6 +8275,7 @@ fn startup_idle_does_not_forward_completion() {
         server.handle_internal_event_with_forwarding(AppEvent::AgentProcessDetected {
             pane_id,
             agent: crate::detect::Agent::Pi,
+            remote: None,
             observed_at: Instant::now(),
         })
     );

@@ -13390,6 +13390,17 @@
             "pane_id": {
               "type": "string"
             },
+            "remote_agent": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/AgentRemoteInfo"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Fork: the agent runs on another machine behind a remote-shell\nclient (`ssh host claude`); herdr sees only the client process, so\nsuspend, restart, resume, handoff and quiet messages are refused for\nit. Absent for a local agent."
+            },
             "revision": {
               "format": "uint64",
               "minimum": 0,
@@ -13707,6 +13718,24 @@
               "type": "string"
             }
           ]
+        },
+        "AgentRemoteInfo": {
+          "description": "Fork: where a remote agent runs (`AgentInfo.remote_agent`).",
+          "properties": {
+            "client": {
+              "description": "The local client in front: `ssh`, `mosh` or `et`.",
+              "type": "string"
+            },
+            "via": {
+              "description": "How the agent was identified: `ssh_command` (the client's remote\ncommand runs it).",
+              "type": "string"
+            }
+          },
+          "required": [
+            "client",
+            "via"
+          ],
+          "type": "object"
         },
         "AgentSessionInfo": {
           "properties": {
@@ -14644,6 +14673,17 @@
             },
             "pane_id": {
               "type": "string"
+            },
+            "remote_agent": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/AgentRemoteInfo"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Fork: the agent runs on another machine behind a remote-shell\nclient (`AgentInfo.remote_agent`). Absent for a local agent."
             },
             "role": {
               "type": [

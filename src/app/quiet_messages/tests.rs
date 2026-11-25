@@ -265,6 +265,23 @@ async fn quiet_is_for_claude_agents_and_never_urgent() {
 }
 
 #[tokio::test]
+async fn a_remote_claude_takes_no_quiet_messages() {
+    // `ssh host claude`: no herdr hook runs on the other machine to take them.
+    let (mut app, lead, fixer, _rx) = fixture();
+    let fixer_pane = pane(&app, 1, 1);
+    terminal_mut(&mut app, fixer_pane).set_agent_remote(
+        Agent::Claude,
+        Some(crate::detect::remote::RemoteOrigin {
+            client: crate::detect::remote::RemoteClient::Ssh,
+            via: crate::detect::remote::RemoteVia::SshCommand,
+        }),
+    );
+    let reply = send(&mut app, &lead, &fixer, "x", true, false);
+    assert_eq!(code(&reply), QUIET_UNSUPPORTED_CODE, "{reply}");
+    assert!(app.quiet.is_empty());
+}
+
+#[tokio::test]
 async fn several_pile_up_and_the_take_names_the_overflow() {
     let (mut app, _lead, fixer, _rx) = fixture();
     let target = app.resolve_agent_target(&fixer).unwrap();

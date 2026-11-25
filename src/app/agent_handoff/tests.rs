@@ -403,6 +403,24 @@ async fn suspended_coordinator_codex_and_switched_off_runs_are_refused() {
     let reply = handoff_api(&mut s.app, None, &pane);
     assert_eq!(reply["error"]["code"], "agent_suspended", "{reply}");
 
+    // Fork: a remote Claude (`ssh host claude`) has only its ssh client here.
+    let mut s = setup(Agent::Claude);
+    s.app
+        .state
+        .terminals
+        .get_mut(&s.terminal_id)
+        .unwrap()
+        .set_agent_remote(
+            Agent::Claude,
+            Some(crate::detect::remote::RemoteOrigin {
+                client: crate::detect::remote::RemoteClient::Ssh,
+                via: crate::detect::remote::RemoteVia::SshCommand,
+            }),
+        );
+    let pane = s.pane.clone();
+    let reply = handoff_api(&mut s.app, None, &pane);
+    assert_eq!(reply["error"]["code"], "agent_remote", "{reply}");
+
     let mut s = setup(Agent::Claude);
     let pane = s.pane.clone();
     s.app.agents_config.handoff.enabled = false;

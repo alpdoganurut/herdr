@@ -1473,9 +1473,12 @@ impl AppState {
             AppEvent::AgentProcessDetected {
                 pane_id,
                 agent,
+                remote,
                 observed_at,
             } => self
                 .update_terminal_state(pane_id, |terminal| {
+                    // Fork: where the identified agent runs (src/detect/remote.rs).
+                    terminal.set_agent_remote(agent, remote);
                     Some(terminal.set_detected_agent_process_at(agent, observed_at))
                 })
                 .into_iter()
@@ -3240,6 +3243,7 @@ mod tests {
             app.handle_app_event(AppEvent::AgentProcessDetected {
                 pane_id,
                 agent: Agent::Pi,
+                remote: None,
                 observed_at: Instant::now(),
             });
         }
@@ -3491,6 +3495,7 @@ mod tests {
         state.handle_app_event(AppEvent::AgentProcessDetected {
             pane_id,
             agent: Agent::Pi,
+            remote: None,
             observed_at: Instant::now(),
         });
         let direct_idle = state
@@ -3511,6 +3516,7 @@ mod tests {
         state.handle_app_event(AppEvent::AgentProcessDetected {
             pane_id,
             agent: Agent::Pi,
+            remote: None,
             observed_at: Instant::now(),
         });
         for agent_state in [AgentState::Working, AgentState::Blocked] {
@@ -3549,6 +3555,7 @@ mod tests {
         state.handle_app_event(AppEvent::AgentProcessDetected {
             pane_id,
             agent: Agent::Codex,
+            remote: None,
             observed_at: Instant::now(),
         });
         state.handle_app_event(AppEvent::StateChanged {
@@ -3869,6 +3876,7 @@ mod tests {
         state.handle_app_event(AppEvent::AgentProcessDetected {
             pane_id,
             agent: Agent::Pi,
+            remote: None,
             observed_at: std::time::Instant::now(),
         });
         state.handle_app_event(AppEvent::AgentResumeReported {
@@ -3950,6 +3958,7 @@ mod tests {
         state.handle_app_event(AppEvent::AgentProcessDetected {
             pane_id,
             agent: Agent::Pi,
+            remote: None,
             observed_at: std::time::Instant::now(),
         });
         state.handle_app_event(AppEvent::HookStateReported {

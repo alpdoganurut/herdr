@@ -674,6 +674,14 @@ impl App {
                 format!("{pane} is suspended; activate it first"),
             ));
         }
+        // Fork: a remote agent's session lives on the other machine; the
+        // handoff's restart would act on the local ssh client.
+        if terminal.agent_remote().is_some() {
+            return Err(StartRefusal::new(
+                "agent_remote",
+                format!("{pane} runs on another machine; handoff needs a local agent"),
+            ));
+        }
         let agent = terminal
             .effective_known_agent()
             .and_then(HandoffAgent::from_agent)

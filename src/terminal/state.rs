@@ -443,6 +443,11 @@ pub struct TerminalState {
     /// Fork (restart screen): a restart or relaunch that gave up, shown
     /// until the instant. Runtime only, never persisted.
     pub agent_resume_failed: Option<(AgentResumeKind, Instant)>,
+    /// Fork: the detected agent runs behind a remote-shell client, keyed by
+    /// the agent it was reported with (src/detect/remote.rs). Set with each
+    /// process identification; read through [`Self::agent_remote`]. Runtime
+    /// only, never persisted.
+    agent_remote: Option<(Agent, crate::detect::remote::RemoteOrigin)>,
 }
 
 /// Most subagents a pane tracks; further starts are ignored until some stop.
@@ -512,6 +517,7 @@ impl TerminalState {
             session_advanced_from: None,
             agent_resuming: None,
             agent_resume_failed: None,
+            agent_remote: None,
         }
     }
 
@@ -667,6 +673,28 @@ impl TerminalState {
     /// Fork: whether an argv-derived session is stored (live or not).
     pub fn has_process_agent_session(&self) -> bool {
         self.process_agent_session.is_some()
+    }
+
+    /// Fork: record where the agent a process probe just identified runs
+    /// (`None` = a local process). Every identification overwrites it.
+    pub fn set_agent_remote(
+        &mut self,
+        agent: Agent,
+        remote: Option<crate::detect::remote::RemoteOrigin>,
+    ) {
+        self.agent_remote = remote.map(|remote| (agent, remote));
+    }
+
+    /// Fork: the live agent runs behind a remote-shell client: herdr sees
+    /// only the client process, so nothing may act on that process for it
+    /// (suspend, restart, resume, handoff) and no hook speaks for it.
+    /// `None` once the agent it was recorded for is no longer the live one.
+    pub fn agent_remote(&self) -> Option<crate::detect::remote::RemoteOrigin> {
+        let (agent, remote) = self.agent_remote?;
+        (self.detected_agent == Some(agent)
+            && self.recent_agent_process_exit.is_none()
+            && self.effective_known_agent() == Some(agent))
+        .then_some(remote)
     }
 
     pub fn set_detected_agent_process_at(
@@ -7414,6 +7442,44 @@ mod tests {
         assert!(terminal.persisted_agent_session.is_none());
         assert!(!terminal.respawn_shell_on_exit);
         assert!(!terminal.finish_agent_process_acquisition());
+    }
+
+    #[test]
+    fn a_remote_mark_follows_only_the_agent_it_was_reported_with() {
+        let ssh = crate::detect::remote::RemoteOrigin {
+            client: crate::detect::remote::RemoteClient::Ssh,
+            via: crate::detect::remote::RemoteVia::SshCommand,
+        };
+        let now = std::time::Instant::now();
+        let mut terminal = test_terminal();
+        terminal.set_agent_remote(Agent::Claude, Some(ssh));
+        terminal.set_detected_agent_process_at(Agent::Claude, now);
+        assert_eq!(terminal.agent_remote(), Some(ssh));
+
+        // ssh exits: the agent is released and the mark with it.
+        terminal.set_detected_state_with_screen_signals_at(
+            Some(Agent::Claude),
+            AgentState::Idle,
+            false,
+            false,
+            false,
+            true,
+            now + Duration::from_secs(1),
+        );
+        assert_eq!(terminal.agent_remote(), None);
+
+        // Another agent in the pane is not remote because Claude was.
+        let mut terminal = test_terminal();
+        terminal.set_agent_remote(Agent::Claude, Some(ssh));
+        terminal.set_detected_agent_process_at(Agent::Codex, now);
+        assert_eq!(terminal.agent_remote(), None);
+
+        // A local Claude identified next clears it.
+        let mut terminal = test_terminal();
+        terminal.set_agent_remote(Agent::Claude, Some(ssh));
+        terminal.set_detected_agent_process_at(Agent::Claude, now);
+        terminal.set_agent_remote(Agent::Claude, None);
+        assert_eq!(terminal.agent_remote(), None);
     }
 
     #[test]

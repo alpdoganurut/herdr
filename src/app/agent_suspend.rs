@@ -102,6 +102,9 @@ pub(crate) enum NotSuspendableReason {
     NoGracefulExit,
     /// The agent is the pane's own process (close the tab instead).
     PaneProcess,
+    /// Fork: the agent runs on another machine behind a remote-shell client
+    /// (src/detect/remote.rs); the local process is the client.
+    Remote,
 }
 
 /// What a suspend needs once every check passed.
@@ -202,6 +205,11 @@ impl App {
             return;
         };
         if terminal.suspended_agent.is_some() || terminal.suspendable_agent_session().is_some() {
+            return;
+        }
+        // Fork: a remote agent's foreground argv is the ssh client's; its
+        // `--resume <id>` names a session on the other machine.
+        if terminal.agent_remote().is_some() {
             return;
         }
         let (argvs, group) = self.agent_process_argvs(terminal_id, rederive);
@@ -547,6 +555,18 @@ impl App {
             .ok_or_else(not_found)?;
         if terminal.suspended_agent.is_some() {
             return Err(AgentSuspendError::AlreadySuspended(target.to_string()));
+        }
+        // Fork: a remote agent's only local process is the ssh client, and
+        // herdr cannot resume it on the other machine.
+        if let Some(remote) = terminal.agent_remote() {
+            return Err(AgentSuspendError::NotSuspendable {
+                target: target.to_string(),
+                reason: format!(
+                    "it runs on another machine behind {}; herdr cannot stop or resume it there",
+                    remote.client.label()
+                ),
+                kind: NotSuspendableReason::Remote,
+            });
         }
         // The exit command is typed into the agent's prompt; a blocked
         // approval or question UI would swallow it, like `agent.prompt`.
@@ -1841,6 +1861,54 @@ mod tests {
             next_input(&mut rx).await,
             bytes::Bytes::from_static(b"/exit")
         );
+    }
+
+    #[tokio::test]
+    async fn fork_smoke_a_remote_agent_is_never_suspended_restarted_or_given_its_argv_session() {
+        // `ssh -t host claude --resume <id>`: the foreground argv is the ssh
+        // client's, and the session lives on the other machine.
+        let mut app = test_app();
+        host_live_agent(&mut app, Agent::Claude, "remote", None);
+        let terminal_id = root_terminal_id(&app);
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_agent_remote(
+                Agent::Claude,
+                Some(crate::detect::remote::RemoteOrigin {
+                    client: crate::detect::remote::RemoteClient::Ssh,
+                    via: crate::detect::remote::RemoteVia::SshCommand,
+                }),
+            );
+        let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.terminal_runtimes.insert(terminal_id.clone(), runtime);
+        give_argv(
+            &mut app,
+            &["ssh", "-t", "host", "claude", "--resume", ARGV_SESSION],
+        );
+
+        let got = request(
+            &mut app,
+            Method::AgentGet(crate::api::schema::AgentTarget {
+                target: "remote".into(),
+            }),
+        );
+        let agent = &got["result"]["agent"];
+        assert!(agent.get("agent_session").is_none(), "{got}");
+        assert_eq!(agent["remote_agent"]["client"], "ssh", "{got}");
+        assert_eq!(agent["remote_agent"]["via"], "ssh_command", "{got}");
+
+        let response = suspend(&mut app, "remote");
+        assert_eq!(
+            response["error"]["code"], "agent_not_suspendable",
+            "{response}"
+        );
+        let response = restart(&mut app, "remote");
+        assert!(response.get("error").is_some(), "{response}");
+        assert!(app.state.terminals[&terminal_id].suspended_agent.is_none());
+        assert!(rx.try_recv().is_err(), "nothing typed into the ssh client");
+        assert_eq!(reported_session(&mut app, "remote"), None);
     }
 
     #[tokio::test]

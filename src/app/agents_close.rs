@@ -342,7 +342,9 @@ impl App {
                             });
                         }
                     }
-                    NotSuspendableReason::NoSession | NotSuspendableReason::NoResumePlan => {
+                    NotSuspendableReason::NoSession
+                    | NotSuspendableReason::NoResumePlan
+                    | NotSuspendableReason::Remote => {
                         plan.unresumable.push(AgentsUnresumableInfo {
                             name,
                             agent,

@@ -309,6 +309,20 @@ fn program_status_msg_text(record: &serde_json::Map<String, serde_json::Value>) 
 
 fn print_agent_explain_text(explain: &serde_json::Value, verbose: bool) {
     println!("agent: {}", explain["agent"].as_str().unwrap_or("unknown"));
+    // Fork: an agent behind a remote-shell client (src/detect/remote.rs).
+    if let Some(remote) = explain["remote_agent"].as_object() {
+        println!(
+            "remote: behind {} (via {})",
+            remote
+                .get("client")
+                .and_then(|value| value.as_str())
+                .unwrap_or("-"),
+            remote
+                .get("via")
+                .and_then(|value| value.as_str())
+                .unwrap_or("-"),
+        );
+    }
     println!("state: {}", explain["state"].as_str().unwrap_or("unknown"));
     println!(
         "manifest: {} {}",

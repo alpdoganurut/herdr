@@ -5,6 +5,7 @@
 
 pub mod manifest;
 pub mod manifest_update;
+pub mod remote;
 
 /// The detected state of a terminal pane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

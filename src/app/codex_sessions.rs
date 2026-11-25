@@ -215,8 +215,11 @@ impl App {
     /// set by the probe.
     fn codex_session_probe_state(&self, terminal_id: &TerminalId) -> Option<bool> {
         let terminal = self.state.terminals.get(terminal_id)?;
+        // Fork: a remote Codex (`ssh host codex`) writes its rollout files
+        // on the other machine; a local one must never be matched to it.
         if terminal.detected_agent != Some(crate::detect::Agent::Codex)
             || terminal.suspended_agent.is_some()
+            || terminal.agent_remote().is_some()
         {
             return None;
         }
@@ -470,6 +473,24 @@ mod tests {
                 resolved: false
             }]
         );
+    }
+
+    #[test]
+    fn a_remote_codex_is_no_probe_candidate() {
+        let (mut app, terminal_id) = app_with_pane();
+        run_codex(&mut app, &terminal_id);
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("terminal")
+            .set_agent_remote(
+                crate::detect::Agent::Codex,
+                Some(crate::detect::remote::RemoteOrigin {
+                    client: crate::detect::remote::RemoteClient::Ssh,
+                    via: crate::detect::remote::RemoteVia::SshCommand,
+                }),
+            );
+        assert!(app.codex_session_candidates().is_empty());
     }
 
     #[test]

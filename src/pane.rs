@@ -294,12 +294,14 @@ async fn publish_agent_process_detected_event(
     state_events: mpsc::Sender<AppEvent>,
     pane_id: PaneId,
     agent: Agent,
+    remote: Option<crate::detect::remote::RemoteOrigin>,
     observed_at: std::time::Instant,
 ) {
     if let Err(e) = state_events
         .send(AppEvent::AgentProcessDetected {
             pane_id,
             agent,
+            remote,
             observed_at,
         })
         .await
@@ -812,6 +814,8 @@ struct ProcessProbeResult {
     /// The process that identified as `agent`, which need not lead its job.
     agent_pid: Option<u32>,
     process_name: Option<String>,
+    /// Fork: `agent` runs behind a remote-shell client (src/detect/remote.rs).
+    remote: Option<crate::detect::remote::RemoteOrigin>,
 }
 
 fn agent_hint_for_foreground_job_members(
@@ -858,7 +862,33 @@ fn process_probe_result(
         agent: Some(agent),
         agent_pid: Some(agent_pid),
         process_name: Some(process_name),
+        remote: None,
     }
+}
+
+/// Fork: the job's leader is a remote-shell client whose command line runs
+/// an agent on the other side (`ssh -t host 'cd w && claude'`). The client
+/// stands in as the agent's process.
+fn remote_command_probe_result(
+    job: &crate::platform::ForegroundJob,
+    pid: u32,
+) -> Option<ProcessProbeResult> {
+    let leader = job
+        .processes
+        .iter()
+        .find(|process| process.pid == job.process_group_id)?;
+    let (agent, client) = crate::detect::remote::remote_agent_from_process(leader)?;
+    Some(ProcessProbeResult {
+        remote: Some(crate::detect::remote::RemoteOrigin {
+            client,
+            via: crate::detect::remote::RemoteVia::SshCommand,
+        }),
+        ..process_probe_result(
+            job,
+            pid,
+            (agent, client.label().to_string(), job.process_group_id),
+        )
+    })
 }
 
 fn hinted_process_probe_result(
@@ -891,6 +921,9 @@ fn probe_foreground_process_from_jobs(
         if let Some(identified) = crate::detect::identify_agent_process_in_job(job) {
             return process_probe_result(job, pid, identified);
         }
+        if let Some(remote) = remote_command_probe_result(job, pid) {
+            return remote;
+        }
     }
 
     let foreground_job = foreground_job();
@@ -907,12 +940,16 @@ fn probe_foreground_process_from_jobs(
         if let Some(identified) = crate::detect::identify_agent_process_in_job(job) {
             return process_probe_result(job, pid, identified);
         }
+        if let Some(remote) = remote_command_probe_result(job, pid) {
+            return remote;
+        }
         return ProcessProbeResult {
             process_group_id: Some(job.process_group_id),
             foreground_is_pane_shell: job.processes.iter().any(|process| process.pid == pid),
             agent: None,
             agent_pid: None,
             process_name: None,
+            remote: None,
         };
     }
 
@@ -922,6 +959,7 @@ fn probe_foreground_process_from_jobs(
         agent: None,
         agent_pid: None,
         process_name: None,
+        remote: None,
     }
 }
 
@@ -1076,6 +1114,7 @@ fn spawn_basic_detection_task(
                     process_group_for_change_tracking(foreground_pgid, process_group_id);
                 let foreground_is_pane_shell = probe.foreground_is_pane_shell;
                 let mut new_agent = probe.agent;
+                let probe_remote = probe.remote;
                 if let Some(suppressed_agent) = suppressed_agent {
                     if new_agent == Some(suppressed_agent) {
                         new_agent = None;
@@ -1140,6 +1179,7 @@ fn spawn_basic_detection_task(
                                 state_events.clone(),
                                 pane_id,
                                 agent,
+                                probe_remote,
                                 now,
                             )
                             .await;
@@ -3095,6 +3135,7 @@ impl PaneRuntime {
                             );
                             let foreground_is_pane_shell = probe.foreground_is_pane_shell;
                             let mut new_agent = probe.agent;
+                            let probe_remote = probe.remote;
 
                             if let Some(suppressed_agent) = suppressed_agent {
                                 if new_agent == Some(suppressed_agent) {
@@ -3169,6 +3210,7 @@ impl PaneRuntime {
                                             state_events.clone(),
                                             pane_id,
                                             agent,
+                                            probe_remote,
                                             now,
                                         )
                                         .await;
@@ -5783,6 +5825,17 @@ mod tests {
         }
 
         impl Pane {
+            /// No agent yet; spawn processes with `processes.spawn`.
+            pub(super) fn empty() -> Self {
+                Self {
+                    presence: AgentDetectionPresence::from_agent(None),
+                    job: AgentJobTracker::default(),
+                    processes: FakeProcesses::default(),
+                    pending_clear: false,
+                    exit_reported: false,
+                }
+            }
+
             /// An agent process `AGENT_PID` under a wrapper that leads its job.
             pub(super) fn with_agent(agent: Agent) -> Self {
                 let processes = FakeProcesses::default();
@@ -5859,6 +5912,24 @@ mod tests {
                 assert!(!self.job.in_background());
             }
         }
+    }
+
+    #[test]
+    fn a_remote_agent_is_released_when_its_ssh_client_leaves_the_foreground() {
+        // `ssh -t host claude`: the ssh client leads its own job and stands
+        // in as the agent's process.
+        const SSH: u32 = 40;
+        let mut pane = held_agent::Pane::empty();
+        pane.processes.spawn(SSH, 8_000, SSH);
+        assert_eq!(
+            pane.probe_process(Some(Agent::Claude), SSH, SSH),
+            (ForegroundShellAgentAction::ObserveProbe, true)
+        );
+        assert_eq!(pane.presence.current_agent(), Some(Agent::Claude));
+
+        // The remote Claude exits, so ssh exits and the shell is back.
+        pane.processes.exit(SSH);
+        pane.assert_exit_reported_then_cleared();
     }
 
     #[test]
@@ -6154,6 +6225,77 @@ mod tests {
         assert_eq!(result.agent, Some(Agent::Claude));
         assert_eq!(result.agent_pid, Some(100));
         assert_eq!(result.process_group_id, Some(99));
+    }
+
+    fn ssh_process(pid: u32, argv: &[&str]) -> crate::platform::ForegroundProcess {
+        crate::platform::ForegroundProcess {
+            pid,
+            name: "ssh".to_string(),
+            argv0: Some("ssh".to_string()),
+            argv: Some(argv.iter().map(|arg| (*arg).to_string()).collect()),
+            cmdline: Some(argv.join(" ")),
+        }
+    }
+
+    #[test]
+    fn fork_smoke_an_ssh_leader_whose_remote_command_runs_claude_is_a_remote_claude() {
+        let ssh = ssh_process(99, &["ssh", "-t", "host", "cd ~/work && claude"]);
+        for (leader, job) in [
+            (
+                Some(crate::platform::ForegroundJob {
+                    process_group_id: 99,
+                    processes: vec![ssh.clone()],
+                }),
+                None,
+            ),
+            (
+                None,
+                Some(crate::platform::ForegroundJob {
+                    process_group_id: 99,
+                    processes: vec![ssh.clone()],
+                }),
+            ),
+        ] {
+            let result = probe_foreground_process_from_jobs(42, Some(99), leader, || job, |_| None);
+
+            assert_eq!(result.agent, Some(Agent::Claude));
+            assert_eq!(result.agent_pid, Some(99));
+            assert_eq!(result.process_name.as_deref(), Some("ssh"));
+            assert!(!result.foreground_is_pane_shell);
+            assert_eq!(
+                result.remote,
+                Some(crate::detect::remote::RemoteOrigin {
+                    client: crate::detect::remote::RemoteClient::Ssh,
+                    via: crate::detect::remote::RemoteVia::SshCommand,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn an_interactive_ssh_login_is_no_agent() {
+        let job = crate::platform::ForegroundJob {
+            process_group_id: 99,
+            processes: vec![ssh_process(99, &["ssh", "host"])],
+        };
+
+        let result = probe_foreground_process_from_jobs(42, Some(99), Some(job), || None, |_| None);
+
+        assert_eq!(result.agent, None);
+        assert_eq!(result.remote, None);
+    }
+
+    #[test]
+    fn a_local_agent_is_never_marked_remote() {
+        let job = crate::platform::ForegroundJob {
+            process_group_id: 99,
+            processes: vec![foreground_process(99, "claude")],
+        };
+
+        let result = probe_foreground_process_from_jobs(42, Some(99), Some(job), || None, |_| None);
+
+        assert_eq!(result.agent, Some(Agent::Claude));
+        assert_eq!(result.remote, None);
     }
 
     #[test]

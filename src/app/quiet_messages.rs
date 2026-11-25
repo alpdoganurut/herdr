@@ -653,6 +653,8 @@ impl App {
                 .terminals
                 .values()
                 .find(|terminal| terminal.id.to_string() == terminal_id)
+                // A remote agent has no herdr hook to take them.
+                .filter(|terminal| terminal.agent_remote().is_none())
                 .and_then(|terminal| {
                     // Fork (autosuspend): an agent herdr parked for idling
                     // is woken by the message; its session start takes it.

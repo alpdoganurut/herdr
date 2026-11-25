@@ -244,6 +244,10 @@ impl App {
         {
             return false;
         }
+        // Fork: a remote agent's local process is its ssh client.
+        if terminal.agent_remote().is_some() {
+            return false;
+        }
         // Idle and seen only: a blocked agent and a finished one its user
         // has not looked at both wait on an answer.
         if crate::workspace::agent_status(terminal.state, seen, false)
@@ -516,6 +520,21 @@ mod tests {
         terminal(&mut app).set_detected_state(Some(Agent::Claude), AgentState::Working);
         assert!(!scan(&mut app));
         assert!(!parked(&mut app), "working");
+    }
+
+    #[tokio::test]
+    async fn a_remote_agent_is_never_suspended() {
+        // `ssh host claude`: the local process is the ssh client.
+        let (mut app, _rx) = free();
+        terminal(&mut app).set_agent_remote(
+            Agent::Claude,
+            Some(crate::detect::remote::RemoteOrigin {
+                client: crate::detect::remote::RemoteClient::Ssh,
+                via: crate::detect::remote::RemoteVia::SshCommand,
+            }),
+        );
+        assert!(!scan(&mut app));
+        assert!(!parked(&mut app));
     }
 
     #[tokio::test]

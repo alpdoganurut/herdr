@@ -411,7 +411,8 @@ impl App {
                 ),
             ));
         }
-        let hosts_agent = super::super::agents::runtime_hosts_agent(runtime, expected_agent);
+        let hosts_agent = super::super::agents::runtime_hosts_agent(runtime, expected_agent)
+            || super::super::agents::runtime_hosts_remote_agent(runtime, terminal.agent_remote());
         // Fork test seam: the coordinator smoke tests' stub pane stands in
         // for the agent process.
         #[cfg(test)]
@@ -711,6 +712,7 @@ impl App {
             });
             // Fork (OSC 7501): the records, with no screen state to compare.
             insert_program_status(&mut explain, pane.program_status_snapshot().to_json(None));
+            insert_remote_agent(&mut explain, terminal.agent_remote());
             return encode_success(id, ResponseResult::AgentExplain { explain });
         }
         let Some(agent) = terminal.effective_known_agent().or(terminal.detected_agent) else {
@@ -742,6 +744,7 @@ impl App {
             &mut value,
             pane.program_status_snapshot().to_json(Some(explain.state)),
         );
+        insert_remote_agent(&mut value, terminal.agent_remote());
 
         encode_success(id, ResponseResult::AgentExplain { explain: value })
     }
@@ -776,7 +779,9 @@ impl App {
         let Some(runtime) = self.lookup_runtime_sender(resolved.ws_idx, resolved.pane_id) else {
             return agent_not_found(id, &params.target);
         };
-        if !super::super::agents::runtime_hosts_agent(runtime, expected_agent) {
+        if !super::super::agents::runtime_hosts_agent(runtime, expected_agent)
+            && !super::super::agents::runtime_hosts_remote_agent(runtime, terminal.agent_remote())
+        {
             return agent_not_ready(id, &params.target);
         }
         let encoded = match super::super::api_helpers::encode_api_keys(runtime, &params.keys) {
@@ -804,6 +809,25 @@ impl App {
 fn insert_program_status(explain: &mut serde_json::Value, program_status: serde_json::Value) {
     if let Some(object) = explain.as_object_mut() {
         object.insert("program_status".into(), program_status);
+    }
+}
+
+/// Fork: where the agent runs when it is behind a remote-shell client
+/// (src/detect/remote.rs); `null` for a local agent.
+fn insert_remote_agent(
+    explain: &mut serde_json::Value,
+    remote: Option<crate::detect::remote::RemoteOrigin>,
+) {
+    if let Some(object) = explain.as_object_mut() {
+        object.insert(
+            "remote_agent".into(),
+            remote.map_or(serde_json::Value::Null, |remote| {
+                serde_json::json!({
+                    "client": remote.client.label(),
+                    "via": remote.via.label(),
+                })
+            }),
+        );
     }
 }
 
@@ -964,6 +988,7 @@ mod tests {
         app.handle_internal_event(crate::events::AppEvent::AgentProcessDetected {
             pane_id,
             agent: Agent::Pi,
+            remote: None,
             observed_at: observed_at + std::time::Duration::from_secs(1),
         });
 

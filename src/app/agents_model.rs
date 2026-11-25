@@ -1593,6 +1593,9 @@ impl App {
                 .suspended_agent
                 .as_ref()
                 .is_some_and(|record| record.auto),
+            remote_agent: terminal
+                .agent_remote()
+                .map(crate::api::schema::AgentRemoteInfo::from_origin),
             launch_pending: terminal.managed_agent_launch_pending(),
             session: agent_pane
                 .then(|| terminal.persistable_agent_session())

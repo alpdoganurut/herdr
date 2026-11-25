@@ -1126,6 +1126,13 @@ impl<A: Api> Session<A> {
                 "session: {}",
                 pane.session.as_deref().unwrap_or("-")
             ));
+            // Fork: an agent on another machine behind ssh.
+            if let Some(remote) = &pane.remote_agent {
+                lines.push(format!(
+                    "remote: runs behind {} (identified by {}); no suspend, restart or quiet messages",
+                    remote.client, remote.via
+                ));
+            }
             if let Some(cwd) = &pane.cwd {
                 lines.push(format!("cwd: {cwd}"));
             }
@@ -3127,6 +3134,10 @@ fn tab_row(tab: &AgentsTabInfo, panes: &[&AgentsPaneInfo], caller_pane: &str) ->
         if pane.pane_id == caller_pane {
             row.push_str(" (you)");
         }
+        // Fork: an agent on another machine behind ssh.
+        if let Some(remote) = &pane.remote_agent {
+            row.push_str(&format!(" remote={}", remote.client));
+        }
         if let Some(role) = &pane.role {
             row.push_str(&format!(" role={}", coordinator::one_line(role, 32)));
         }
@@ -4121,6 +4132,7 @@ mod tests {
                     }),
                     suspended: false,
                     auto_suspended: false,
+                    remote_agent: None,
                     launch_pending: false,
                     session: fake.session.clone(),
                     role: fake.role.clone(),

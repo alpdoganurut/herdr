@@ -344,6 +344,12 @@ pub struct AgentInfo {
     /// on screen. Absent otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blocked_since: Option<u64>,
+    /// Fork: the agent runs on another machine behind a remote-shell
+    /// client (`ssh host claude`); herdr sees only the client process, so
+    /// suspend, restart, resume, handoff and quiet messages are refused for
+    /// it. Absent for a local agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_agent: Option<AgentRemoteInfo>,
     /// The current idle transition completed work, independently of who has viewed it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completion_seq: Option<u64>,
@@ -364,6 +370,25 @@ pub struct AgentContextInfo {
     pub window_tokens: u64,
     /// Whole percent of the window in use, at most 100.
     pub percent: u8,
+}
+
+/// Fork: where a remote agent runs (`AgentInfo.remote_agent`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AgentRemoteInfo {
+    /// The local client in front: `ssh`, `mosh` or `et`.
+    pub client: String,
+    /// How the agent was identified: `ssh_command` (the client's remote
+    /// command runs it).
+    pub via: String,
+}
+
+impl AgentRemoteInfo {
+    pub fn from_origin(origin: crate::detect::remote::RemoteOrigin) -> Self {
+        Self {
+            client: origin.client.label().to_string(),
+            via: origin.via.label().to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
