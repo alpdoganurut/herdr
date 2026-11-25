@@ -8,5 +8,6 @@
 #![allow(dead_code)]
 
 mod forward;
+mod gate;
 mod proxy;
 mod ssh;
