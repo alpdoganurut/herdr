@@ -689,6 +689,8 @@ enum HoverAt<'a> {
     /// Fork (sidebar filters).
     Toolbar,
     Filtered,
+    /// Fork (machine tabs).
+    Machine(&'a ClientEndpointId),
 }
 
 impl HoverAt<'_> {
@@ -708,6 +710,7 @@ impl HoverAt<'_> {
             | (Self::ScheduledMore, SidebarHover::ScheduledMore)
             | (Self::Toolbar, SidebarHover::Toolbar)
             | (Self::Filtered, SidebarHover::Filtered) => true,
+            (Self::Machine(id), SidebarHover::Machine(current)) => id == current,
             (Self::Fixed(kind), SidebarHover::Fixed(current)) => kind == *current,
             _ => false,
         }
@@ -730,6 +733,7 @@ impl HoverAt<'_> {
             Self::ScheduledMore => SidebarHover::ScheduledMore,
             Self::Toolbar => SidebarHover::Toolbar,
             Self::Filtered => SidebarHover::Filtered,
+            Self::Machine(id) => SidebarHover::Machine(id.clone()),
         }
     }
 }
@@ -757,6 +761,13 @@ impl ClientShellState {
             rows.iter()
                 .find(|(rect, _)| super::contains(*rect, point))
                 .map(|(_, id)| id.as_str())
+        }
+        if let Some(hit) = hits
+            .machines
+            .iter()
+            .find(|hit| super::contains(hit.rect, point))
+        {
+            return Some(HoverAt::Machine(&hit.endpoint_id));
         }
         if let Some(id) = id_at(&hits.sidebar_runs, point) {
             return Some(HoverAt::Run(id));

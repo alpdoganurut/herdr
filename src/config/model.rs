@@ -585,6 +585,10 @@ pub struct KeysConfig {
     /// Focus the `tabs` sidebar's search field, or let go of it. Default:
     /// "prefix+f".
     pub sidebar_search: BindingConfig,
+    /// Show the next online machine (Local and the saved SSH machines). Default: "prefix+m".
+    pub next_machine: BindingConfig,
+    /// Show the previous online machine. Unset by default.
+    pub previous_machine: BindingConfig,
     /// Enter keyboard copy mode for the focused pane. Default: "prefix+[".
     pub copy_mode: BindingConfig,
     /// Focus the pane to the left. Default: "prefix+h".
@@ -757,6 +761,8 @@ pub(crate) struct KeysConfigOverlay {
     tab_history_forward: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     sidebar_search: Option<BindingConfig>,
+    next_machine: Option<BindingConfig>,
+    previous_machine: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     copy_mode: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -909,6 +915,8 @@ impl<'de> Deserialize<'de> for KeysConfig {
         apply_field!(tab_history_back);
         apply_field!(tab_history_forward);
         apply_field!(sidebar_search);
+        apply_field!(next_machine);
+        apply_field!(previous_machine);
         apply_field!(copy_mode);
         apply_field!(focus_pane_left);
         apply_field!(focus_pane_down);
@@ -1032,6 +1040,8 @@ impl KeysConfig {
         copy_effective_action_field!(tab_history_back, keybinds.tab_history_back);
         copy_effective_action_field!(tab_history_forward, keybinds.tab_history_forward);
         copy_effective_action_field!(sidebar_search, keybinds.sidebar_search);
+        copy_effective_action_field!(next_machine, keybinds.next_machine);
+        copy_effective_action_field!(previous_machine, keybinds.previous_machine);
         copy_effective_action_field!(copy_mode, keybinds.copy_mode);
         copy_effective_action_field!(focus_pane_left, keybinds.focus_pane_left);
         copy_effective_action_field!(focus_pane_down, keybinds.focus_pane_down);
@@ -1476,6 +1486,8 @@ impl Default for KeysConfig {
             tab_history_back: BindingConfig::Many(vec!["cmd+[".into(), "alt+,".into()]),
             tab_history_forward: BindingConfig::Many(vec!["cmd+]".into(), "alt+.".into()]),
             sidebar_search: BindingConfig::one("prefix+f"),
+            next_machine: BindingConfig::one("prefix+m"),
+            previous_machine: BindingConfig::default(),
             copy_mode: BindingConfig::one("prefix+["),
             focus_pane_left: BindingConfig::one("prefix+h"),
             focus_pane_down: BindingConfig::one("prefix+j"),

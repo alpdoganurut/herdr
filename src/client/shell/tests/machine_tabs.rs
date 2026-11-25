@@ -5,7 +5,7 @@
 //! id and the labels differ.
 
 use super::*;
-use crate::api::schema::Method;
+use crate::api::schema::{AgentStatus, Method};
 use crate::client::endpoint::{
     ClientEndpointId, ClientEndpointStatus, ProfileId, SavedSshEndpoint,
 };
@@ -13,7 +13,7 @@ use crate::config::SidebarLayoutConfig;
 use crate::server::headless::quiet::{QuietPayload, QuietPendingPane};
 use crate::server::headless::tab_pins::TabPinsPayload;
 use crate::server::headless::teams::TeamsPayload;
-use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
+use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 
 const COLS: u16 = 120;
 const ROWS: u16 = 34;
@@ -344,7 +344,18 @@ fn a_lost_machine_stays_selected_and_dimmed() {
 
     state.mark_endpoint_disconnected(&remote_id());
     let (offline, cached) = sidebar(&mut state);
-    assert_eq!(cached, rows, "drawn from the cached snapshot");
+    assert!(cached[0].contains("↻ Build"), "{cached:?}");
+    let without_row = |rows: &[String]| rows[1..].to_vec();
+    assert_eq!(
+        without_row(&cached),
+        without_row(&rows),
+        "drawn from the cached snapshot"
+    );
+    assert!(
+        !dimmed(&offline, Rect::new(1, 0, 10, 1)),
+        "the machine row stays plain"
+    );
+    let rows = cached;
     assert_eq!(tab_row(&state, "tab_2"), row);
     assert!(dimmed(&offline, row));
     assert!(dimmed(&offline, group_row(&state, "ws_2")));
@@ -364,7 +375,6 @@ fn a_lost_machine_stays_selected_and_dimmed() {
     let (gap, cached) = sidebar(&mut state);
     assert_eq!(cached, rows);
     assert!(dimmed(&gap, row));
-    assert!(state.hits.machines.is_empty());
     let text = frame_rows(&gap).join("\n");
     assert!(text.contains("Build: reconnecting"), "{text}");
     assert_eq!(state.layout(COLS, ROWS).sidebar.width, width);
@@ -397,8 +407,19 @@ fn one_machine_and_the_spaces_layout_keep_their_sidebars() {
     // One machine: same rows as before, and never dimmed.
     let mut one = one_machine(SidebarLayoutConfig::Tabs);
     let (online, rows) = sidebar(&mut one);
+    assert!(one.hits.machines.is_empty(), "no machine row");
     let mut two = two_machines(SidebarLayoutConfig::Tabs);
+    let shared = sidebar(&mut two).1;
+    assert!(shared[0].contains("Local"), "{shared:?}");
+    assert!(shared[1].contains("──"), "{shared:?}");
+    // The toolbar and the list heads move down two rows, unchanged.
+    assert_eq!(shared[2..10], rows[..8]);
+    // A disabled machine is no second one.
+    let mut off = profile();
+    off.enabled = false;
+    two.set_endpoint_catalog(&[off]);
     assert_eq!(sidebar(&mut two).1, rows);
+    assert!(two.hits.machines.is_empty());
     assert!(rows[1].contains("local-1"), "under the toolbar: {rows:?}");
     one.set_endpoint_status(&ClientEndpointId::Local, ClientEndpointStatus::Reconnecting);
     let (offline, _) = sidebar(&mut one);
@@ -706,9 +727,10 @@ fn expanded_suspended_runs_are_kept_per_machine_and_persist() {
     std::fs::remove_dir_all(&dir).expect("the test's own directory");
 }
 
-/// Task 2's row: its rows come off the top, nothing else moves sideways.
+/// The machine row and its rule come off the top of the list, nothing else
+/// moves; on a short window the rule goes before the row.
 #[test]
-fn the_layout_keeps_rows_for_the_machine_row_at_the_top() {
+fn the_layout_keeps_the_machine_row_at_the_top() {
     use super::super::tab_sidebar::{plan_layout, LayoutWants, SectionRows};
     let none = |_cap: u16| 0;
     let plan = |height, machine_rows| {
@@ -723,18 +745,657 @@ fn the_layout_keeps_rows_for_the_machine_row_at_the_top() {
         )
     };
     let without = plan(30, 0);
-    assert!(without.machines.is_empty());
+    assert!(without.machines.is_empty() && without.machines_rule.is_empty());
     assert_eq!(without.toolbar.y, 3);
-    let with = plan(30, 1);
+    let with = plan(30, 2);
     assert_eq!(with.machines, Rect::new(0, 3, 28, 1));
-    assert_eq!(with.toolbar, Rect::new(0, 4, 28, 1));
-    assert_eq!(with.list.y, 5);
-    assert_eq!(with.list.height, without.list.height - 1);
+    assert_eq!(with.machines_rule, Rect::new(0, 4, 28, 1));
+    assert_eq!(with.toolbar, Rect::new(0, 5, 28, 1));
+    assert_eq!(with.list.y, 6);
+    assert_eq!(with.list.height, without.list.height - 2);
     assert_eq!(with.fixed, without.fixed);
     assert_eq!(with.menu, without.menu);
-    // The last list row, the toolbar and the menu row win over it.
+    // Rule, then row; the toolbar, one list row and the menu row win.
+    let heights: Vec<(u16, u16, u16)> = (0..=9)
+        .map(|height| {
+            let plan = plan(height, 2);
+            (
+                plan.machines.height,
+                plan.machines_rule.height,
+                plan.list.height,
+            )
+        })
+        .collect();
+    assert!(
+        heights.iter().all(|(row, rule, _)| row >= rule),
+        "{heights:?}"
+    );
+    assert_eq!(heights[3].0, 0);
+    assert_eq!(heights[4], (1, 0, 1));
+    assert_eq!(heights[8], (1, 0, 3), "no rule at the cost of a short list");
+    assert_eq!(plan(10, 2).machines_rule.height, 1);
     for height in 0..=3 {
-        assert_eq!(plan(height, 1), plan(height, 0), "{height}");
+        assert_eq!(plan(height, 2), plan(height, 0), "{height}");
     }
-    assert_eq!(plan(4, 1).list.height, 1);
+}
+
+// ----------------------------------------------------------- the machine row
+
+fn machine(number: u8, label: &str) -> SavedSshEndpoint {
+    SavedSshEndpoint {
+        id: ProfileId::parse(format!("{number:032x}")).unwrap(),
+        label: label.into(),
+        target: "dev@build.example".into(),
+        session: "agents".into(),
+        enabled: true,
+    }
+}
+
+fn agents(statuses: &[AgentStatus]) -> Vec<ClientShellAgent> {
+    statuses
+        .iter()
+        .enumerate()
+        .map(|(index, status)| ClientShellAgent {
+            pane_id: format!("pane_{index}"),
+            workspace_id: "ws_1".into(),
+            tab_id: "tab_1".into(),
+            name: None,
+            display_agent: None,
+            agent: Some("claude".into()),
+            title: None,
+            terminal_title: None,
+            terminal_title_stripped: None,
+            agent_status: *status,
+            state_change_seq: index as u64 + 1,
+            state_labels: Vec::new(),
+            tokens: Vec::new(),
+            focused: false,
+            subagents: 0,
+        })
+        .collect()
+}
+
+/// A snapshot of `endpoint_id` with `statuses`, as `revision`.
+fn report(
+    state: &mut ClientShellState,
+    endpoint_id: &ClientEndpointId,
+    revision: u64,
+    statuses: &[AgentStatus],
+) {
+    let boot = if endpoint_id.is_local() {
+        LOCAL_BOOT.to_owned()
+    } else {
+        format!("boot of {}", endpoint_id.storage_key())
+    };
+    let mut snapshot = machine_snapshot(&boot, "x");
+    snapshot.revision = revision;
+    snapshot.agents = agents(statuses);
+    state.set_endpoint_status(endpoint_id, ClientEndpointStatus::Online);
+    state.set_endpoint_snapshot(endpoint_id, Box::new(snapshot));
+}
+
+/// Local and `labels`, all online and idle, at a `width` cells wide sidebar.
+fn machines(labels: &[&str], width: u16) -> (ClientShellState, Vec<ClientEndpointId>) {
+    let mut state = one_machine(SidebarLayoutConfig::Tabs);
+    state.sidebar_width = width;
+    let profiles: Vec<SavedSshEndpoint> = labels
+        .iter()
+        .enumerate()
+        .map(|(index, label)| machine(index as u8 + 1, label))
+        .collect();
+    state.set_endpoint_catalog(&profiles);
+    let mut ids = vec![ClientEndpointId::Local];
+    for profile in profiles {
+        let id = ClientEndpointId::Ssh(profile.id);
+        report(&mut state, &id, 1, &[]);
+        ids.push(id);
+    }
+    (state, ids)
+}
+
+fn machine_row(state: &mut ClientShellState) -> String {
+    sidebar(state).1[0].trim_end_matches(['│', ' ']).to_owned()
+}
+
+fn cell(frame: &FrameData, x: u16, y: u16) -> ratatui::buffer::Cell {
+    frame.to_ratatui_buffer().expect("frame")[(x, y)].clone()
+}
+
+fn machine_hit(state: &ClientShellState, id: &ClientEndpointId) -> Rect {
+    state
+        .hits
+        .machines
+        .iter()
+        .find(|hit| &hit.endpoint_id == id)
+        .map(|hit| hit.rect)
+        .expect("in the row")
+}
+
+#[test]
+fn the_row_shows_every_machines_state_label_and_count() {
+    use AgentStatus::{Blocked, Done, Idle, Suspended, Working};
+    let (mut state, ids) = machines(&["Build"], 36);
+    let palette = state.config.palette.clone();
+    assert_eq!(machine_row(&mut state), " ○ Local  ○ Build");
+    for (statuses, text, color) in [
+        (
+            &[Working, Blocked, Working, Blocked][..],
+            "● Build 2",
+            palette.red,
+        ),
+        (
+            &[Working, Idle, Working, Working][..],
+            "● Build 3",
+            palette.yellow,
+        ),
+        (&[Idle, Done, Suspended][..], "○ Build", palette.overlay0),
+        (&[][..], "○ Build", palette.overlay0),
+    ] {
+        report(&mut state, &ids[1], 2, statuses);
+        let (frame, rows) = sidebar(&mut state);
+        assert_eq!(
+            rows[0].trim_end_matches(['│', ' ']),
+            format!(" ○ Local  {text}")
+        );
+        let rect = machine_hit(&state, &ids[1]);
+        assert_eq!(cell(&frame, rect.x, 0).fg, color, "{text}");
+        assert_eq!(rect.width as usize, text.chars().count());
+    }
+    // The machine shown: bold and underlined; the other not.
+    let (frame, _) = sidebar(&mut state);
+    let shown = cell(&frame, machine_hit(&state, &ids[0]).x + 2, 0);
+    assert!(shown
+        .modifier
+        .contains(Modifier::BOLD | Modifier::UNDERLINED));
+    assert_eq!(shown.fg, palette.text);
+    let other = cell(&frame, machine_hit(&state, &ids[1]).x + 2, 0);
+    assert!(!other
+        .modifier
+        .intersects(Modifier::BOLD | Modifier::UNDERLINED));
+    assert_eq!(other.fg, palette.subtext0);
+    // The rule under it, in the chrome's rule color.
+    let rule = cell(&frame, 3, 1);
+    assert_eq!((rule.symbol(), rule.fg), ("─", palette.surface1));
+    // `ui.status_indicators = "symbols"`.
+    state.config.status_indicators = crate::config::StatusIndicatorStyle::Symbols;
+    report(&mut state, &ids[1], 3, &[Blocked]);
+    assert_eq!(machine_row(&mut state), " ○ Local  × Build 1");
+    // Not connected: no count of what it was doing.
+    state.config.status_indicators = crate::config::StatusIndicatorStyle::Dots;
+    for (status, glyph, color) in [
+        (ClientEndpointStatus::Reconnecting, "↻", palette.overlay0),
+        (ClientEndpointStatus::Connecting, "↻", palette.overlay0),
+        (ClientEndpointStatus::Attention, "!", palette.red),
+    ] {
+        state.set_endpoint_status(&ids[1], status);
+        let (frame, rows) = sidebar(&mut state);
+        assert_eq!(
+            rows[0].trim_end_matches(['│', ' ']),
+            format!(" ○ Local  {glyph} Build")
+        );
+        let rect = machine_hit(&state, &ids[1]);
+        assert_eq!(cell(&frame, rect.x, 0).fg, color);
+    }
+    // A login it waits for, while it retries.
+    state.set_endpoint_status(&ids[1], ClientEndpointStatus::Reconnecting);
+    state.set_machine_diagnostic(&ids[1], "Permission denied (publickey).".into());
+    assert_eq!(machine_row(&mut state), " ○ Local  ! Build");
+}
+
+#[test]
+fn the_row_fits_eighteen_to_thirty_six_columns() {
+    use AgentStatus::{Blocked, Working};
+    let labels = ["buildbox", "workstation"];
+    let cases = [
+        (36, 2, 0, " ● Local 2  ● buildbox 1"),
+        (36, 3, 0, " ● Local 2  ● build… 1  ● works… 1"),
+        (36, 3, 2, " ● Lo… 2  ● bu… 1  ● workstation 1"),
+        (26, 2, 0, " ● Local 2  ● buildbox 1"),
+        (26, 3, 0, " ● Local 2  ● bu…  ● wo…"),
+        (18, 2, 0, " ● Local 2  ● b…"),
+        (18, 2, 1, " ● L… ● build… 1"),
+        (18, 3, 0, " ● Lo… ● b… ● w…"),
+        (18, 3, 1, " ● L… ● bu… ● w…"),
+    ];
+    let mut rows = Vec::new();
+    for (width, count, shown, _) in cases {
+        let (mut state, ids) = machines(&labels[..count - 1], width);
+        report(&mut state, &ids[0], 2, &[Working, Working]);
+        let mut surface = boot_surface(LOCAL_BOOT);
+        surface.projection_revision = 2;
+        state.set_pane_surface(surface);
+        for id in &ids[1..] {
+            report(&mut state, id, 2, &[Blocked]);
+        }
+        if shown > 0 {
+            assert!(state.activate_endpoint_projection(&ids[shown]));
+            let boot = state.snapshot.as_ref().unwrap().boot_id.clone();
+            let mut surface = boot_surface(&boot);
+            surface.projection_revision = 2;
+            state.set_pane_surface(surface);
+        }
+        rows.push(machine_row(&mut state));
+        assert_eq!(state.layout(COLS, ROWS).sidebar.width, width);
+        assert_eq!(state.hits.machines.len(), count, "no glyph is dropped");
+    }
+    let expected: Vec<&str> = cases.iter().map(|case| case.3).collect();
+    assert_eq!(rows, expected);
+    // One machine: no row at any width.
+    for width in [18, 26, 36] {
+        let (mut state, _) = machines(&[], width);
+        sidebar(&mut state);
+        assert!(state.hits.machines.is_empty());
+    }
+    // Far more than fit: the one shown is there, whichever it is.
+    let labels = [
+        "one", "two", "three", "four", "five", "six", "seven", "eight",
+    ];
+    for shown in 0..=labels.len() {
+        let (mut state, ids) = machines(&labels, 18);
+        if shown > 0 {
+            assert!(state.activate_endpoint_projection(&ids[shown]));
+            let boot = state.snapshot.as_ref().unwrap().boot_id.clone();
+            state.set_pane_surface(boot_surface(&boot));
+        }
+        sidebar(&mut state);
+        machine_hit(&state, &ids[shown]);
+        assert!(state
+            .hits
+            .machines
+            .iter()
+            .all(|hit| hit.rect.right() < state.layout(COLS, ROWS).sidebar.right()));
+    }
+}
+
+#[test]
+fn a_click_on_a_machine_switches_retries_and_never_collapses() {
+    let (mut state, ids) = machines(&["Build", "Lab"], 36);
+    state.compose(COLS, ROWS).unwrap();
+    let press = |state: &mut ClientShellState, id: &ClientEndpointId| {
+        let rect = machine_hit(state, id);
+        state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: rect.x,
+            row: rect.y,
+            modifiers: KeyModifiers::empty(),
+        })])
+    };
+    // Another machine, and the one shown (which the runtime leaves alone
+    // unless a switch away from it is under way).
+    for id in [&ids[1], &ids[0]] {
+        let outcome = press(&mut state, id);
+        assert!(
+            matches!(outcome.actions.as_slice(), [ClientShellAction::ActivateEndpoint {
+                endpoint_id, target: None,
+            }] if endpoint_id == id),
+            "{:?}",
+            outcome.actions
+        );
+        assert!(state.collapsed_endpoints.is_empty());
+    }
+    // Not connected: asked to reconnect now, like upstream's list.
+    state.set_endpoint_status(&ids[2], ClientEndpointStatus::Attention);
+    state.compose(COLS, ROWS).unwrap();
+    let outcome = press(&mut state, &ids[2]);
+    assert!(outcome.actions.is_empty() && outcome.repaint);
+    assert_eq!(state.take_machine_retries(), [ids[2].clone()]);
+    assert!(state.collapsed_endpoints.is_empty());
+    // The one shown, lost: likewise.
+    assert!(state.activate_endpoint_projection(&ids[1]));
+    let boot = state.snapshot.as_ref().unwrap().boot_id.clone();
+    state.set_pane_surface(boot_surface(&boot));
+    state.mark_endpoint_disconnected(&ids[1]);
+    state.compose(COLS, ROWS).unwrap();
+    let outcome = press(&mut state, &ids[1]);
+    assert!(outcome.actions.is_empty());
+    assert_eq!(state.take_machine_retries(), [ids[1].clone()]);
+    assert!(state.endpoint_is_active(&ids[1]));
+}
+
+#[test]
+fn the_hovered_machine_has_the_hover_band() {
+    let (mut state, ids) = machines(&["Build"], 36);
+    state.compose(COLS, ROWS).unwrap();
+    let rect = machine_hit(&state, &ids[1]);
+    let moved = |state: &mut ClientShellState, x: u16, y: u16| {
+        state
+            .handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+                kind: MouseEventKind::Moved,
+                column: x,
+                row: y,
+                modifiers: KeyModifiers::empty(),
+            })])
+            .repaint
+    };
+    assert!(moved(&mut state, rect.x, 0));
+    assert!(!moved(&mut state, rect.x + 1, 0), "the same machine");
+    let (frame, _) = sidebar(&mut state);
+    let band = state.config.palette.sidebar_hover_bg();
+    assert_eq!(cell(&frame, rect.x, 0).bg, band);
+    let shown = machine_hit(&state, &ids[0]);
+    assert_ne!(cell(&frame, shown.x, 0).bg, band);
+    assert!(moved(&mut state, rect.x, 20));
+}
+
+/// A machine that is not shown draws its mark, nothing else.
+#[test]
+fn a_machine_not_shown_repaints_for_its_mark_only() {
+    use AgentStatus::{Blocked, Idle, Working};
+    let (mut state, ids) = machines(&["Build"], 36);
+    state.compose(COLS, ROWS).unwrap();
+    let mut revision = 1;
+    let mut due = |state: &mut ClientShellState, statuses: &[AgentStatus]| {
+        revision += 1;
+        let before = state.machine_repaint_basis(&ids[1]);
+        assert!(before.is_some());
+        report(state, &ids[1], revision, statuses);
+        state.machine_repaint_due(&ids[1], before)
+    };
+    assert!(!due(&mut state, &[Idle]), "idle stays idle");
+    assert!(due(&mut state, &[Working]));
+    assert!(!due(&mut state, &[Working, Idle]), "one is still working");
+    assert!(due(&mut state, &[Working, Working]), "the count");
+    assert!(due(&mut state, &[Working, Blocked]), "one waits");
+    assert!(
+        !due(&mut state, &[Idle, Blocked]),
+        "hidden behind the waiting one"
+    );
+    assert!(due(&mut state, &[]));
+    // Another server under the same machine (its agent cards go).
+    let before = state.machine_repaint_basis(&ids[1]);
+    let mut rebooted = machine_snapshot("another boot", "x");
+    rebooted.revision = 1;
+    state.cache_endpoint_snapshot(&ids[1], Box::new(rebooted));
+    assert!(state.machine_repaint_due(&ids[1], before));
+    // Where more of it shows, every snapshot repaints.
+    assert!(
+        state.machine_repaint_basis(&ids[0]).is_none(),
+        "the one shown"
+    );
+    state.sidebar_collapsed = true;
+    assert!(state.machine_repaint_basis(&ids[1]).is_none(), "the rail");
+    state.sidebar_collapsed = false;
+    state.open_navigator_overlay();
+    assert!(
+        state.machine_repaint_basis(&ids[1]).is_none(),
+        "goto lists it"
+    );
+    let mut spaces = two_machines(SidebarLayoutConfig::Spaces);
+    spaces.compose(COLS, ROWS).unwrap();
+    assert!(spaces.machine_repaint_basis(&remote_id()).is_none());
+}
+
+#[test]
+fn the_collapsed_rail_has_the_rows_glyphs() {
+    let (mut state, ids) = machines(&["Build"], 36);
+    report(&mut state, &ids[1], 2, &[AgentStatus::Blocked]);
+    state.sidebar_collapsed = true;
+    let frame = state.compose(COLS, ROWS).expect("frame").frame;
+    let red = state.config.palette.red;
+    let rail = machine_hit(&state, &ids[1]);
+    let glyph = cell(&frame, rail.right() - 1, rail.y);
+    assert_eq!((glyph.symbol(), glyph.fg), ("●", red));
+    let local = machine_hit(&state, &ids[0]);
+    assert_eq!(cell(&frame, local.right() - 1, local.y).symbol(), "○");
+    // The spaces layout's rail is upstream's: no glyph on Local.
+    let mut spaces = two_machines(SidebarLayoutConfig::Spaces);
+    spaces.sidebar_collapsed = true;
+    let frame = spaces.compose(COLS, ROWS).expect("frame").frame;
+    let local = machine_hit(&spaces, &ClientEndpointId::Local);
+    assert_eq!(cell(&frame, local.right() - 1, local.y).symbol(), " ");
+}
+
+// ----------------------------------------------------- switching and memory
+
+fn press_keys(state: &mut ClientShellState, keys: &[(KeyCode, KeyModifiers)]) -> ClientShellInput {
+    let mut outcome = ClientShellInput::default();
+    for (code, modifiers) in keys {
+        let next = state.handle_raw_events(vec![RawInputEvent::Key(
+            crate::input::TerminalKey::new(*code, *modifiers),
+        )]);
+        outcome.actions.extend(next.actions);
+    }
+    outcome
+}
+
+#[test]
+fn the_machine_keys_skip_offline_machines_and_wrap() {
+    let next = [
+        (KeyCode::Char('b'), KeyModifiers::CONTROL),
+        (KeyCode::Char('m'), KeyModifiers::NONE),
+    ];
+    let target = |outcome: &ClientShellInput| match outcome.actions.as_slice() {
+        [] => None,
+        [ClientShellAction::ActivateEndpoint {
+            endpoint_id,
+            target: None,
+        }] => Some(endpoint_id.clone()),
+        other => panic!("{other:?}"),
+    };
+    let (mut state, ids) = machines(&["Build", "Lab", "Farm"], 36);
+    state.set_endpoint_status(&ids[1], ClientEndpointStatus::Reconnecting);
+    state.compose(COLS, ROWS).unwrap();
+    let show = |state: &mut ClientShellState, id: &ClientEndpointId| {
+        assert!(state.activate_endpoint_projection(id));
+        let boot = state.snapshot.as_ref().unwrap().boot_id.clone();
+        state.set_pane_surface(boot_surface(&boot));
+        state.compose(COLS, ROWS).unwrap();
+    };
+    assert_eq!(target(&press_keys(&mut state, &next)), Some(ids[2].clone()));
+    show(&mut state, &ids[3]);
+    assert_eq!(target(&press_keys(&mut state, &next)), Some(ids[0].clone()));
+    // Backward, unbound by default.
+    let mut outcome = ClientShellInput::default();
+    show(&mut state, &ids[0]);
+    state.step_machine(false, &mut outcome);
+    assert_eq!(target(&outcome), Some(ids[3].clone()));
+    // From a machine that was lost, and with none other online.
+    show(&mut state, &ids[2]);
+    state.mark_endpoint_disconnected(&ids[2]);
+    assert_eq!(target(&press_keys(&mut state, &next)), Some(ids[3].clone()));
+    state.set_endpoint_status(&ids[3], ClientEndpointStatus::Attention);
+    state.mark_endpoint_disconnected(&ClientEndpointId::Local);
+    assert_eq!(target(&press_keys(&mut state, &next)), None);
+    let mut one = one_machine(SidebarLayoutConfig::Tabs);
+    one.compose(COLS, ROWS).unwrap();
+    assert!(press_keys(&mut one, &next).actions.is_empty());
+    // Listed in the keybind help like any other key.
+    let keys = &state.config.keybinds;
+    let help: Vec<(String, String)> =
+        crate::input::keybind_help_groups(&keys.keybinds, &keys.prefix)
+            .into_iter()
+            .flat_map(|(_, entries)| entries)
+            .map(|(key, label)| (key, label.into_owned()))
+            .filter(|(_, label)| label.ends_with(" machine"))
+            .collect();
+    assert_eq!(
+        help,
+        [
+            ("prefix+m".to_owned(), "next machine".to_owned()),
+            ("unset".to_owned(), "previous machine".to_owned()),
+        ]
+    );
+}
+
+/// Every tab of `snapshot`, `focused` focused.
+fn focus(snapshot: &mut ClientShellSnapshot, focused: &str) {
+    snapshot.focused_tab_id = Some(focused.into());
+    for tab in &mut snapshot.tabs {
+        tab.focused = tab.tab_id == focused;
+    }
+}
+
+fn long_snapshot(boot: &str, name: &str, revision: u64, focused: &str) -> ClientShellSnapshot {
+    let mut snapshot = machine_snapshot(boot, name);
+    for number in 5..=80 {
+        let mut tab = snapshot.tabs[1].clone();
+        tab.tab_id = format!("tab_{number}");
+        tab.number = number;
+        tab.label = format!("{name}-{number}");
+        snapshot.tabs.push(tab);
+    }
+    snapshot.revision = revision;
+    focus(&mut snapshot, focused);
+    snapshot
+}
+
+fn show_tab(
+    state: &mut ClientShellState,
+    endpoint_id: &ClientEndpointId,
+    boot: &str,
+    revision: u64,
+    focused: &str,
+) {
+    state.set_endpoint_snapshot(
+        endpoint_id,
+        Box::new(long_snapshot(boot, "x", revision, focused)),
+    );
+    let mut surface = boot_surface(boot);
+    surface.projection_revision = revision;
+    state.set_pane_surface(surface);
+    state.compose(COLS, ROWS).unwrap();
+}
+
+#[test]
+fn every_machine_keeps_its_scroll_history_and_filters() {
+    let local = ClientEndpointId::Local;
+    let remote = remote_id();
+    let mut state = two_machines(SidebarLayoutConfig::Tabs);
+    for (revision, tab) in [(2, "tab_1"), (3, "tab_2"), (4, "tab_30")] {
+        show_tab(&mut state, &local, LOCAL_BOOT, revision, tab);
+    }
+    state.agent_scroll = 45;
+    state.compose(COLS, ROWS).unwrap();
+    assert_eq!(state.agent_scroll, 45);
+    assert!(!listed(&state).contains(&"tab_30"), "scrolled off");
+    let (before, _) = sidebar(&mut state);
+    let mut outcome = ClientShellInput::default();
+    state.focus_sidebar_search(&mut outcome);
+    state.sidebar_filter.recency = state.sidebar_filter.recency.step(true);
+    state.sidebar_filter.set_query("x");
+    let recency = state.sidebar_filter.recency;
+
+    let go = |state: &mut ClientShellState, id: &ClientEndpointId, boot: &str, revision: u64| {
+        assert!(state.activate_endpoint_projection(id));
+        let mut surface = boot_surface(boot);
+        surface.projection_revision = revision;
+        state.set_pane_surface(surface);
+        state.compose(COLS, ROWS).unwrap();
+    };
+    // Build starts fresh: nothing of Local's comes along.
+    go(&mut state, &remote, REMOTE_BOOT, 1);
+    assert!(!state.sidebar_filter.engaged());
+    assert_eq!(state.tab_history.entries(), ["tab_1"]);
+    assert_eq!(state.agent_scroll, 0);
+    show_tab(&mut state, &remote, REMOTE_BOOT, 2, "tab_3");
+    state.sidebar_filter.set_query("remote only");
+    // A history jump whose request the switch cuts off.
+    assert!(state.tab_history.back(|_| true).is_some());
+
+    go(&mut state, &local, LOCAL_BOOT, 4);
+    assert_eq!(state.tab_history.entries(), ["tab_1", "tab_2", "tab_30"]);
+    assert_eq!(state.tab_history.focused(), Some("tab_30"));
+    assert_eq!(state.sidebar_filter.query(), "x");
+    assert_eq!(state.sidebar_filter.recency, recency);
+    assert!(!state.sidebar_filter.focused, "the field lets go");
+    state.clear_sidebar_filters(&mut outcome);
+    assert_eq!(state.agent_scroll, 0, "clearing a filter heads the list");
+
+    // Scroll: the very frame, as long as the same tab is focused.
+    state.agent_scroll = 45;
+    state.compose(COLS, ROWS).unwrap();
+    go(&mut state, &remote, REMOTE_BOOT, 2);
+    assert_eq!(state.tab_history.entries(), ["tab_1", "tab_3"]);
+    assert_eq!(state.tab_history.focused(), Some("tab_3"));
+    assert_eq!(state.sidebar_filter.query(), "remote only");
+    // The jump that was cut off is over: this is a visit, not its landing.
+    show_tab(&mut state, &remote, REMOTE_BOOT, 3, "tab_1");
+    assert_eq!(state.tab_history.entries(), ["tab_1", "tab_3", "tab_1"]);
+    go(&mut state, &local, LOCAL_BOOT, 4);
+    assert_eq!(state.agent_scroll, 45);
+    assert_eq!(sidebar(&mut state).0.cells, before.cells, "A, B, A");
+
+    // Another client moved the focus meanwhile: it is revealed.
+    go(&mut state, &remote, REMOTE_BOOT, 3);
+    state.cache_endpoint_snapshot(
+        &local,
+        Box::new(long_snapshot(LOCAL_BOOT, "x", 5, "tab_70")),
+    );
+    go(&mut state, &local, LOCAL_BOOT, 5);
+    assert!(listed(&state).contains(&"tab_70"));
+    assert_eq!(state.tab_history.focused(), Some("tab_70"));
+
+    // A restarted server: its ids mean nothing any more, the filter stays.
+    state.sidebar_filter.set_query("kept");
+    go(&mut state, &remote, REMOTE_BOOT, 3);
+    state.cache_endpoint_snapshot(&local, Box::new(long_snapshot("boot-2", "x", 1, "tab_1")));
+    go(&mut state, &local, "boot-2", 1);
+    assert_eq!(state.tab_history.entries(), ["tab_1"]);
+    assert_eq!(state.agent_scroll, 0);
+    assert_eq!(state.sidebar_filter.query(), "kept");
+
+    // A removed machine's view goes with it.
+    go(&mut state, &remote, REMOTE_BOOT, 3);
+    go(&mut state, &local, "boot-2", 1);
+    assert!(state.machine_views.contains_key(&remote));
+    state.set_endpoint_catalog(&[]);
+    assert!(state.machine_views.is_empty());
+}
+
+/// Local shown again after the machine shown was removed.
+#[test]
+fn local_gets_its_view_back_when_the_shown_machine_is_removed() {
+    let mut state = two_machines(SidebarLayoutConfig::Tabs);
+    show_tab(&mut state, &ClientEndpointId::Local, LOCAL_BOOT, 2, "tab_1");
+    show_tab(&mut state, &ClientEndpointId::Local, LOCAL_BOOT, 3, "tab_2");
+    state.sidebar_filter.set_query("mine");
+    switch(&mut state, &remote_id());
+    state.sidebar_filter.set_query("theirs");
+    state.set_endpoint_catalog(&[]);
+    assert!(state.endpoint_is_active(&ClientEndpointId::Local));
+    assert!(!state.sidebar_filter.engaged());
+    assert!(state.activate_endpoint_projection(&ClientEndpointId::Local));
+    assert_eq!(state.sidebar_filter.query(), "mine");
+    assert_eq!(state.tab_history.entries(), ["tab_1", "tab_2"]);
+}
+
+/// The frames of /private/tmp/mt-t1/row-preview.txt:
+/// `cargo nextest run --bin herdr machine_row_preview --run-ignored only --no-capture`
+#[test]
+#[ignore = "prints the machine row's frames"]
+fn machine_row_preview() {
+    use AgentStatus::{Blocked, Idle, Working};
+    println!("colors are not in this text: a waiting machine's ● is red, a working one's");
+    println!("yellow, an idle one's ○ dim; the label of the machine shown is bold and");
+    println!("underlined. Local works (2 agents), buildbox waits on the user (1).\n");
+    let frame = |title: &str, state: &mut ClientShellState| {
+        let frame = state.compose(100, 24).expect("frame").frame;
+        println!("== {title}");
+        for row in frame_rows(&frame) {
+            println!("{}", row.trim_end());
+        }
+        println!();
+    };
+    let setup = |labels: &[&str], width: u16| {
+        let (mut state, ids) = machines(labels, width);
+        report(&mut state, &ids[0], 2, &[Working, Working, Idle]);
+        let mut surface = boot_surface(LOCAL_BOOT);
+        surface.projection_revision = 2;
+        state.set_pane_surface(surface);
+        report(&mut state, &ids[1], 2, &[Blocked, Working]);
+        (state, ids)
+    };
+    let (mut state, _) = setup(&["buildbox"], 36);
+    frame("two machines, buildbox waits (36 cols)", &mut state);
+    let (mut state, ids) = setup(&["buildbox", "workstation"], 36);
+    report(&mut state, &ids[2], 2, &[Working]);
+    frame("three machines (36 cols)", &mut state);
+    let (mut state, ids) = setup(&["buildbox"], 36);
+    state.set_endpoint_status(&ids[1], ClientEndpointStatus::Reconnecting);
+    frame("buildbox offline (36 cols)", &mut state);
+    let (mut state, ids) = setup(&["buildbox", "workstation"], 18);
+    report(&mut state, &ids[2], 2, &[Working]);
+    frame("three machines (18 cols)", &mut state);
+    let (mut state, _) = setup(&["buildbox"], 18);
+    frame("two machines, buildbox waits (18 cols)", &mut state);
 }

@@ -82,6 +82,11 @@ impl ClientShellState {
             return false;
         };
         let endpoint_id = hit.endpoint_id.clone();
+        // Fork (machine tabs): the machine row has nothing to collapse.
+        if self.machine_sidebar_shown() {
+            self.machine_row_press(endpoint_id, outcome);
+            return true;
+        }
         let collapse_toggle = super::contains(hit.collapse_toggle, point);
         if collapse_toggle
             || (endpoint_id == self.active_endpoint_id
@@ -255,7 +260,7 @@ impl ClientShellState {
     }
 
     /// Selecting a machine that is waiting to reconnect asks for an attempt now.
-    fn select_unready_machine(
+    pub(super) fn select_unready_machine(
         &mut self,
         endpoint_id: &ClientEndpointId,
         outcome: &mut ClientShellInput,

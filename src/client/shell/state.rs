@@ -1542,6 +1542,9 @@ pub(crate) struct ClientShellState {
     pub(super) expanded_runs: HashSet<String>,
     /// Fork (machine tabs): the saved machines' `expanded_runs` (persisted).
     pub(super) remote_expanded_runs: HashMap<ClientEndpointId, HashSet<String>>,
+    /// Fork (machine tabs): where the user was in the machines not shown
+    /// (client-only; `machine_tabs.rs`).
+    pub(super) machine_views: HashMap<ClientEndpointId, super::machine_tabs::MachineView>,
     /// Fork (sidebar filters): the tabs sidebar's search and recency
     /// filters (`sidebar_filter.rs`; client-only, never persisted).
     pub(super) sidebar_filter: super::sidebar_filter::SidebarFilter,
@@ -1786,6 +1789,7 @@ impl ClientShellState {
             scheduled_agents_folded,
             expanded_runs,
             remote_expanded_runs,
+            machine_views: HashMap::new(),
             sidebar_filter: super::sidebar_filter::SidebarFilter::default(),
             pins_expanded: false,
             scheduled_expanded: false,

@@ -212,6 +212,8 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # tab_history_back = ["cmd+[", "alt+,"]     # previously focused tab, browser-style (Ghostty: keybind = super+[=csi:91;9u)
 # tab_history_forward = ["cmd+]", "alt+."]  # forward again (Ghostty: keybind = super+]=csi:93;9u)
 # sidebar_search = "prefix+f"       # "tabs" layout: type to filter the tab list (Esc clears, Enter focuses the first match)
+# next_machine = "prefix+m"         # with saved machines: show the next online one (Local counts), wrapping
+# previous_machine = ""             # unbound; the same, backward
 # focus_pane_left = "prefix+h"
 # focus_pane_down = "prefix+j"
 # focus_pane_up = "prefix+k"

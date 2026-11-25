@@ -676,6 +676,31 @@ pub(super) fn handle_endpoint_attention(
     endpoint_was_active
 }
 
+/// The endpoint whose surface the client asks for when none is shown (at
+/// start, after a reconnect). Upstream: the stored selection. Fork (machine
+/// tabs): in the `tabs` layout the endpoint that is shown, so the client
+/// starts on Local, a lost machine comes back where it was, and a switch that
+/// failed is not tried again by itself.
+pub(super) fn desired_endpoint(
+    state: &ClientState,
+    catalog: &endpoint::EndpointCatalog,
+    endpoints: &endpoint::EndpointRegistry,
+) -> endpoint::ClientEndpointId {
+    if state
+        .shell
+        .as_ref()
+        .is_some_and(|shell| shell.tabs_layout())
+    {
+        return endpoints.active_id().clone();
+    }
+    catalog
+        .selected_profile
+        .as_ref()
+        .map_or(endpoint::ClientEndpointId::Local, |profile_id| {
+            endpoint::ClientEndpointId::Ssh(profile_id.clone())
+        })
+}
+
 pub(super) fn install_client_shell_snapshot(
     state: &mut ClientState,
     endpoint_id: &endpoint::ClientEndpointId,
@@ -698,6 +723,13 @@ pub(super) fn install_client_shell_snapshot(
                 && shell.has_presented_surface());
         // Fork: also reported when another tab is shown (info_dock.rs).
         let previous = shell.surface_report_basis(state.reported_size.0, state.reported_size.1);
+        // Fork (machine tabs): a machine that is not shown draws only its
+        // mark in the machine row.
+        let machine_basis = if projection_pending {
+            None
+        } else {
+            shell.machine_repaint_basis(endpoint_id)
+        };
         if !waits_for_selected_surface {
             shell.set_endpoint_status(endpoint_id, endpoint::ClientEndpointStatus::Online);
         }
@@ -713,8 +745,13 @@ pub(super) fn install_client_shell_snapshot(
         let graphics_cleanup = shell.take_pending_graphics_cleanup();
         let report =
             shell.surface_report_required(&previous, state.reported_size.0, state.reported_size.1);
+        let composed = if shell.machine_repaint_due(endpoint_id, machine_basis) {
+            shell.compose(state.reported_size.0, state.reported_size.1)
+        } else {
+            None
+        };
         (
-            shell.compose(state.reported_size.0, state.reported_size.1),
+            composed,
             report.then(|| {
                 client_shell_resize_message(
                     shell,
@@ -998,5 +1035,151 @@ mod tests {
                 },
             }
         );
+    }
+
+    /// Fork (machine tabs): the tabs layout asks for the machine shown, the
+    /// `spaces` layout for the stored selection; a switch that failed leaves
+    /// the client where it was, with a notice.
+    #[test]
+    fn the_tabs_layout_starts_on_local_and_a_failed_switch_stays() {
+        struct Quiet;
+        impl endpoint::EndpointTransport for Quiet {
+            fn send(&mut self, _: &ClientMessage) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let profile = endpoint::SavedSshEndpoint {
+            id: endpoint::ProfileId::parse("0123456789abcdef0123456789abcdef").unwrap(),
+            label: "Build".into(),
+            target: "dev@build.example".into(),
+            session: "agents".into(),
+            enabled: true,
+        };
+        let remote = endpoint::ClientEndpointId::Ssh(profile.id.clone());
+        let local = endpoint::ClientEndpointId::Local;
+        let mut catalog = endpoint::EndpointCatalog::default();
+        catalog.ssh.push(profile);
+        assert!(catalog.select_endpoint(&remote), "the last machine shown");
+        let mut endpoints = endpoint::EndpointRegistry::new(
+            Quiet,
+            1,
+            endpoint::EndpointNegotiation::new(Vec::new(), Vec::new()),
+        );
+        let mut state = ClientState::test_new();
+        state
+            .shell
+            .as_mut()
+            .unwrap()
+            .set_endpoint_catalog(&catalog.ssh);
+        assert_eq!(desired_endpoint(&state, &catalog, &endpoints), local);
+
+        let mut commands = endpoint_commands::EndpointCommands::default();
+        let (mut pending, mut scheduled, mut serial) = (None, None, 1);
+        begin_endpoint_activation(
+            &mut state,
+            &mut endpoints,
+            &mut commands,
+            &mut pending,
+            &mut serial,
+            remote.clone(),
+            None,
+            false,
+            std::time::Instant::now(),
+            &mut scheduled,
+        )
+        .unwrap();
+        assert!(pending.is_none() && scheduled.is_none());
+        let shell = state.shell.as_ref().unwrap();
+        assert!(shell.endpoint_is_active(&local));
+        assert!(shell.endpoint_notice_visible());
+        assert_eq!(desired_endpoint(&state, &catalog, &endpoints), local);
+
+        // A lost machine that is shown is asked for again.
+        endpoints.insert(
+            remote.clone(),
+            Quiet,
+            2,
+            endpoint::EndpointNegotiation::new(Vec::new(), Vec::new()),
+            true,
+        );
+        assert!(endpoints.set_active(&remote));
+        endpoints.disconnect(&remote);
+        assert_eq!(desired_endpoint(&state, &catalog, &endpoints), remote);
+
+        let mut config = crate::config::Config::default();
+        config.ui.sidebar_layout = crate::config::SidebarLayoutConfig::Spaces;
+        state.shell = Some(shell::ClientShellState::new(
+            shell::ClientShellConfig::from_config(&config),
+        ));
+        let endpoints = endpoint::EndpointRegistry::empty();
+        assert_eq!(desired_endpoint(&state, &catalog, &endpoints), remote);
+    }
+
+    /// Fork (machine tabs): a snapshot of a machine that is not shown draws a
+    /// frame only when it changes that machine's mark.
+    #[test]
+    fn a_hidden_machines_snapshot_draws_a_frame_only_for_its_mark() {
+        use crate::api::schema::AgentStatus;
+
+        struct Quiet;
+        impl endpoint::EndpointTransport for Quiet {
+            fn send(&mut self, _: &ClientMessage) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let profile = endpoint::SavedSshEndpoint {
+            id: endpoint::ProfileId::parse("0123456789abcdef0123456789abcdef").unwrap(),
+            label: "Build".into(),
+            target: "dev@build.example".into(),
+            session: "agents".into(),
+            enabled: true,
+        };
+        let remote = endpoint::ClientEndpointId::Ssh(profile.id.clone());
+        let mut endpoints = endpoint::EndpointRegistry::new(
+            Quiet,
+            1,
+            endpoint::EndpointNegotiation::new(Vec::new(), Vec::new()),
+        );
+        endpoints.insert(
+            remote.clone(),
+            Quiet,
+            2,
+            endpoint::EndpointNegotiation::new(Vec::new(), Vec::new()),
+            false,
+        );
+        let mut state = ClientState::test_new();
+        // No terminal in a test: the frames go nowhere.
+        state.freeze_presentation();
+        let shell = state.shell.as_mut().unwrap();
+        shell.set_endpoint_catalog(&[profile]);
+        shell.set_test_one_agent_snapshot(
+            &endpoint::ClientEndpointId::Local,
+            "local",
+            1,
+            AgentStatus::Idle,
+        );
+        let mut source = crate::platform::RealPrefixInputSource::default();
+        let mut draws = |state: &mut ClientState, revision, status| {
+            let shell = state.shell.as_mut().unwrap();
+            shell.compose(100, 30);
+            let composed = shell.last_composed();
+            let snapshot =
+                shell::ClientShellState::test_one_agent_snapshot("remote", revision, status);
+            install_client_shell_snapshot(
+                state,
+                &remote,
+                Box::new(snapshot),
+                false,
+                &mut endpoints,
+                &mut source,
+            )
+            .unwrap();
+            state.shell.as_ref().unwrap().last_composed() != composed
+        };
+        assert!(draws(&mut state, 1, AgentStatus::Idle), "it comes online");
+        assert!(!draws(&mut state, 2, AgentStatus::Idle));
+        assert!(draws(&mut state, 3, AgentStatus::Blocked));
+        assert!(!draws(&mut state, 4, AgentStatus::Blocked));
+        assert!(draws(&mut state, 5, AgentStatus::Working));
     }
 }

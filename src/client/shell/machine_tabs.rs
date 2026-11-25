@@ -42,10 +42,14 @@ pub(super) fn endpoint_set_mut<'a>(
     }
 }
 
-/// Rows the tabs sidebar keeps at its very top for the machine row
-/// (`SidebarPlan::machines`); 0 draws none.
-pub(super) fn machine_rows(_state: &render::ShellRenderState<'_>) -> u16 {
-    0
+/// Where the user was in a machine's list when another machine was shown.
+#[derive(Debug)]
+pub(super) struct MachineView {
+    boot_id: String,
+    focused_tab_id: Option<String>,
+    list_scroll: usize,
+    tab_history: super::tab_history::TabHistory,
+    filter: super::sidebar_filter::SidebarFilter,
 }
 
 /// Whether the shown machine's rows are its last known ones: with several
@@ -63,7 +67,7 @@ pub(super) fn shows_cached_machine(
 }
 
 impl ClientShellState {
-    pub(super) fn tabs_layout(&self) -> bool {
+    pub(crate) fn tabs_layout(&self) -> bool {
         self.config.sidebar_layout == crate::config::SidebarLayoutConfig::Tabs
     }
 
@@ -123,6 +127,64 @@ impl ClientShellState {
             crate::api::schema::Method::TabFocus(crate::api::schema::TabTarget { tab_id }),
             outcome,
         );
+    }
+
+    /// Another machine is about to be shown in the `tabs` layout: the active
+    /// one's list scroll, tab history and filters are put aside (an empty
+    /// filter is left), its search field lets go of the keyboard.
+    pub(super) fn remember_machine_view(&mut self) {
+        if !self.tabs_layout() {
+            return;
+        }
+        let Some(snapshot) = self.snapshot.as_deref() else {
+            return;
+        };
+        let mut tab_history = std::mem::take(&mut self.tab_history);
+        // The jump's request went with the machine's connection lane.
+        tab_history.drop_pending();
+        let mut filter = std::mem::take(&mut self.sidebar_filter);
+        filter.focused = false;
+        self.machine_views.insert(
+            self.active_endpoint_id.clone(),
+            MachineView {
+                boot_id: snapshot.boot_id.clone(),
+                focused_tab_id: snapshot.focused_tab_id.clone(),
+                list_scroll: self.agent_scroll,
+                tab_history,
+                filter,
+            },
+        );
+    }
+
+    /// The active machine is shown again (its snapshot is applied): its
+    /// filters come back, and with the same server its list scroll and tab
+    /// history. The list stays where it was while the same tab is focused,
+    /// else it reveals the focused one from there.
+    pub(super) fn restore_machine_view(&mut self) {
+        let Some(view) = self.machine_views.remove(&self.active_endpoint_id) else {
+            return;
+        };
+        if !self.tabs_layout() {
+            return;
+        }
+        self.sidebar_filter = view.filter;
+        self.sidebar_model.mark_dirty();
+        let Some(snapshot) = self.snapshot.as_deref() else {
+            return;
+        };
+        if snapshot.boot_id != view.boot_id {
+            return;
+        }
+        self.agent_scroll = view.list_scroll;
+        if snapshot.focused_tab_id == view.focused_tab_id {
+            self.reveal_focused_workspace = false;
+        }
+        self.tab_history = view.tab_history;
+        if let Some(tab_id) = snapshot.focused_tab_id.as_deref() {
+            let tabs = &snapshot.tabs;
+            self.tab_history
+                .observe(tab_id, |id| tabs.iter().any(|tab| tab.tab_id == id));
+        }
     }
 
     /// Another machine is shown from here on: what is keyed by the old one's

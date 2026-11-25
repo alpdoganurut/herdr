@@ -84,6 +84,10 @@ pub(crate) enum KeybindAction {
     /// Fork (sidebar filters): focus the `tabs` sidebar's search field, or
     /// let go of it (client-only).
     SidebarSearch,
+    /// Fork (machine tabs): show the next online machine (client-only).
+    NextMachine,
+    /// Fork (machine tabs): show the previous online machine (client-only).
+    PreviousMachine,
     CopyMode,
     Zoom,
     EnterResizeMode,
@@ -189,6 +193,8 @@ pub(crate) fn resolve_non_indexed_action(
             KeybindAction::TabHistoryForward,
         ),
         (&keybinds.sidebar_search, KeybindAction::SidebarSearch),
+        (&keybinds.next_machine, KeybindAction::NextMachine),
+        (&keybinds.previous_machine, KeybindAction::PreviousMachine),
         (&keybinds.copy_mode, KeybindAction::CopyMode),
         (&keybinds.focus_pane_left, KeybindAction::FocusPaneLeft),
         (&keybinds.focus_pane_down, KeybindAction::FocusPaneDown),

@@ -91,7 +91,31 @@ pub(super) fn render_collapsed(
                 }),
             );
             let mut status_badge = Rect::default();
-            if !endpoint.endpoint_id.is_local() {
+            // Fork (machine tabs): in the tabs layout the rail's machines
+            // carry the machine row's glyphs.
+            let tabs = config.sidebar_layout == crate::config::SidebarLayoutConfig::Tabs
+                && endpoint.status != ClientEndpointStatus::Disabled;
+            if tabs {
+                let (glyph, color) =
+                    super::machine_row::MachineMark::of(endpoint, state.machine_diagnostics)
+                        .glyph(config.status_indicators, palette);
+                let width = display_width(glyph).min(rect.width);
+                let badge = Rect::new(rect.right().saturating_sub(width), rect.y, width, 1);
+                put_right_text(
+                    buffer,
+                    rect,
+                    rect.y,
+                    glyph,
+                    state.machine_diagnostics.badge_style(
+                        endpoint,
+                        palette,
+                        Style::default().fg(color),
+                    ),
+                );
+                if !endpoint.endpoint_id.is_local() {
+                    status_badge = badge;
+                }
+            } else if !endpoint.endpoint_id.is_local() {
                 let (glyph, _, color) = endpoint_status_presentation(endpoint.status, palette);
                 let width = display_width(glyph).min(rect.width);
                 status_badge = Rect::new(rect.right().saturating_sub(width), rect.y, width, 1);

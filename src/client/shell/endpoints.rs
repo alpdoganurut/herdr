@@ -22,6 +22,8 @@ pub(crate) struct ClientShellEndpoint {
     pending_agent_view_projection: Option<ClientEndpointAgentViewProjection>,
     pub(crate) agent_view_projection_supported: bool,
     pub(crate) methods: Option<HashSet<String>>,
+    /// Fork (machine tabs): the machine row's counts of `snapshot`.
+    pub(super) machine_agents: super::machine_row::MachineAgents,
 }
 
 pub(super) struct MachineHit {
@@ -88,6 +90,9 @@ impl ClientShellState {
                 agent_view_projection_supported: previous
                     .is_some_and(|endpoint| endpoint.agent_view_projection_supported),
                 methods: previous.and_then(|endpoint| endpoint.methods.clone()),
+                machine_agents: previous
+                    .map(|endpoint| endpoint.machine_agents)
+                    .unwrap_or_default(),
             });
         }
 
@@ -101,12 +106,21 @@ impl ClientShellState {
             next.iter()
                 .any(|endpoint| &endpoint.endpoint_id == endpoint_id)
         });
+        // Fork (machine tabs): a removed machine's view goes with it.
+        self.machine_views.retain(|endpoint_id, _| {
+            next.iter()
+                .any(|endpoint| &endpoint.endpoint_id == endpoint_id)
+        });
         self.endpoints = next;
     }
 
     pub(crate) fn select_unavailable_local(&mut self) {
         self.reset_endpoint_projection();
         self.forget_endpoint_view();
+        // Fork (machine tabs): the removed machine's filters go with it.
+        if self.tabs_layout() {
+            self.sidebar_filter = Default::default();
+        }
         self.active_endpoint_id = ClientEndpointId::Local;
         self.mode = ClientShellMode::Terminal;
         self.snapshot = None;
@@ -236,7 +250,11 @@ impl ClientShellState {
         let generation = endpoint.snapshot_generation;
         let switching_endpoint = endpoint_id != &self.active_endpoint_id;
         let agent_scroll = self.agent_scroll;
+        // Fork (machine tabs): the machine left keeps its place in the list;
+        // Local selected for a removed machine comes back without a snapshot.
+        let entering = switching_endpoint || self.snapshot.is_none();
         if switching_endpoint {
+            self.remember_machine_view();
             self.active_endpoint_id = endpoint_id.clone();
             self.pane_surface = None;
             self.pending_pane_surface = None;
@@ -247,6 +265,9 @@ impl ClientShellState {
             // The aggregate agent list belongs to the client, not one endpoint.
             // Fork (machine tabs): the tabs sidebar's list is the endpoint's.
             self.agent_scroll = agent_scroll;
+        }
+        if entering {
+            self.restore_machine_view();
         }
         if let Some((_, pane_id)) = pending_agent_reveal {
             self.reveal_endpoint_agent(endpoint_id, &pane_id, agent_body_height);
@@ -625,6 +646,7 @@ impl ClientShellState {
         let endpoint = &mut self.endpoints[index];
         endpoint.agent_recency = recency;
         endpoint.snapshot_generation = generation;
+        endpoint.machine_agents = super::machine_row::MachineAgents::of(&snapshot);
         endpoint.snapshot = Some(snapshot);
         let pending_matches =
             endpoint
@@ -748,5 +770,6 @@ pub(super) fn local_endpoint() -> ClientShellEndpoint {
         pending_agent_view_projection: None,
         agent_view_projection_supported: false,
         methods: None,
+        machine_agents: Default::default(),
     }
 }

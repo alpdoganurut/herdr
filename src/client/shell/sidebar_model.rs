@@ -282,6 +282,8 @@ pub(crate) enum SidebarHover {
     Toolbar,
     /// Fork (sidebar filters): the `~ N filtered` row.
     Filtered,
+    /// Fork (machine tabs): a machine of the machine row.
+    Machine(ClientEndpointId),
 }
 
 /// The selected row of a frame: the hovered row, else the focused tab.
@@ -974,7 +976,9 @@ pub(crate) fn resolve_selected(
             }
             _ => None,
         }),
-        Some(SidebarHover::Toolbar | SidebarHover::Filtered) | None => None,
+        Some(SidebarHover::Toolbar | SidebarHover::Filtered | SidebarHover::Machine(_)) | None => {
+            None
+        }
     };
     hovered.unwrap_or_else(|| model.focused_tab.map_or(Selected::None, Selected::Tab))
 }

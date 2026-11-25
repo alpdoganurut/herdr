@@ -58,7 +58,7 @@
 //! `surface1`.
 //!
 //! Fork, sidebar v3 (the layout, `plan_layout`), top to bottom: the machine
-//! row (`machine_tabs.rs`), toolbar, the list, the Active block, the Pinned block (`tab_sidebar_pins.rs`), the Scheduled
+//! row (`machine_row.rs`), toolbar, the list, the Active block, the Pinned block (`tab_sidebar_pins.rs`), the Scheduled
 //! block (`tab_sidebar_scheduled.rs`), the fixed rows, the status footer,
 //! the menu row.
 
@@ -238,7 +238,7 @@ pub(super) fn render_tab_sidebar_with(
     let plan = plan_layout(
         content,
         LayoutWants {
-            machine_rows: super::machine_tabs::machine_rows(state),
+            machine_rows: super::machine_row::machine_rows(state.endpoints),
             fixed: u16::try_from(pinned.len()).unwrap_or(u16::MAX),
             status_lines: status_lines.len(),
             active_cap: super::tab_sidebar_active::active_cap(content.height),
@@ -258,6 +258,7 @@ pub(super) fn render_tab_sidebar_with(
     let chrome = Style::default().bg(palette.sidebar_chrome());
     for rect in [
         plan.machines,
+        plan.machines_rule,
         plan.toolbar,
         plan.active,
         plan.pins,
@@ -274,6 +275,19 @@ pub(super) fn render_tab_sidebar_with(
             plan.fixed_rule.x,
             plan.fixed_rule.y,
             plan.fixed_rule.width,
+            palette,
+        );
+    }
+    // Fork (machine tabs): the machine row and its rule.
+    if !plan.machines.is_empty() {
+        super::machine_row::render_machine_row(buffer, plan.machines, config, state, hits);
+    }
+    if !plan.machines_rule.is_empty() {
+        super::tab_sidebar_active::put_rule(
+            buffer,
+            plan.machines_rule.x,
+            plan.machines_rule.y,
+            plan.machines_rule.width,
             palette,
         );
     }
@@ -677,14 +691,16 @@ pub(super) fn sidebar_sections(config: &ClientShellConfig) -> super::sidebar_mod
 }
 
 /// Fork (sidebar v2): the tabs sidebar's rows, top to bottom (`plan_layout`).
-/// Every rect spans the content width. `machines`, `toolbar`, `active`,
-/// `pins`, `scheduled`, `detail`, `footer` and `menu` are chrome rows
+/// Every rect spans the content width. `machines`, `machines_rule`,
+/// `toolbar`, `active`, `pins`, `scheduled`, `detail`, `footer` and `menu` are chrome rows
 /// (painted with `Palette::sidebar_chrome()` before anything draws on them).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct SidebarPlan {
-    /// Fork (machine tabs): the machine row at the very top
-    /// (`LayoutWants::machine_rows` high while a list row is left), or empty.
+    /// Fork (machine tabs): the machine row at the very top (one row), or
+    /// empty.
     pub(super) machines: Rect,
+    /// The rule under it, or empty.
+    pub(super) machines_rule: Rect,
     pub(super) toolbar: Rect,
     /// The scrolling list.
     pub(super) list: Rect,
@@ -710,8 +726,8 @@ pub(super) struct SidebarPlan {
 /// What the optional rows of `plan_layout` ask for.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct LayoutWants {
-    /// Fork (machine tabs): rows for the machine row
-    /// (`machine_tabs::machine_rows`).
+    /// Fork (machine tabs): the machine row and its rule
+    /// (`machine_row::machine_rows`: 0 or 2).
     pub(super) machine_rows: u16,
     /// The Pinned block's line cap (`pins_cap`).
     pub(super) pins_cap: u16,
@@ -755,9 +771,9 @@ impl<'f> SectionRows<'f> {
 /// is short (before the Active block's).
 const SECTION_CAP_STEPS: [u16; 2] = [2, 1];
 
-/// The height budget of `content` (pure). The machine row takes the top rows
-/// it wants while the toolbar, one list row and the menu row fit below it.
-/// The toolbar and the menu row take one row each; the status footer one row per line
+/// The height budget of `content` (pure). The machine row and its rule take
+/// the top rows; the row stays while the toolbar, one list row and the menu
+/// row fit below it. The toolbar and the menu row take one row each; the status footer one row per line
 /// from `SPACIOUS_HEIGHT` rows, else one row for all of them; the Active,
 /// Pinned and Scheduled blocks the rows `rows` asks for at their caps; the
 /// fixed rows one each while the
@@ -765,14 +781,16 @@ const SECTION_CAP_STEPS: [u16; 2] = [2, 1];
 /// `plan.fixed.height`). The list takes the rest. While it has fewer than
 /// `MIN_LIST_ROWS` rows the optional rows give way in turn: the Scheduled block's lines (cap 2, 1), the Pinned block's
 /// (cap 2, 1), the Active block's (cap 6, 4, 2), then the whole Scheduled,
-/// Pinned and Active blocks, then the rule above the fixed rows, then the
+/// Pinned and Active blocks, then the rule under the machine row, then the
+/// rule above the fixed rows, then the
 /// footer (one row, then none).
 pub(super) fn plan_layout(content: Rect, wants: LayoutWants, rows: SectionRows<'_>) -> SidebarPlan {
     let height = content.height;
-    let machine_rows = wants
+    let machines = wants
         .machine_rows
+        .min(1)
         .min(height.saturating_sub(TOOLBAR_ROWS + FOOTER_ROWS + 1));
-    let room = height.saturating_sub(machine_rows + TOOLBAR_ROWS + FOOTER_ROWS);
+    let room = height.saturating_sub(machines + TOOLBAR_ROWS + FOOTER_ROWS);
     let status_lines = wants.status_lines.min(MAX_STATUS_ROWS);
     let footer = if height < SPACIOUS_HEIGHT {
         status_lines.min(1)
@@ -789,6 +807,11 @@ pub(super) fn plan_layout(content: Rect, wants: LayoutWants, rows: SectionRows<'
         fixed,
         fixed_rule: u16::from(fixed > 0),
         footer,
+        machines_rule: if machines > 0 {
+            wants.machine_rows.saturating_sub(1)
+        } else {
+            0
+        },
     };
     let short = |budget: &Budget| budget.list(room) < MIN_LIST_ROWS;
     // 1, 2. The Scheduled, then the Pinned block's lines.
@@ -827,7 +850,10 @@ pub(super) fn plan_layout(content: Rect, wants: LayoutWants, rows: SectionRows<'
     if short(&budget) {
         budget.active = 0;
     }
-    // 7. The rule above the fixed rows.
+    // 7. The rule under the machine row, then the one above the fixed rows.
+    if short(&budget) {
+        budget.machines_rule = 0;
+    }
     if short(&budget) {
         budget.fixed_rule = 0;
     }
@@ -838,8 +864,9 @@ pub(super) fn plan_layout(content: Rect, wants: LayoutWants, rows: SectionRows<'
     let list_height = budget.list(room);
 
     let row = |y: u16, height: u16| Rect::new(content.x, y, content.width, height);
-    let machines = row(content.y, machine_rows);
-    let toolbar = row(machines.bottom(), TOOLBAR_ROWS.min(height));
+    let machines = row(content.y, machines);
+    let machines_rule = row(machines.bottom(), budget.machines_rule);
+    let toolbar = row(machines_rule.bottom(), TOOLBAR_ROWS.min(height));
     let list = row(toolbar.bottom(), list_height);
     let active = row(list.bottom(), budget.active);
     let pins = row(active.bottom(), budget.pins);
@@ -853,6 +880,7 @@ pub(super) fn plan_layout(content: Rect, wants: LayoutWants, rows: SectionRows<'
     );
     SidebarPlan {
         machines,
+        machines_rule,
         toolbar,
         list,
         active,
@@ -874,6 +902,8 @@ struct Budget {
     /// Fork (sidebar v3): the rule above the fixed rows (0 or 1).
     fixed_rule: u16,
     footer: u16,
+    /// Fork (machine tabs): the rule under the machine row.
+    machines_rule: u16,
 }
 
 impl Budget {
@@ -885,7 +915,8 @@ impl Budget {
                 .saturating_add(self.scheduled)
                 .saturating_add(self.fixed)
                 .saturating_add(self.fixed_rule)
-                .saturating_add(self.footer),
+                .saturating_add(self.footer)
+                .saturating_add(self.machines_rule),
         )
     }
 }

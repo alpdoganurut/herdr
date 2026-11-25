@@ -167,6 +167,11 @@ impl TabHistory {
         *self = Self::default();
     }
 
+    /// Fork (machine tabs): a jump in flight will not be confirmed.
+    pub(super) fn drop_pending(&mut self) {
+        self.pending = None;
+    }
+
     fn current(&self) -> Option<&str> {
         self.entries.get(self.cursor).map(String::as_str)
     }

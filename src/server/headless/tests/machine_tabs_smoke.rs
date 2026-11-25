@@ -294,3 +294,53 @@ async fn fork_smoke_a_machine_not_shown_still_pushes_and_stays_apart() {
     assert_eq!(pins[0].boot_id, "beta");
     assert_eq!(pins[0].tab_ids, remote.tab_ids);
 }
+
+/// The tab a client shows on a machine is the server's, per client: switching
+/// to another machine and back (the surface off and on) comes back to it,
+/// whatever the machine's own clients focused meanwhile.
+#[tokio::test]
+async fn fork_smoke_a_machine_shown_again_has_its_tab() {
+    let Machine {
+        mut server,
+        tab_ids,
+        ..
+    } = machine("gamma");
+    let _attached = connect(&mut server, ATTACHED, true);
+    let client = connect(&mut server, FEDERATED, true);
+    let boot_id = server.client_shell_boot_id.clone();
+    let request = |server: &mut HeadlessServer, client_id: u64, method: Method| {
+        server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
+            client_id,
+            boot_id: boot_id.clone(),
+            request: Box::new(Request {
+                id: "machine-tabs".into(),
+                method,
+            }),
+        });
+        server.render_and_stream();
+    };
+    let surface = |active| Method::ClientShellSurfaceSet(ClientShellSurfaceSetParams { active });
+    let focus = |tab_id: &str| {
+        Method::TabFocus(api::schema::TabTarget {
+            tab_id: tab_id.to_owned(),
+        })
+    };
+    request(&mut server, FEDERATED, focus(&tab_ids[1]));
+    request(&mut server, FEDERATED, surface(false));
+    request(&mut server, ATTACHED, focus(&tab_ids[0]));
+    drain(&client);
+    request(&mut server, FEDERATED, surface(true));
+    let snapshot = received(&client)
+        .0
+        .into_iter()
+        .filter_map(|message| match message {
+            EndpointControlMessage::Snapshot(snapshot) => Some(snapshot),
+            _ => None,
+        })
+        .next_back()
+        .expect("a snapshot with the surface");
+    assert_eq!(
+        snapshot.focused_tab_id.as_deref(),
+        Some(tab_ids[1].as_str())
+    );
+}

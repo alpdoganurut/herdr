@@ -1441,8 +1441,16 @@ async fn run_client_loop(
                 if !endpoint_catalog.select_endpoint(&endpoint_id) {
                     continue;
                 }
-                if let Err(error) = endpoint_catalog.store_selection() {
-                    warn!(%error, "failed to persist desired endpoint selection");
+                // Fork (machine tabs): the tabs layout starts on Local, so the
+                // stored selection stays the `spaces` layout's.
+                if !state
+                    .shell
+                    .as_ref()
+                    .is_some_and(|shell| shell.tabs_layout())
+                {
+                    if let Err(error) = endpoint_catalog.store_selection() {
+                        warn!(%error, "failed to persist desired endpoint selection");
+                    }
                 }
                 begin_endpoint_activation(
                     &mut state,
@@ -2421,12 +2429,8 @@ async fn run_client_loop(
                                 continue;
                             }
                         }
-                        let selected_endpoint = endpoint_catalog
-                            .selected_profile
-                            .as_ref()
-                            .map_or(endpoint::ClientEndpointId::Local, |profile_id| {
-                                endpoint::ClientEndpointId::Ssh(profile_id.clone())
-                            });
+                        let selected_endpoint =
+                            desired_endpoint(&state, &endpoint_catalog, &write_stream);
                         let activation_ready = state.shell.as_ref().is_some_and(|shell| {
                             shell.endpoint_has_snapshot(&selected_endpoint)
                                 && (!write_stream

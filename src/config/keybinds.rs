@@ -399,6 +399,8 @@ pub struct Keybinds {
     pub tab_history_back: ActionKeybinds,
     pub tab_history_forward: ActionKeybinds,
     pub sidebar_search: ActionKeybinds,
+    pub next_machine: ActionKeybinds,
+    pub previous_machine: ActionKeybinds,
     pub copy_mode: ActionKeybinds,
     pub focus_pane_left: ActionKeybinds,
     pub focus_pane_down: ActionKeybinds,
@@ -600,6 +602,8 @@ impl Config {
             tab_history_back: empty_action!(),
             tab_history_forward: empty_action!(),
             sidebar_search: empty_action!(),
+            next_machine: empty_action!(),
+            previous_machine: empty_action!(),
             copy_mode: empty_action!(),
             focus_pane_left: empty_action!(),
             focus_pane_down: empty_action!(),
@@ -766,6 +770,8 @@ impl Config {
             apply_action!(keybinds.tab_history_back, tab_history_back, source);
             apply_action!(keybinds.tab_history_forward, tab_history_forward, source);
             apply_action!(keybinds.sidebar_search, sidebar_search, source);
+            apply_action!(keybinds.next_machine, next_machine, source);
+            apply_action!(keybinds.previous_machine, previous_machine, source);
             apply_action!(keybinds.copy_mode, copy_mode, source);
             apply_action!(keybinds.focus_pane_left, focus_pane_left, source);
             apply_action!(keybinds.focus_pane_down, focus_pane_down, source);
@@ -2739,5 +2745,36 @@ command = "echo hi"
         let kb = config.keybinds();
         assert_eq!(kb.custom_commands.len(), 1, "the user's command wins");
         assert!(binding_triggers(&kb.sidebar_search).is_empty());
+    }
+
+    #[test]
+    fn default_next_machine_key_is_prefix_m_and_collides_with_no_default() {
+        assert!(Config::default().collect_diagnostics().is_empty());
+        let kb = Config::default().keybinds();
+        assert_eq!(
+            binding_triggers(&kb.next_machine),
+            vec![BindingTrigger::Prefix((
+                KeyCode::Char('m'),
+                KeyModifiers::empty()
+            ))]
+        );
+        assert!(binding_triggers(&kb.previous_machine).is_empty());
+        let config: Config = toml::from_str(
+            "[keys]\nnew_workspace = \"prefix+m\"\nprevious_machine = \"prefix+shift+m\"",
+        )
+        .unwrap();
+        assert!(config.collect_diagnostics().is_empty(), "silently");
+        let kb = config.keybinds();
+        assert!(
+            binding_triggers(&kb.next_machine).is_empty(),
+            "the user's own prefix+m wins"
+        );
+        assert_eq!(binding_triggers(&kb.previous_machine).len(), 1);
+        let config: Config =
+            toml::from_str("[[keys.command]]\nkey = \"prefix+m\"\ncommand = \"echo hi\"").unwrap();
+        assert!(config.collect_diagnostics().is_empty());
+        let kb = config.keybinds();
+        assert_eq!(kb.custom_commands.len(), 1, "the user's command wins");
+        assert!(binding_triggers(&kb.next_machine).is_empty());
     }
 }

@@ -31,6 +31,13 @@ impl ClientShellState {
             crate::input::KeybindMatch::Action(crate::input::KeybindAction::SidebarSearch) => {
                 self.toggle_sidebar_search(outcome);
             }
+            // Fork (machine tabs): show the next or previous online machine.
+            crate::input::KeybindMatch::Action(
+                action @ (crate::input::KeybindAction::NextMachine
+                | crate::input::KeybindAction::PreviousMachine),
+            ) => {
+                self.step_machine(action == crate::input::KeybindAction::NextMachine, outcome);
+            }
             crate::input::KeybindMatch::Action(crate::input::KeybindAction::ToggleSidebar) => {
                 self.sidebar_collapsed = !self.sidebar_collapsed;
                 self.sidebar_collapsed_manual = true;
