@@ -75,3 +75,10 @@ test('a popup is kept inside the work area and at most POPUP_MAX', () => {
   assert.deepStrictEqual(off, { x: 1040, y: 600, width: 400, height: 300 });
   assert.strictEqual(POPUP_CAP, 2);
 });
+
+test("a remote companion's popups have no DevTools; a local one's are as before", () => {
+  const prefs = (o) => popupWindowOptions({ parent: 'P', show: false, preload: '/p.js', ...o }).webPreferences;
+  assert.ok(!('devTools' in prefs({})));
+  assert.deepStrictEqual(prefs({ devTools: true }), prefs({}));
+  assert.deepStrictEqual(prefs({ devTools: false }), { ...prefs({}), devTools: false });
+});

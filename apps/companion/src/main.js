@@ -20,6 +20,7 @@ const { pageMenuItems, pageMenuActions } = require('./context-menu.js');
 const bar = require('./ui/bar-model.js');
 const pageApi = require('./page-api.js');
 const keys = require('./keys.js');
+const remote = require('./remote.js');
 
 const VERSION = require('../package.json').version;
 const APP_NAME = 'herdr+ companion'; // the macOS menu bar, Dock and window titles
@@ -87,6 +88,12 @@ if (!SOCKET) {
   app.exit(2);
 }
 
+// --remote without a usable home, socket or profile: never run unproxied, nor on the user's own
+if (remote.error) {
+  console.error(`herdr-companion: ${remote.error}`);
+  process.exit(2);
+}
+
 const profileDir = argValue('--profile-dir');
 // Without --profile-dir the profile keeps its old home (productName would move it).
 app.setPath('userData', profileDir ? path.resolve(profileDir) : path.join(app.getPath('appData'), 'herdr-companion'));
@@ -95,6 +102,7 @@ app.setName(APP_NAME);
 app.commandLine.appendSwitch('user-data-dir', app.getPath('userData'));
 app.commandLine.appendSwitch('remote-debugging-port', '0');
 app.commandLine.appendSwitch('remote-debugging-address', '127.0.0.1');
+remote.install(log);
 // The DevTools port makes Chromium report navigator.webdriver = true to every page: sign-in
 // providers (Google's "This browser or app may not be secure") read that as an automated
 // browser. Electron shows no infobar for the switch (Chromium's does: herdr's own Chromium
@@ -263,6 +271,7 @@ class Companion {
         sandbox: true,
         contextIsolation: true,
         nodeIntegration: false,
+        ...remote.prefs,
       },
     });
     this.views.setHost(this.win);
@@ -289,6 +298,7 @@ class Companion {
         sandbox: true,
         contextIsolation: true,
         nodeIntegration: false,
+        ...remote.prefs,
         backgroundThrottling: false,
       },
     });
@@ -343,7 +353,14 @@ class Companion {
     if (fakeWindows) this.fakeScale = Number(process.env.HERDR_COMPANION_FAKE_SCALE) || 2;
     this.probe = new WindowProbe({ log, fakeFile: fakeWindows });
     this.dock = new DockController({ host: this, feed: this.feed, probe: this.probe, log, headless: HEADLESS, electron: require('electron') });
-    this.link.start();
+    // a remote companion's web session is warm (or 8 s went by) before herdr attaches: what is
+    // opened in it then meets a proxy that knows it
+    if (remote.on) {
+      remote.warm(this.views.webSession()).then((open) => {
+        if (!open) log('remote: registering without the proxy:', remote.why(this.views.webSession()));
+        if (!this.shuttingDown) this.link.start();
+      });
+    } else this.link.start();
     setInterval(() => this.flushReports(), REPORT_FLUSH_MS).unref();
 
     // A managed companion started for an agent, by autostart or a crash restart never
@@ -366,7 +383,8 @@ class Companion {
     if (u.host === 'control') file = path.join(UI_DIR, 'control.html');
     else if (u.host === 'ui') file = path.join(UI_DIR, decodeURIComponent(u.pathname));
     if (!file || !within(UI_DIR, path.resolve(file))) return new Response('not found', { status: 404 });
-    return net.fetch(pathToFileURL(file).toString());
+    // past a remote companion's refusal of file: (remote.js)
+    return net.fetch(pathToFileURL(file).toString(), { bypassCustomProtocolHandlers: true });
   }
 
   installMenu() {
@@ -673,6 +691,7 @@ class Companion {
         sandbox: true,
         contextIsolation: true,
         nodeIntegration: false,
+        ...remote.prefs,
       },
     });
     this.dockWin = win;
@@ -685,6 +704,7 @@ class Companion {
         sandbox: true,
         contextIsolation: true,
         nodeIntegration: false,
+        ...remote.prefs,
       },
     });
     barView.setBackgroundColor('#00000000');
@@ -1023,6 +1043,7 @@ class Companion {
         sandbox: true,
         contextIsolation: true,
         nodeIntegration: false,
+        ...remote.prefs,
         backgroundThrottling: false,
       },
     });
@@ -1830,6 +1851,7 @@ class Companion {
     const actions = pageMenuActions({
       wc,
       params,
+      inspect: !remote.on,
       openTab: (url) => this.onWindowOpen(viewId, url, 'foreground-tab'),
       copyText: (text) => clipboard.writeText(text),
       report: (action) => {
@@ -1842,7 +1864,7 @@ class Companion {
     try {
       nav = popup ? { canGoBack: wc.navigationHistory.canGoBack(), canGoForward: wc.navigationHistory.canGoForward() } : this.views.navState(viewId);
     } catch {}
-    const template = pageMenuItems(params, nav).map((it) =>
+    const template = pageMenuItems(params, nav, { inspect: !remote.on }).map((it) =>
       it.type === 'separator'
         ? it
         : {
