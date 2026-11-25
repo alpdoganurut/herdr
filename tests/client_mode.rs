@@ -990,6 +990,10 @@ fn federated_launch_opens_local_directly_while_saved_ssh_is_unavailable() {
 /// `wait_until` below returns as soon as its condition holds.
 const REMOTE_READY_TIMEOUT: Duration = Duration::from_secs(30);
 const REMOTE_INPUT_TIMEOUT: Duration = Duration::from_secs(20);
+// Fork: waits that cover starting a fresh herdr process (a server, the ssh bridge). macOS can
+// hold a newly built binary in exec for seconds while it is checked, more so while other builds
+// run; a pass returns as soon as the wait is met, so only a real hang takes longer.
+const SERVER_START_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[test]
 fn federated_client_starts_without_local_and_survives_its_restart() {
@@ -1007,8 +1011,8 @@ fn federated_client_starts_without_local_and_survives_its_restart() {
     let remote_client = remote_runtime.join("herdr-client.sock");
     let mut remote_server =
         spawn_server(&remote_config, &remote_runtime, &remote_api, &remote_client);
-    wait_for_socket(&remote_api, Duration::from_secs(10));
-    wait_for_socket(&remote_client, Duration::from_secs(10));
+    wait_for_socket(&remote_api, SERVER_START_TIMEOUT);
+    wait_for_socket(&remote_client, SERVER_START_TIMEOUT);
     let created = send_json_request(
         &remote_api,
         &serde_json::json!({
@@ -1099,7 +1103,7 @@ fn federated_client_starts_without_local_and_survives_its_restart() {
         let marker = format!("REMOTE_RECONNECTED_{cycle}");
         send_pane_shell_command(&remote_api, remote_pane, &format!("printf '{marker}\\n'"));
         assert!(
-            wait_until(Duration::from_secs(15), Duration::from_millis(20), || {
+            wait_until(SERVER_START_TIMEOUT, Duration::from_millis(20), || {
                 screen_text().contains(&marker)
             }),
             "remote reconnect {cycle} must restore the visible screen without switching machines"
@@ -1126,7 +1130,7 @@ fn federated_client_starts_without_local_and_survives_its_restart() {
     }
 
     let mut local = spawn_server(&config_home, &runtime_dir, &api_socket, &client_socket);
-    wait_for_socket(&api_socket, Duration::from_secs(10));
+    wait_for_socket(&api_socket, SERVER_START_TIMEOUT);
     let created = send_json_request(
         &api_socket,
         &serde_json::json!({
@@ -1137,7 +1141,7 @@ fn federated_client_starts_without_local_and_survives_its_restart() {
     );
     assert_eq!(created["result"]["type"], "workspace_created");
     assert!(wait_until(
-        Duration::from_secs(10),
+        SERVER_START_TIMEOUT,
         Duration::from_millis(20),
         || screen_text().contains("local-online")
     ));
@@ -1161,7 +1165,7 @@ fn federated_client_starts_without_local_and_survives_its_restart() {
     assert!(client.child.try_wait().unwrap().is_none());
 
     let restarted = spawn_server(&config_home, &runtime_dir, &api_socket, &client_socket);
-    wait_for_socket(&api_socket, Duration::from_secs(10));
+    wait_for_socket(&api_socket, SERVER_START_TIMEOUT);
     let created = send_json_request(
         &api_socket,
         &serde_json::json!({
@@ -1172,7 +1176,7 @@ fn federated_client_starts_without_local_and_survives_its_restart() {
     );
     assert_eq!(created["result"]["type"], "workspace_created");
     assert!(
-        wait_until(Duration::from_secs(12), Duration::from_millis(20), || {
+        wait_until(SERVER_START_TIMEOUT, Duration::from_millis(20), || {
             screen_text().contains("local-returned")
         }),
         "Local must reconnect with fresh metadata"
