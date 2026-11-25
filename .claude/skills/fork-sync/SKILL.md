@@ -12,6 +12,16 @@ Use Sonnet for this skill (`model: sonnet` above). **When unsure, deny. Don't re
 
 `scripts/fork_sync.sh` does everything deterministic: fetch, classify, merge in the detached sync worktree, gate, land, push and install. Your only job is to resolve the conflicts FORK.md explicitly allows. Everything else is a denial.
 
+## Prerequisites
+
+The gate runs every FORK.md section 10 smoke test with `HERDR_REQUIRE_BROWSER_TESTS=1`, so a missing browser piece is a denial, not a skip. It needs, besides the Rust toolchain:
+
+- `node` on PATH (20 or newer);
+- playwright-core in the main checkout: `npm ci` in `apps/companion`;
+- a Chromium for it: the Playwright cache (`npx playwright-core install chromium-headless-shell`, run in `apps/companion`) or `HERDR_TEST_CHROMIUM=<binary>`.
+
+Never install these yourself. When the gate fails because one is missing, report it as a denial and name the missing piece.
+
 ## Hard rules
 
 - Never restart the herdr server or client, and never run `herdr server ...` or any other `herdr` command. The script stages or installs the binary; the user does any restart.

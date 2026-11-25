@@ -261,6 +261,7 @@ mod agent_cards;
 mod agent_context;
 mod agents_model;
 mod agents_worktrees_notifications;
+mod background_polls;
 mod breathe;
 mod browser;
 /// Fork (companion launcher): the browser dock and Browser view.

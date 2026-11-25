@@ -295,13 +295,14 @@ impl ClientShellState {
         }
     }
 
-    /// The tick loop: pull again when the server was checking or fixing.
+    /// The tick loop: pull again when the server was checking or fixing; an
+    /// offline endpoint's pull stays due.
     pub(crate) fn tick_browser_settings(
         &mut self,
         now: std::time::Instant,
         outcome: &mut ClientShellInput,
     ) {
-        if !self.browser_section_open() {
+        if !self.browser_section_open() || !self.endpoint_is_online(&self.active_endpoint_id) {
             return;
         }
         if self.browser_settings().is_some_and(|b| b.loading) {
@@ -316,14 +317,24 @@ impl ClientShellState {
         }
     }
 
-    /// When the tick loop must wake for the section.
+    /// When the tick loop must wake for the section (never for an offline
+    /// endpoint: its past deadline would spin the loop).
     pub(crate) fn next_browser_settings_deadline(&self) -> Option<std::time::Instant> {
-        if !self.browser_section_open() {
+        if !self.browser_section_open() || !self.endpoint_is_online(&self.active_endpoint_id) {
             return None;
         }
         self.browser_settings()
             .filter(|b| !b.loading)
             .and_then(|b| b.poll_at)
+    }
+
+    /// A cancelled `browser.settings` pull: the section keeps what it shows
+    /// and pulls again shortly, as after `endpoint_busy`.
+    pub(super) fn retry_browser_settings(&mut self) {
+        if let Some(browser) = self.browser_settings_mut() {
+            browser.loading = false;
+            browser.poll_at = Some(std::time::Instant::now() + POLL_INTERVAL);
+        }
     }
 
     /// A `browser.settings*` reply (or its failure) reaches the open section.

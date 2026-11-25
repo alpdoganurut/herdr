@@ -574,8 +574,9 @@ impl ClientShellState {
         if self.browser.pulled_for.is_none() && self.snapshot.is_none() {
             return None;
         }
-        // A pull in flight: its answer drives the next one.
-        if self.browser.loading {
+        // A pull in flight: its answer drives the next one. An offline
+        // endpoint's pull stays due, and a past deadline would spin the loop.
+        if self.browser.loading || !self.endpoint_is_online(&self.active_endpoint_id) {
             return None;
         }
         let method = Method::BrowserGet(BrowserGetParams::default());
@@ -587,21 +588,23 @@ impl ClientShellState {
     }
 
     /// `browser.get {since_seq}`, remembered for `boot_id`; silently skipped
-    /// on an endpoint that does not advertise it or is offline.
+    /// on an endpoint that does not advertise it, and still due on an
+    /// offline one.
     fn queue_browser_get(
         &mut self,
         boot_id: String,
         now: std::time::Instant,
         outcome: &mut ClientShellInput,
     ) {
+        if !self.endpoint_is_online(&self.active_endpoint_id) {
+            return;
+        }
         self.browser.refresh_due = false;
         self.browser.pulled_for = Some(boot_id);
         self.browser.last_pull = Some(now);
         let since_seq = self.browser.info.as_ref().map(|info| info.seq);
         let method = Method::BrowserGet(BrowserGetParams { since_seq });
-        if !self.supports_endpoint_method(&method)
-            || !self.endpoint_is_online(&self.active_endpoint_id)
-        {
+        if !self.supports_endpoint_method(&method) {
             return;
         }
         if self.push_endpoint_method_with_kind(method, PendingEndpointKind::BrowserGet, outcome) {

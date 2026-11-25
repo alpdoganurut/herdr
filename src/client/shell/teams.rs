@@ -335,21 +335,32 @@ impl ClientShellState {
             return;
         }
         let advertised = self.teams_supported();
+        let online = self.endpoint_is_online(&self.active_endpoint_id);
         let Some(ClientShellOverlay::TeamInfo(overlay)) = self.overlay.as_mut() else {
             return;
         };
         if overlay.endpoint_id != self.active_endpoint_id {
             return;
         }
+        // A pull after the user's own (the one that opened the overlay) waits
+        // for an offline endpoint instead of raising "not ready".
+        if !online && overlay.last_pull.is_some() {
+            return;
+        }
         let Some(workspace_id) = overlay.pull_due(now, advertised) else {
             return;
         };
-        if !self.push_team_request(TeamRequest::Get { workspace_id }, outcome) {
-            if let Some(ClientShellOverlay::TeamInfo(overlay)) = self.overlay.as_mut() {
+        let sent = self.push_team_request(TeamRequest::Get { workspace_id }, outcome);
+        if let Some(ClientShellOverlay::TeamInfo(overlay)) = self.overlay.as_mut() {
+            if sent {
+                // Loading is drawn only while there is no team to show.
+                outcome.repaint |= overlay.team.is_none();
+            } else {
                 overlay.loading = false;
+                // Still due once the endpoint is back.
+                overlay.refresh_due |= !online;
             }
         }
-        outcome.repaint = true;
     }
 
     /// A `team.*` reply. Errors already raised the generic notice; a

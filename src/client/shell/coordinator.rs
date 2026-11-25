@@ -532,8 +532,9 @@ impl ClientCoordinatorState {
     /// The tick: `Some(Get)` when a pull is due and may be sent (the server
     /// advertises `coordinator.get` and the endpoint is online). The
     /// returned flag asks for a repaint (a new connection dropped the old
-    /// server's state). A pull that is due but cannot be sent is still
-    /// remembered, so an unadvertised server is not asked every tick.
+    /// server's state). A due pull an unadvertised server cannot take is
+    /// still remembered, so that server is not asked every tick; one for an
+    /// offline endpoint stays due.
     pub(crate) fn tick(
         &mut self,
         snapshot: &ClientShellSnapshot,
@@ -558,10 +559,14 @@ impl ClientCoordinatorState {
         if !(stale || self.refresh_due || periodic) || self.loading {
             return (repaint, None);
         }
+        // Still due once the endpoint is back.
+        if !online {
+            return (repaint, None);
+        }
         self.refresh_due = false;
         self.pulled_for = Some(self.signature(snapshot));
         self.last_pull = Some(now);
-        if !advertised || !online {
+        if !advertised {
             return (repaint, None);
         }
         self.loading = true;

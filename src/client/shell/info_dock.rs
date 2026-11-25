@@ -1849,20 +1849,26 @@ impl ClientShellState {
             // A reply for a request the dock already gave up on.
             None => return (false, Vec::new()),
         };
-        // Fork (machine tabs): the machine is being left or is gone; a
-        // request sent from here would be dropped. The tick goes on.
-        let cancelled = matches!(
-            &result,
-            Err(error) if error.code.as_deref() == Some("endpoint_cancelled")
-        );
+        // Fork (machine tabs, background polls): a cancelled request (the
+        // machine is being left or is gone, or a switch's fence is closed)
+        // starts no other one.
+        let cancelled = super::background_polls::is_cancelled(&result);
+        let pull = matches!(request, InfoRequest::NotesGet);
         match result {
             Err(error) => dock_reply_error(dock, request, error, now),
             Ok(result) => dock_reply(dock, request, result, now),
         }
-        let mut outcome = ClientShellInput::default();
-        if !cancelled {
-            self.pump_info_dock(now, &mut outcome);
+        // A cancellation starts no other request. The pull itself is queued
+        // again (an open editor's conflict may wait for its text, and the
+        // poll skips an editor); the next tick that may send sends it.
+        if cancelled {
+            if pull {
+                dock.queue(InfoRequest::NotesGet, None);
+            }
+            return (!pull, Vec::new());
         }
+        let mut outcome = ClientShellInput::default();
+        self.pump_info_dock(now, &mut outcome);
         (true, outcome.actions)
     }
 }
