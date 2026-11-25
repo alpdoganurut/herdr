@@ -92,7 +92,9 @@ impl MachineMark {
         Self { state, count }
     }
 
-    /// The glyph and its color, as the sidebar draws an agent in that state.
+    /// The glyph and its color, as the session header draws an agent in that
+    /// state: a waiting machine's `◉` differs from a working one's `●`
+    /// without its color.
     pub(super) fn glyph(
         self,
         style: crate::config::StatusIndicatorStyle,
@@ -101,7 +103,7 @@ impl MachineMark {
         use crate::api::schema::AgentStatus;
         match self.state {
             MachineState::Blocked => (
-                status_icon(AgentStatus::Blocked, style),
+                super::session_header::status_glyph(AgentStatus::Blocked, false, style),
                 status_color(AgentStatus::Blocked, palette),
             ),
             MachineState::Working => (

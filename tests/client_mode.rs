@@ -1021,9 +1021,11 @@ fn federated_client_starts_without_local_and_survives_its_restart() {
     send_pane_shell_command(&remote_api, remote_pane, "printf 'REMOTE_INITIAL_FRAME\\n'");
 
     fs::create_dir_all(config_home.join(app_dir_name())).unwrap();
+    // Fork (machine tabs): the tabs layout starts on Local and lists one
+    // machine (tests/machine_tabs.rs); this is the machine list's client.
     fs::write(
         config_home.join(app_dir_name()).join("config.toml"),
-        "onboarding = false\n",
+        "onboarding = false\n[ui]\nsidebar_layout = \"spaces\"\n",
     )
     .unwrap();
     let catalog_dir = runtime_dir

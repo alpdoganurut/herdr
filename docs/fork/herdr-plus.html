@@ -355,6 +355,19 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
           <li><code>+</code> opens a new shell tab, loose at the top of the list, and focuses it. To group a tab, right-click it and pick <b>Move to group…</b> (or <b>Remove from group</b>); <code>move_tab_to_group</code> and dragging work too.</li>
         </ul>
         <p>On a narrow sidebar the history buttons drop out first, then the search controls. Other keys and widths: <a href="config.html#sidebar-toolbar">configuration page</a>.</p></div>
+      <div class="card"><h3><span class="g">⇄</span>Machine tabs</h3><p>With saved SSH machines (<code>herdr machine add</code>) the sidebar's first row lists them, each with what its agents do and how many: <code>◉</code> waits for you, <code>●</code> works, <code>○</code> idle, <code>↻</code> connecting, <code>!</code> needs a login.</p>
+        <div class="term solo" style="width:100%;margin:.6rem 0 .5rem;box-shadow:none" role="img" aria-label="The machine row: Local works with two agents, build waits for you">
+          <div class="sb">
+            <div class="r c"><span><span class="ye">●</span> <span class="t b" style="text-decoration:underline">Local</span> <span class="ye">2</span>  <span class="re">◉</span> <span class="s0">build</span> <span class="re">1</span></span><span></span></div>
+            <div class="r c"><span class="o0"><span class="gl">⏶</span> ‹ ›</span><span class="o0">+</span></div>
+          </div>
+        </div>
+        <ul>
+          <li>A click or <code>prefix+m</code> switches the sidebar, the header and the terminal. Each machine comes back on its tab, scroll and folds.</li>
+          <li>Toasts and agent notifications name their machine; a click goes there.</li>
+          <li>A machine whose connection is lost stays selected, dimmed, and comes back by itself. Notes left unsaved are kept for their machine.</li>
+          <li>With one machine there is no row.</li>
+        </ul></div>
     </div>
     <div>
       <div class="tbl" style="margin-bottom:14px"><table>

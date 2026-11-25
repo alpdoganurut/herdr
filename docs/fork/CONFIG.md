@@ -23,7 +23,31 @@ Most fork sidebar features need the `tabs` sidebar layout. It is the default; `[
 | Recency filter (`◷` chip: off, 15m, 30m, 1h, 6h, 1d) | off | Click the chip (shift-click or right-click steps back). No config key | n/a, not saved |
 | Tab history back / forward | available | The toolbar's `‹` `›` buttons; keys `tab_history_back` (`cmd+[`, `alt+,`), `tab_history_forward` (`cmd+]`, `alt+.`) | n/a |
 
+| Machine row (with saved SSH machines: the machines at the top of the sidebar) | shown from two machines on | `herdr machine add`, `herdr machine disable`; keys `next_machine` (default `prefix+m`), `previous_machine` (unbound) | n/a |
+
 The search query and recency chip belong to the client only. They are never saved: a restart or a new client lists every tab again.
+
+### Machine row
+
+With at least two enabled machines (Local and the ones added with `herdr machine add`), the first row of the tabs sidebar lists them: `● Local 2  ◉ Build 1`. The machine shown is bold and underlined; everything below the row (tabs, blocks, News, coordinator, header, notes, terminal) is that machine's.
+
+| Glyph | Meaning | Count |
+|---|---|---|
+| `◉` red | An agent there waits for you | How many wait |
+| `●` yellow | Agents there work, none waits | How many work |
+| `○` dim | Connected, nothing of both | none |
+| `↻` dim | Being connected or reconnected | none |
+| `!` red | Needs you (a login, an error) | none |
+
+`[ui] status_indicators = "symbols"` uses the sidebar's symbol set (`×`, `◐`) instead. Counts past 99 show `99+`. On a narrow sidebar the labels of the other machines shorten first, then their counts go, then the label of the machine shown.
+
+| Action | What happens |
+|---|---|
+| Click a machine | Shows it; one that is away is asked to reconnect now |
+| `next_machine` (`prefix+m`) / `previous_machine` (unbound) | Shows the next or previous connected machine, wrapping |
+| Click a toast or an agent card | Shows its machine and focuses its tab. With several machines toasts, cards and system notifications start with the machine's name |
+
+Each machine keeps its tab, list scroll, folds, filters and tab history. The client starts on Local. A machine whose connection is lost stays selected, its rows dimmed, and comes back by itself. Notes you typed and left before they were saved stay in the client and are saved when you come back to their machine; quitting the client, or removing the machine, drops them. The settings panel names the machine a section belongs to (`on Build`), or says it is this client's. With one machine there is no row and no names. The `spaces` layout, the collapsed rail and the phone layout list every machine instead.
 
 ### Sidebar toolbar
 
@@ -265,6 +289,8 @@ Bind a key with `[keys] <action> = "prefix+x"` (the prefix is `ctrl+b`), or seve
 | `open_notification_target` | `prefix+o` | Focuses the tab of the visible notification (upstream) |
 | `clear_pane` | unbound | Clears the focused pane (upstream) |
 | `sidebar_search` | `prefix+f` | Focuses or leaves the tabs sidebar search field |
+| `next_machine` | `prefix+m` | With saved machines: shows the next connected one (Local counts), wrapping |
+| `previous_machine` | unbound | The same, backward |
 | `tab_history_back` | `cmd+[`, `alt+,` | Previously focused tab, browser-style |
 | `tab_history_forward` | `cmd+]`, `alt+.` | Forward again after going back |
 | `toggle_info_pane` | unbound | Shows or hides the focused tab's notes pane |

@@ -880,7 +880,7 @@ fn the_row_shows_every_machines_state_label_and_count() {
     for (statuses, text, color) in [
         (
             &[Working, Blocked, Working, Blocked][..],
-            "● Build 2",
+            "◉ Build 2",
             palette.red,
         ),
         (
@@ -947,15 +947,15 @@ fn the_row_fits_eighteen_to_thirty_six_columns() {
     use AgentStatus::{Blocked, Working};
     let labels = ["buildbox", "workstation"];
     let cases = [
-        (36, 2, 0, " ● Local 2  ● buildbox 1"),
-        (36, 3, 0, " ● Local 2  ● build… 1  ● works… 1"),
-        (36, 3, 2, " ● Lo… 2  ● bu… 1  ● workstation 1"),
-        (26, 2, 0, " ● Local 2  ● buildbox 1"),
-        (26, 3, 0, " ● Local 2  ● bu…  ● wo…"),
-        (18, 2, 0, " ● Local 2  ● b…"),
-        (18, 2, 1, " ● L… ● build… 1"),
-        (18, 3, 0, " ● Lo… ● b… ● w…"),
-        (18, 3, 1, " ● L… ● bu… ● w…"),
+        (36, 2, 0, " ● Local 2  ◉ buildbox 1"),
+        (36, 3, 0, " ● Local 2  ◉ build… 1  ◉ works… 1"),
+        (36, 3, 2, " ● Lo… 2  ◉ bu… 1  ◉ workstation 1"),
+        (26, 2, 0, " ● Local 2  ◉ buildbox 1"),
+        (26, 3, 0, " ● Local 2  ◉ bu…  ◉ wo…"),
+        (18, 2, 0, " ● Local 2  ◉ b…"),
+        (18, 2, 1, " ● L… ◉ build… 1"),
+        (18, 3, 0, " ● Lo… ◉ b… ◉ w…"),
+        (18, 3, 1, " ● L… ◉ bu… ◉ w…"),
     ];
     let mut rows = Vec::new();
     for (width, count, shown, _) in cases {
@@ -1134,7 +1134,7 @@ fn the_collapsed_rail_has_the_rows_glyphs() {
     let red = state.config.palette.red;
     let rail = machine_hit(&state, &ids[1]);
     let glyph = cell(&frame, rail.right() - 1, rail.y);
-    assert_eq!((glyph.symbol(), glyph.fg), ("●", red));
+    assert_eq!((glyph.symbol(), glyph.fg), ("◉", red));
     let local = machine_hit(&state, &ids[0]);
     assert_eq!(cell(&frame, local.right() - 1, local.y).symbol(), "○");
     // The spaces layout's rail is upstream's: no glyph on Local.
@@ -1365,7 +1365,7 @@ fn local_gets_its_view_back_when_the_shown_machine_is_removed() {
 #[ignore = "prints the machine row's frames"]
 fn machine_row_preview() {
     use AgentStatus::{Blocked, Idle, Working};
-    println!("colors are not in this text: a waiting machine's ● is red, a working one's");
+    println!("colors are not in this text: a waiting machine's ◉ is red, a working one's ●");
     println!("yellow, an idle one's ○ dim; the label of the machine shown is bold and");
     println!("underlined. Local works (2 agents), buildbox waits on the user (1).\n");
     let frame = |title: &str, state: &mut ClientShellState| {
@@ -1398,4 +1398,84 @@ fn machine_row_preview() {
     frame("three machines (18 cols)", &mut state);
     let (mut state, _) = setup(&["buildbox"], 18);
     frame("two machines, buildbox waits (18 cols)", &mut state);
+}
+
+/// One frame with one machine and with two, and what a snapshot of the
+/// machine not shown costs, as its tabs grow:
+/// `cargo test --release --bin herdr machine_tabs_render_scale_profile -- --ignored --nocapture`
+#[test]
+#[ignore = "manual machine tabs composition scaling profile"]
+fn machine_tabs_render_scale_profile() {
+    const FRAMES: u32 = 2000;
+    fn grown(boot: &str, name: &str, tabs: usize) -> ClientShellSnapshot {
+        let mut snapshot = machine_snapshot(boot, name);
+        let tab = snapshot.tabs[0].clone();
+        snapshot.tabs = (1..=tabs)
+            .map(|number| {
+                let mut tab = tab.clone();
+                tab.tab_id = format!("tab_{number}");
+                tab.number = number;
+                tab.focused = number == 1;
+                tab
+            })
+            .collect();
+        snapshot.agents = (1..=tabs)
+            .map(|number| {
+                let mut agent = ClientShellState::test_one_agent_snapshot(
+                    boot,
+                    1,
+                    crate::api::schema::AgentStatus::Working,
+                )
+                .agents[0]
+                    .clone();
+                agent.pane_id = format!("pane_{number}");
+                agent.tab_id = format!("tab_{number}");
+                agent
+            })
+            .collect();
+        snapshot
+    }
+    let us = |start: std::time::Instant| start.elapsed().as_secs_f64() * 1e6 / f64::from(FRAMES);
+    for tabs in [1, 15, 50] {
+        for machines in [1, 2] {
+            let mut state = if machines == 1 {
+                one_machine(SidebarLayoutConfig::Tabs)
+            } else {
+                two_machines(SidebarLayoutConfig::Tabs)
+            };
+            let mut local = grown(LOCAL_BOOT, "local", tabs);
+            local.revision = 2;
+            state.set_endpoint_snapshot(&ClientEndpointId::Local, Box::new(local));
+            let mut surface = boot_surface(LOCAL_BOOT);
+            surface.projection_revision = 2;
+            state.set_pane_surface(surface);
+            for _ in 0..50 {
+                std::hint::black_box(state.compose(COLS, ROWS).expect("frame"));
+            }
+            let start = std::time::Instant::now();
+            for _ in 0..FRAMES {
+                std::hint::black_box(state.compose(COLS, ROWS).expect("frame"));
+            }
+            eprintln!(
+                "{tabs:>3} tabs, {machines} machine(s): {:.1} us/frame",
+                us(start)
+            );
+            if machines == 2 {
+                let hidden = grown(REMOTE_BOOT, "remote", tabs);
+                let start = std::time::Instant::now();
+                let mut frames = 0;
+                for revision in 0..FRAMES {
+                    let mut snapshot = Box::new(hidden.clone());
+                    snapshot.revision = u64::from(revision) + 2;
+                    let before = state.machine_repaint_basis(&remote_id());
+                    state.cache_endpoint_snapshot(&remote_id(), snapshot);
+                    frames += u32::from(state.machine_repaint_due(&remote_id(), before));
+                }
+                eprintln!(
+                    "{tabs:>3} tabs, a snapshot of the machine not shown: {:.1} us ({frames} frames of {FRAMES})",
+                    us(start)
+                );
+            }
+        }
+    }
 }

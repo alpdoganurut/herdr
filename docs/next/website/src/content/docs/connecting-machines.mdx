@@ -69,6 +69,20 @@ Local opens immediately on startup without waiting for SSH connections. Selectin
 
 When a connection is lost, the last workspace and agent state remains visible but dimmed. That is cached information, not live state. Input and navigation into those cached panes stay disabled until a fresh connection and matching screen arrive. Reconnecting never takes selection away from the machine you are using.
 
+## Machines in the tabs layout
+
+With `ui.sidebar_layout = "tabs"` the expanded sidebar shows one machine at a time. Its first row lists Local and the enabled saved machines, for example `● Local 2  ◉ Build 1`: the machine shown is bold and underlined, and each has a glyph for its agents, with how many are in that state. `◉` waits for you, `●` works, `○` is connected with neither, `↻` is being connected, and `!` needs you, for a login or an error. With a single machine there is no row.
+
+Click a machine to show its tabs, header, and terminal; clicking one that is away asks it to reconnect now. `keys.next_machine` (`prefix+m`) and `keys.previous_machine` (unset) step through the connected machines and wrap. Each machine keeps its focused tab, list scroll, folds, filters, and tab history. Workspace keys stay within the machine shown; goto and the agent keys cover every machine.
+
+The client always starts on Local in this layout. A machine whose connection is lost stays selected with its last rows dimmed, and its screen comes back when it reconnects.
+
+Toasts, agent cards, and system notifications start with their machine's name while there are several, and clicking one goes to that machine. A card dismissed here is removed on its server once that machine is shown. Reminders of a machine that is away wait until it is back.
+
+Notes belong to one machine. Text that was not saved when you switch away is kept by this client, with a notice, and saved when you return to that machine; if the page changed there meanwhile, Herdr asks which version to keep. Quitting the client before that, or removing the machine, drops the text.
+
+The collapsed sidebar, the phone layout, and the `spaces` layout list every machine instead.
+
 ## Rename, disable, or remove
 
 Read profile IDs from the list rather than deriving them from labels or hostnames:
@@ -111,7 +125,7 @@ This requires an updated remote server, not just an updated local client. Local 
 
 ## Settings and automation
 
-The UI uses the client's local theme, sidebar settings, and keybindings by default. Custom commands and plugins advertised by the selected server still run there. Herdr does not copy local command plugins, configuration, executables, or secrets onto SSH hosts. Missing remote commands fail visibly. Use the UI's `reload config` action after editing client settings; see [Configuration](/docs/configuration/#reload-config).
+The UI uses the client's local theme, sidebar settings, and keybindings by default. Custom commands and plugins advertised by the selected server still run there. Herdr does not copy local command plugins, configuration, executables, or secrets onto SSH hosts. Missing remote commands fail visibly. Use the UI's `reload config` action after editing client settings; see [Configuration](/docs/configuration/#reload-config). With several machines the settings panel says whether a section belongs to this client or to the selected machine's server.
 
 Default agent rows show a `machine` token when multiple machines are present. Existing custom rows are preserved; add `machine` explicitly if you want that label in your layout. [Sidebar row layouts](/docs/configuration/#sidebar-row-layouts) also support conditional colors for machine labels.
 

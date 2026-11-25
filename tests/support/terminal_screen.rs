@@ -18,13 +18,33 @@ impl Drop for Screen {
 }
 
 pub fn text(output: &[u8], cols: u16, rows: u16) -> String {
+    format(
+        output,
+        cols,
+        rows,
+        ffi::GhosttyFormatterFormat_GHOSTTY_FORMATTER_FORMAT_PLAIN,
+    )
+}
+
+/// Fork (machine tabs): the screen as escape sequences, for its styles.
+#[allow(dead_code)] // only tests/machine_tabs.rs reads styles
+pub fn styled(output: &[u8], cols: u16, rows: u16) -> String {
+    format(
+        output,
+        cols,
+        rows,
+        ffi::GhosttyFormatterFormat_GHOSTTY_FORMATTER_FORMAT_VT,
+    )
+}
+
+fn format(output: &[u8], cols: u16, rows: u16, emit: ffi::GhosttyFormatterFormat) -> String {
     let mut screen = Screen {
         terminal: ptr::null_mut(),
         formatter: ptr::null_mut(),
     };
     let options = ffi::GhosttyFormatterTerminalOptions {
         size: size_of::<ffi::GhosttyFormatterTerminalOptions>(),
-        emit: ffi::GhosttyFormatterFormat_GHOSTTY_FORMATTER_FORMAT_PLAIN,
+        emit,
         trim: true,
         extra: ffi::GhosttyFormatterTerminalExtra {
             size: size_of::<ffi::GhosttyFormatterTerminalExtra>(),
