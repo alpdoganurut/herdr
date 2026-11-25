@@ -284,10 +284,19 @@ async fn fork_smoke_the_coordinator_gets_through_an_agents_dnd_not_the_users() {
             }),
         )
     };
+    // A message is typed from the test pane's own submission thread
+    // (`PaneRuntimeIo::queue_user_input_submission`): read until it is quiet.
     let typed = |input: &mut tokio::sync::mpsc::Receiver<Bytes>| {
         let mut out = String::new();
-        while let Ok(bytes) = input.try_recv() {
-            out.push_str(&String::from_utf8_lossy(&bytes));
+        let mut quiet_since = std::time::Instant::now();
+        while quiet_since.elapsed() < std::time::Duration::from_millis(100) {
+            match input.try_recv() {
+                Ok(bytes) => {
+                    out.push_str(&String::from_utf8_lossy(&bytes));
+                    quiet_since = std::time::Instant::now();
+                }
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(5)),
+            }
         }
         out
     };
