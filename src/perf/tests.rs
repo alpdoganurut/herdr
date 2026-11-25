@@ -443,6 +443,44 @@ fn fork_smoke_stall_attr_the_longest_held_step_names_the_stall() {
     assert_eq!(attribution.changes, 12);
 }
 
+/// Fork (stall attribution): an API request that handles a nested app
+/// event between every poll is still one step holding the loop: the end
+/// names the request, not a zero-length run.
+#[test]
+fn fork_smoke_stall_attr_nested_churn_keeps_the_outer_step_holding() {
+    use super::step::{api_method_index, Step, NO_DETAIL};
+
+    static HEARTBEAT: Heartbeat = Heartbeat::new("test_loop", 250);
+    let method = crate::api::schema::Method::WorkspaceList(Default::default());
+    let heartbeats = [&HEARTBEAT];
+    let mut watchdog = Watchdog::new(&heartbeats);
+
+    HEARTBEAT.begin_at(1_000 * MS);
+    HEARTBEAT.step.set(Step::ApiRequests);
+    let api = HEARTBEAT
+        .step
+        .enter(Step::ApiRequest, api_method_index(&method));
+    let mut events = Vec::new();
+    for at in (1_000..=3_000).step_by(100) {
+        drop(HEARTBEAT.step.enter(Step::AppEvent, 0));
+        drop(HEARTBEAT.step.enter(Step::FullRender, NO_DETAIL));
+        watchdog.check(at * MS, WALL0 + at * MS, |event| events.push(event));
+    }
+    drop(api);
+    HEARTBEAT.end();
+    watchdog.check(3_100 * MS, WALL0 + 3_100 * MS, |event| events.push(event));
+
+    let Some(StallEvent::Ended { attribution, .. }) = events.last().copied() else {
+        panic!("the stall ended: {events:?}");
+    };
+    assert_eq!(
+        attribution.dominant.describe(),
+        "api_request:workspace.list"
+    );
+    assert_eq!(attribution.dominant_ms, 1_700);
+    assert!(attribution.changes >= 4 * 17, "{attribution:?}");
+}
+
 /// Fork (stall attribution): a nested step names the step it interrupted
 /// and puts it back; re-entering the same step keeps the outer one.
 #[test]
@@ -615,6 +653,8 @@ fn fork_smoke_stall_attr_platform_probes_read_the_machine_and_the_thread() {
         .join()
         .expect("reader thread");
     assert!(other.is_some_and(|ns| ns >= after));
+    // Page-ins (swap or disk reads); 0 is a real answer when everything the
+    // test touched is in memory, so only the read itself is checked.
     assert!(crate::platform::process_major_faults().is_some());
 }
 
@@ -628,14 +668,25 @@ fn fork_smoke_stall_attr_the_stack_sampler_writes_a_call_graph() {
     let path = std::env::temp_dir().join(format!("herdr-stall-sample-{}.txt", std::process::id()));
     let mut child =
         crate::platform::spawn_stack_sample(std::process::id(), 1, &path).expect("sample starts");
+    // A 100 ms poller (the watchdog's cadence) keeps running while the
+    // sampler suspends threads to sample them: its gaps stay well under the
+    // watchdog's pause guard, so a sample never drops the stall it samples.
     let started = std::time::Instant::now();
+    let mut last = started;
+    let mut largest_gap = std::time::Duration::ZERO;
     while child.try_wait().expect("try_wait").is_none() {
         assert!(
             started.elapsed() < std::time::Duration::from_secs(20),
             "sample hangs"
         );
-        std::hint::black_box(started.elapsed());
+        std::thread::sleep(super::watchdog::POLL);
+        largest_gap = largest_gap.max(last.elapsed());
+        last = std::time::Instant::now();
     }
+    assert!(
+        largest_gap < super::watchdog::WATCHDOG_GAP / 2,
+        "{largest_gap:?}"
+    );
     let text = std::fs::read_to_string(&path).expect("a sample file");
     let _ = std::fs::remove_file(&path);
     assert!(text.contains("Call graph:"), "{text}");

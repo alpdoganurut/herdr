@@ -385,6 +385,17 @@ impl StepRecord {
         mark_detail((self.0 >> MARK_BITS) & MARK_MASK)
     }
 
+    /// The current step alone (no outer step, no counter).
+    pub(crate) fn current_mark(self) -> StepRecord {
+        StepRecord(self.0 & MARK_MASK)
+    }
+
+    /// The interrupted (outer) step alone, if nested.
+    pub(crate) fn outer_mark(self) -> Option<StepRecord> {
+        let outer = (self.0 >> MARK_BITS) & MARK_MASK;
+        (outer != 0).then_some(StepRecord(outer))
+    }
+
     /// The change counter (modulo [`COUNTER_MASK`] + 1).
     pub(crate) fn counter(self) -> u64 {
         self.0 >> COUNTER_SHIFT

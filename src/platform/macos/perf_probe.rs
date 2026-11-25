@@ -81,7 +81,8 @@ pub(crate) fn thread_cpu_ns(clock: ThreadCpuClock) -> Option<u64> {
     Some((micros(info.user_time) + micros(info.system_time)) * 1_000)
 }
 
-/// Page faults that needed I/O (pages read back in) for this process so far.
+/// Page faults that needed I/O for this process so far (XNU fills
+/// ru_majflt from the task's page-ins: pages read back from swap or disk).
 pub(crate) fn process_major_faults() -> Option<u64> {
     let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
     // SAFETY: getrusage fills the rusage it is given.

@@ -74,9 +74,13 @@ pub(crate) enum StallEvent {
 pub(crate) struct Attribution {
     /// The step at detection.
     pub(crate) first: StepRecord,
-    /// The step seen unchanged over the longest run of polls.
+    /// The step that held the loop over the longest run of polls. A run
+    /// continues while each poll sees its step as the current or the
+    /// interrupted (outer) step, so an API request that handles many nested
+    /// app events is one run. The full mark (with its nesting) when nothing
+    /// changed during the run, else the run's step alone.
     pub(crate) dominant: StepRecord,
-    /// How long `dominant` held without a change (at least; poll accuracy).
+    /// How long `dominant` held (at least; poll accuracy).
     pub(crate) dominant_ms: u64,
     /// The step at the last poll before the end.
     pub(crate) last: StepRecord,
@@ -95,23 +99,40 @@ struct Watch {
     /// Whether the reported period passed [`SAMPLE_AFTER`].
     long: bool,
     attribution: Attribution,
-    /// When the polls first saw `attribution.last` (its change counter).
-    last_seen_ns: u64,
+    /// The current run: its step, when the polls first saw it, and whether
+    /// the full mark stayed unchanged since.
+    run_key: u64,
+    run_since_ns: u64,
+    run_unchanged: bool,
 }
 
 impl Watch {
     /// One poll's step read while the reported stall stays open.
     fn observe(&mut self, step: StepRecord, mono_ns: u64) {
         let attribution = &mut self.attribution;
-        if step.counter() != attribution.last.counter() {
+        let changed = step.counter() != attribution.last.counter();
+        if changed {
             attribution.changes += changes_between(attribution.last, step);
             attribution.last = step;
-            self.last_seen_ns = mono_ns;
+        }
+        let in_run = step.current_mark().0 == self.run_key
+            || step
+                .outer_mark()
+                .is_some_and(|outer| outer.0 == self.run_key);
+        if !in_run {
+            self.run_key = step.current_mark().0;
+            self.run_since_ns = mono_ns;
+            self.run_unchanged = true;
             return;
         }
-        let held_ms = mono_ns.saturating_sub(self.last_seen_ns) / 1_000_000;
+        self.run_unchanged &= !changed;
+        let held_ms = mono_ns.saturating_sub(self.run_since_ns) / 1_000_000;
         if held_ms > attribution.dominant_ms {
-            attribution.dominant = step;
+            attribution.dominant = if self.run_unchanged {
+                step
+            } else {
+                StepRecord(self.run_key)
+            };
             attribution.dominant_ms = held_ms;
         }
     }
@@ -208,7 +229,9 @@ impl<'a> Watchdog<'a> {
                         last: step,
                         changes: 0,
                     },
-                    last_seen_ns: mono_ns,
+                    run_key: step.current_mark().0,
+                    run_since_ns: mono_ns,
+                    run_unchanged: true,
                 };
                 heartbeat.stalls.inc();
                 heartbeat.longest_stall_ms.record(busy_ms);
@@ -400,7 +423,7 @@ fn load_value(load1_x100: u32) -> f64 {
 struct Sampler {
     running: Option<std::process::Child>,
     last_started_ns: Option<u64>,
-    /// The OS has no sampler (or it failed to start): stop trying.
+    /// The OS has no sampler: stop trying.
     disabled: bool,
 }
 
@@ -425,7 +448,8 @@ impl Sampler {
         let dir = crate::session::data_dir().join("perf-samples");
         if let Err(error) = std::fs::create_dir_all(&dir) {
             tracing::warn!(event = "perf.stall_sample_failed", %error, "no sample directory");
-            self.disabled = true;
+            // Transient (a full disk, memory pressure): try again next interval.
+            self.last_started_ns = Some(now_ns);
             return None;
         }
         prune_samples(&dir, SAMPLE_KEEP.saturating_sub(1));
@@ -440,10 +464,17 @@ impl Sampler {
                 Some(path)
             }
             Err(error) => {
-                if error.kind() != std::io::ErrorKind::Unsupported {
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::Unsupported | std::io::ErrorKind::NotFound
+                ) {
+                    // No sampler on this OS or machine: stop trying.
+                    self.disabled = true;
+                } else {
                     tracing::warn!(event = "perf.stall_sample_failed", %error, "stack sampler did not start");
+                    // Transient (fork refused under pressure): back off.
+                    self.last_started_ns = Some(now_ns);
                 }
-                self.disabled = true;
                 None
             }
         }
