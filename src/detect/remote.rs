@@ -289,9 +289,7 @@ fn mosh_client_remote_command(args: &[String]) -> Option<String> {
 fn is_ssh_value_option(arg: &str) -> bool {
     let mut chars = arg.chars();
     chars.next() == Some('-')
-        && chars
-            .next()
-            .is_some_and(|option| ssh_option_takes_value(option))
+        && chars.next().is_some_and(ssh_option_takes_value)
         && chars.next().is_none()
 }
 
