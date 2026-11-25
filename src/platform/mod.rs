@@ -624,6 +624,55 @@ pub(crate) fn process_ancestry(pid: u32) -> Vec<u32> {
     chain
 }
 
+// Fork (stall attribution): what the perf watchdog reads about the machine
+// and the loop thread when a loop stalls (src/platform/<os>/perf_probe.rs).
+
+/// Machine pressure at one moment; `None` where the OS does not say.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct MachinePressure {
+    /// One-minute load average × 100.
+    pub(crate) load1_x100: Option<u32>,
+    pub(crate) swap_used_mb: Option<u64>,
+    pub(crate) swap_total_mb: Option<u64>,
+    /// The kernel's memory pressure level: `normal`, `warn` or `critical`.
+    pub(crate) memory_pressure: Option<&'static str>,
+}
+
+/// A handle that reads one thread's CPU time from another thread (its Mach
+/// port on macOS, its kernel thread id on Linux).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ThreadCpuClock(pub(crate) u64);
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub(crate) fn machine_pressure() -> MachinePressure {
+    MachinePressure::default()
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub(crate) fn current_thread_cpu_clock() -> Option<ThreadCpuClock> {
+    None
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub(crate) fn thread_cpu_ns(_clock: ThreadCpuClock) -> Option<u64> {
+    None
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub(crate) fn process_major_faults() -> Option<u64> {
+    None
+}
+
+/// No stack sampler on this OS.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub(crate) fn spawn_stack_sample(
+    _pid: u32,
+    _seconds: u32,
+    _path: &std::path::Path,
+) -> std::io::Result<std::process::Child> {
+    Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
+}
+
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]

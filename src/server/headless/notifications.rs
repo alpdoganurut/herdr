@@ -307,6 +307,11 @@ impl HeadlessServer {
     ///
     /// Returns true if the event changed visual state (requiring a re-render).
     pub(super) fn handle_internal_event_with_forwarding(&mut self, mut ev: AppEvent) -> bool {
+        // Fork (stall attribution): a stall names the app event kind.
+        let _step = crate::perf::server::enter(
+            crate::perf::step::Step::AppEvent,
+            crate::perf::step::app_event_kind(&ev),
+        );
         if self.host_shutdown_requested() {
             return false;
         }

@@ -15,11 +15,14 @@
 //!   blocked on events reads as not busy and never looks stalled. The
 //!   [`watchdog`] thread reports a busy period longer than the loop's budget.
 //! - [`Counter`] / [`MaxGauge`]: monotonic counts and window maxima.
+//! - [`step::StepMarker`] (fork, stall attribution): the step a loop is in,
+//!   which the watchdog names when the loop stalls.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+pub(crate) mod step;
 pub(crate) mod watchdog;
 
 #[cfg(test)]
@@ -179,6 +182,8 @@ pub(crate) struct Heartbeat {
     pub(crate) stalls: Counter,
     /// The longest busy period the watchdog observed in a reported episode.
     pub(crate) longest_stall_ms: MaxGauge,
+    /// The step the loop is in (stall attribution).
+    pub(crate) step: step::StepMarker,
 }
 
 impl Heartbeat {
@@ -189,6 +194,7 @@ impl Heartbeat {
             busy_since_ns: AtomicU64::new(0),
             stalls: Counter::new(),
             longest_stall_ms: MaxGauge::new(),
+            step: step::StepMarker::new(),
         }
     }
 
@@ -281,6 +287,26 @@ pub(crate) mod server {
         [const { ClientSlot::new() }; CLIENT_SLOTS];
     /// Clients past [`CLIENT_SLOTS`] share this bucket.
     pub(crate) static OTHER_CLIENTS: ClientSlot = ClientSlot::new();
+
+    /// The server loop enters a sequential phase (stall attribution).
+    #[inline]
+    pub(crate) fn step(step: super::step::Step) {
+        LOOP.step.set(step);
+    }
+
+    /// The server loop runs one scheduled task.
+    #[inline]
+    pub(crate) fn scheduled(task: super::step::ScheduledTask) {
+        LOOP.step
+            .set_detail(super::step::Step::Scheduled, task as u16);
+    }
+
+    /// The server loop handles one item that may interrupt another step;
+    /// the guard restores that step.
+    #[inline]
+    pub(crate) fn enter(step: super::step::Step, detail: u16) -> super::step::StepGuard {
+        LOOP.step.enter(step, detail)
+    }
 }
 
 /// Client-local counters (a TUI client process); never server fields.

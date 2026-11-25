@@ -487,6 +487,7 @@ impl HeadlessServer {
 
         loop {
             crate::perf::server::LOOP.begin(); // fork (perf watch): busy until the wait below
+            crate::perf::server::step(crate::perf::step::Step::LoopTop); // fork (stall attribution)
             crate::render_prof::event("loop.tick");
             crate::render_prof::flush_if_due();
             self.app.reap_finished_detached_processes();
@@ -503,12 +504,14 @@ impl HeadlessServer {
             // Preserve the session before applying shutdown-time process exits.
             // On Linux, logind's delay lock stays held until the final session save.
             if self.host_shutdown_requested() {
+                crate::perf::server::step(crate::perf::step::Step::Shutdown); // fork (stall attribution)
                 self.initiate_shutdown();
                 continue;
             }
 
             // Check if we should start shutting down.
             if self.app.state.should_quit || self.should_quit.load(Ordering::Acquire) {
+                crate::perf::server::step(crate::perf::step::Step::Shutdown); // fork (stall attribution)
                 self.drain_internal_events_with_forwarding_up_to(
                     crate::app::APP_EVENT_CHANNEL_CAPACITY,
                 );
@@ -523,6 +526,7 @@ impl HeadlessServer {
             }
             // 2. Drain a bounded internal-event batch. API handlers perform an
             // exhaustive forwarding-aware drain before reading pane/runtime state.
+            crate::perf::server::step(crate::perf::step::Step::InternalEvents); // fork (stall attribution)
             if self.drain_internal_events_with_forwarding() {
                 needs_render = true;
                 needs_full_render = true;
@@ -532,6 +536,7 @@ impl HeadlessServer {
             if self.should_quit.load(Ordering::Acquire) {
                 continue;
             }
+            crate::perf::server::step(crate::perf::step::Step::MetadataExpiry); // fork (stall attribution)
             if self.app.expire_due_metadata(Instant::now()) {
                 needs_render = true;
                 needs_full_render = true;
@@ -539,6 +544,7 @@ impl HeadlessServer {
             }
 
             // 3. Drain API requests.
+            crate::perf::server::step(crate::perf::step::Step::ApiRequests); // fork (stall attribution)
             if self.drain_api_requests_with_shutdown_check() {
                 needs_render = true;
                 needs_full_render = true;
@@ -548,13 +554,16 @@ impl HeadlessServer {
                 continue;
             }
 
+            crate::perf::server::step(crate::perf::step::Step::FocusSync); // fork (stall attribution)
             self.app.sync_focus_events();
             self.app.sync_session_save_schedule();
 
             // 4. Accept new client connections.
+            crate::perf::server::step(crate::perf::step::Step::ClientAccept); // fork (stall attribution)
             self.accept_client_connections()?;
 
             // 5. Drain server events from client threads.
+            crate::perf::server::step(crate::perf::step::Step::ServerEvents); // fork (stall attribution)
             if self.drain_server_events() {
                 needs_render = true;
                 needs_full_render = true;
@@ -565,6 +574,7 @@ impl HeadlessServer {
             }
 
             // 6. Handle scheduled tasks.
+            crate::perf::server::step(crate::perf::step::Step::Scheduled); // fork (stall attribution)
             let now = Instant::now();
             if self.handle_scheduled_tasks_headless(now, needs_render) {
                 needs_render = true;
@@ -573,6 +583,7 @@ impl HeadlessServer {
                 crate::render_prof::event("full_render_cause.scheduled_tasks");
             }
 
+            crate::perf::server::step(crate::perf::step::Step::AltScreenReads); // fork (stall attribution)
             self.poll_pending_alt_screen_reads(now);
             if self.process_deferred_alt_screen_reads() {
                 needs_render = true;
@@ -580,6 +591,7 @@ impl HeadlessServer {
                 needs_graphics_render = false;
             }
 
+            crate::perf::server::step(crate::perf::step::Step::DefaultWorkspace); // fork (stall attribution)
             if latest_shell_client(&self.clients).is_some() && self.app.ensure_default_workspace() {
                 needs_render = true;
                 needs_full_render = true;
@@ -587,12 +599,14 @@ impl HeadlessServer {
                 crate::render_prof::event("full_render_cause.default_workspace");
             }
 
+            crate::perf::server::step(crate::perf::step::Step::NativeGraphics); // fork (stall attribution)
             if self.expire_native_graphics(now) {
                 needs_render = true;
                 needs_full_render = true;
                 needs_graphics_render = false;
             }
 
+            crate::perf::server::step(crate::perf::step::Step::ClientSync); // fork (stall attribution)
             self.drain_client_config_reload_request();
             self.sync_immediate_pty_sources();
             self.stream_host_mouse_capture_mode();
@@ -601,6 +615,7 @@ impl HeadlessServer {
             // 7. Render virtually and stream frames. Hidden-only PTY work keeps a
             // bounded classification cadence without delaying presentation work
             // that joins the same coalesced request.
+            crate::perf::server::step(crate::perf::step::Step::RenderPrepare); // fork (stall attribution)
             let render_cadence_due = self.app.can_render_now(now);
             let presentation_due = self.app.can_present_now(now)
                 && self.has_pending_presentation_work(needs_full_render, needs_graphics_render);
@@ -674,6 +689,7 @@ impl HeadlessServer {
             }
 
             // 8. Wait for next event.
+            crate::perf::server::step(crate::perf::step::Step::NextDeadline); // fork (stall attribution)
             let next_deadline = self
                 .app
                 .next_headless_loop_deadline_with_git_refresh(
@@ -719,6 +735,7 @@ impl HeadlessServer {
                 }
             };
             crate::perf::server::LOOP.begin(); // fork (perf watch): dispatching the event is busy
+            crate::perf::server::step(crate::perf::step::Step::Dispatch); // fork (stall attribution)
 
             if self.should_quit.load(Ordering::Acquire) || self.host_shutdown_requested() {
                 match event {
@@ -1954,6 +1971,11 @@ impl HeadlessServer {
 
     /// Handles a server event. Returns true if the event requires a re-render.
     fn handle_server_event(&mut self, ev: ServerEvent) -> bool {
+        // Fork (stall attribution): a stall names the server event kind.
+        let _step = crate::perf::server::enter(
+            crate::perf::step::Step::ServerEvent,
+            crate::perf::step::server_event_kind(&ev),
+        );
         if self.handoff_in_progress && Self::ignore_client_event_during_handoff(&ev) {
             return false;
         }
@@ -3037,6 +3059,11 @@ impl HeadlessServer {
         skip_default_workspace_for_request: bool,
         client_local: bool,
     ) -> bool {
+        // Fork (stall attribution): a stall names the API method.
+        let _step = crate::perf::server::enter(
+            crate::perf::step::Step::ApiRequest,
+            crate::perf::step::api_method_index(&msg.request.method),
+        );
         // Fork (agents v2): the sending process, for the caller fallback
         // (`App::resolve_caller_pane`), only while this request runs.
         self.app.agents_model.caller_process = msg.peer_pid;
@@ -3441,6 +3468,7 @@ impl HeadlessServer {
             return false;
         }
         let mut changed = false;
+        crate::perf::server::scheduled(crate::perf::step::ScheduledTask::Deadlines); // fork (stall attribution)
 
         // No resize polling needed — server has no terminal.
         // Client resize messages drive size changes instead.
@@ -3465,6 +3493,7 @@ impl HeadlessServer {
             changed = true;
         }
 
+        crate::perf::server::scheduled(crate::perf::step::ScheduledTask::AgentNotifications); // fork (stall attribution)
         if self
             .app
             .state
@@ -3484,6 +3513,7 @@ impl HeadlessServer {
             }
         }
 
+        crate::perf::server::scheduled(crate::perf::step::ScheduledTask::WorktreeValidation); // fork (stall attribution)
         if self
             .app
             .restored_worktree_validation_retry_at
@@ -3492,10 +3522,12 @@ impl HeadlessServer {
             self.app.start_restored_worktree_validation(now);
         }
 
+        crate::perf::server::scheduled(crate::perf::step::ScheduledTask::GitRefresh); // fork (stall attribution)
         if self.git_refresh_scheduled() {
             self.app.start_git_status_refresh_if_due(now);
         }
 
+        crate::perf::server::scheduled(crate::perf::step::ScheduledTask::UpdateChecks); // fork (stall attribution)
         if self
             .app
             .next_auto_update_check
@@ -3512,6 +3544,7 @@ impl HeadlessServer {
             self.app.run_agent_manifest_update_check();
         }
 
+        crate::perf::server::scheduled(crate::perf::step::ScheduledTask::SessionSave); // fork (stall attribution)
         if self
             .app
             .session_save_deadline
@@ -3520,9 +3553,12 @@ impl HeadlessServer {
             self.app.start_background_session_save();
         }
 
+        crate::perf::server::scheduled(crate::perf::step::ScheduledTask::TranscriptBackup); // fork (stall attribution)
         if self.app.agent_transcript_backup_due(now) {
             self.app.sync_agent_transcript_backups();
         }
+        // fork (stall attribution)
+        crate::perf::server::scheduled(crate::perf::step::ScheduledTask::AgentProbes);
         // Fork: Codex thread ids from rollout files (off-thread file reads).
         changed |= self.app.handle_codex_session_probe(now);
         // Fork: agents' context use from their session files (off-thread reads).
@@ -3530,6 +3566,7 @@ impl HeadlessServer {
         // Fork: handoff, then compact, runs (about once a second while one is on).
         changed |= self.app.handle_agent_handoff_tasks(now);
 
+        crate::perf::server::scheduled(crate::perf::step::ScheduledTask::MetadataExpiry); // fork (stall attribution)
         if let Some(deadline) = self
             .app
             .agent_metadata_deadline
@@ -3539,6 +3576,7 @@ impl HeadlessServer {
             changed = true;
         }
 
+        crate::perf::server::scheduled(crate::perf::step::ScheduledTask::Notices); // fork (stall attribution)
         changed |= self.app.release_host_appearance_if_ready(now);
         changed |= self.app.handle_tab_bar_status_tasks(now);
         changed |= self.app.handle_news_tasks(now);
@@ -3548,6 +3586,8 @@ impl HeadlessServer {
         changed |= self.app.handle_browser_page_errors();
         self.flush_coordinator_notifications(now);
         self.flush_news_notifications(now);
+        // fork (stall attribution)
+        crate::perf::server::scheduled(crate::perf::step::ScheduledTask::AgentLifecycle);
         // Fork (agents v2): closes in flight, before the exit escalation,
         // and the `managed.json` migration's mtime check.
         changed |= self.app.drive_pending_agent_closes(now);
@@ -3556,9 +3596,12 @@ impl HeadlessServer {
         changed |= self.app.escalate_suspended_agent_exits(now);
         changed |= self.app.start_pending_agent_restarts(now);
         self.flush_relaunch_failure_notices();
+        // fork (stall attribution)
+        crate::perf::server::scheduled(crate::perf::step::ScheduledTask::Autosuspend);
         // Fork: park agents left idle (about once a minute while it is on).
         changed |= self.handle_agent_autosuspend(now);
 
+        crate::perf::server::scheduled(crate::perf::step::ScheduledTask::AgentResumes); // fork (stall attribution)
         if geometry_dirty {
             self.app.pending_agent_resume_deadline = None;
         } else {

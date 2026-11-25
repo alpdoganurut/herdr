@@ -47,7 +47,11 @@ PERF_SOURCES = tuple(
 )
 # The counters the instrumented loops call; the watchdog thread and the
 # snapshot (API only) may allocate and log.
-PERF_HOT_SOURCES = (PROJECT_ROOT / "src" / "perf" / "mod.rs",)
+PERF_HOT_SOURCES = (
+    PROJECT_ROOT / "src" / "perf" / "mod.rs",
+    # Fork (stall attribution): the step marks the server loop sets.
+    PROJECT_ROOT / "src" / "perf" / "step.rs",
+)
 PERF_HOT_FUNCTIONS = (
     "now_ns",
     "inc",
@@ -62,6 +66,15 @@ PERF_HOT_FUNCTIONS = (
     "record_frame_sent",
     "record_client_frame",
     "client_slot",
+    # Fork (stall attribution).
+    "step",
+    "scheduled",
+    "enter",
+    "set",
+    "set_detail",
+    "write",
+    "pack_mark",
+    "api_method_index",
 )
 PERF_LOCKS = (
     (re.compile(r"\b(?:Mutex|RwLock|Condvar)\b|\.lock\(\)"), "lock in perf code"),
@@ -156,6 +169,120 @@ def perf_heartbeat_order_violations(server: str, client: str) -> list[str]:
     if last_select == -1 or "perf::client::LOOP.begin()" not in client[last_select:popup]:
         violations.append("client: LOOP.begin() must follow the event wait, before tick_popup_pending")
     return violations
+
+
+# Fork (stall attribution): each branch of the server loop marks its step,
+# so a stall names it. (call in the loop body, the step that must be the
+# nearest mark before it)
+RUN_LOOP_STEPS = (
+    ("self.app.reap_finished_detached_processes()", "LoopTop"),
+    ("self.initiate_shutdown()", "Shutdown"),
+    ("self.drain_internal_events_with_forwarding_up_to(", "Shutdown"),
+    ("self.drain_internal_events_with_forwarding()", "InternalEvents"),
+    ("self.app.expire_due_metadata(", "MetadataExpiry"),
+    ("self.drain_api_requests_with_shutdown_check()", "ApiRequests"),
+    ("self.app.sync_focus_events()", "FocusSync"),
+    ("self.app.sync_session_save_schedule()", "FocusSync"),
+    ("self.accept_client_connections()", "ClientAccept"),
+    ("self.drain_server_events()", "ServerEvents"),
+    ("self.handle_scheduled_tasks_headless(", "Scheduled"),
+    ("self.poll_pending_alt_screen_reads(", "AltScreenReads"),
+    ("self.process_deferred_alt_screen_reads()", "AltScreenReads"),
+    ("self.app.ensure_default_workspace()", "DefaultWorkspace"),
+    ("self.expire_native_graphics(", "NativeGraphics"),
+    ("self.drain_client_config_reload_request()", "ClientSync"),
+    ("self.sync_immediate_pty_sources()", "ClientSync"),
+    ("self.stream_host_mouse_capture_mode()", "ClientSync"),
+    ("self.stream_direct_terminal_keyboard_mode()", "ClientSync"),
+    ("self.app.can_render_now(", "RenderPrepare"),
+    ("self.sync_terminal_title_sources(", "RenderPrepare"),
+    ("self.render_retained_pane_surface_and_stream(", "RenderPrepare"),
+    ("self.render_and_stream()", "RenderPrepare"),
+    (".next_headless_loop_deadline_with_git_refresh(", "NextDeadline"),
+    ("self.handle_internal_event_with_forwarding(", "Dispatch"),
+    ("self.handle_api_request_with_shutdown_check(", "Dispatch"),
+    ("self.handle_server_event_with_render_impact(", "Dispatch"),
+)
+# Handlers that can run inside another step: a guard first in their body.
+STEP_GUARDED_HANDLERS = (
+    ("headless.rs", "handle_server_event", "ServerEvent"),
+    ("headless.rs", "handle_api_request_with_shutdown_check_inner", "ApiRequest"),
+    ("headless/client_views.rs", "handle_api_request_with_shutdown_check", "ApiRequest"),
+    ("headless/client_views.rs", "handle_client_shell_api_request", "ApiRequest"),
+    ("headless/notifications.rs", "handle_internal_event_with_forwarding", "AppEvent"),
+    ("headless/render.rs", "render_and_stream_with_graphics_limit", "FullRender"),
+    ("headless/retained_surface.rs", "render_retained_pane_surface_and_stream", "RetainedRender"),
+)
+# Scheduled tasks: (call, ScheduledTask that must be the nearest mark).
+SCHEDULED_TASK_STEPS = (
+    ("self.app.state.toast = None", "Deadlines"),
+    ("self.app.state.drain_due_agent_notifications(", "AgentNotifications"),
+    ("self.app.start_restored_worktree_validation(", "WorktreeValidation"),
+    ("self.app.start_git_status_refresh_if_due(", "GitRefresh"),
+    ("self.app.run_auto_update_check()", "UpdateChecks"),
+    ("self.app.run_agent_manifest_update_check()", "UpdateChecks"),
+    ("self.app.start_background_session_save()", "SessionSave"),
+    ("self.app.sync_agent_transcript_backups()", "TranscriptBackup"),
+    ("self.app.handle_codex_session_probe(", "AgentProbes"),
+    ("self.app.handle_agent_handoff_tasks(", "AgentProbes"),
+    ("self.app.expire_metadata_at(", "MetadataExpiry"),
+    ("self.app.handle_coordinator_tasks(", "Notices"),
+    ("self.flush_news_notifications(", "Notices"),
+    ("self.app.drive_pending_agent_closes(", "AgentLifecycle"),
+    ("self.app.start_pending_agent_restarts(", "AgentLifecycle"),
+    ("self.handle_agent_autosuspend(", "Autosuspend"),
+    (".start_pending_agent_resumes(", "AgentResumes"),
+)
+STEP_MARK = re.compile(r"perf::server::step\(crate::perf::step::Step::(\w+)\)")
+SCHEDULED_MARK = re.compile(r"perf::server::scheduled\(crate::perf::step::ScheduledTask::(\w+)\)")
+
+
+def function_body(code: str, name: str) -> str:
+    bodies = function_bodies(code, (name,))
+    return bodies[0][1] if bodies else ""
+
+
+def nearest_mark_violations(body: str, calls, mark: re.Pattern, label: str) -> list[str]:
+    violations: list[str] = []
+    for call, expected in calls:
+        index = body.find(call)
+        if index == -1:
+            violations.append(f"{label}: {call} not found")
+            continue
+        while index != -1:
+            marks = list(mark.finditer(body, 0, index))
+            found = marks[-1].group(1) if marks else None
+            if found != expected:
+                violations.append(f"{label}: {call} runs under {found}, expected {expected}")
+            index = body.find(call, index + 1)
+    return violations
+
+
+def stall_step_coverage_violations(sources: dict[str, str]) -> list[str]:
+    server = sources["headless.rs"]
+    start = server.find("pub async fn run(&mut self)")
+    end = server.find("save_session_on_shutdown", start)
+    loop_body = server[start:end] if start != -1 and end != -1 else ""
+    violations = nearest_mark_violations(loop_body, RUN_LOOP_STEPS, STEP_MARK, "run loop")
+    select = loop_body.find("tokio::select!")
+    after = loop_body.find("};", select)
+    following = loop_body[after + 2 :].lstrip().splitlines()[:2] if select != -1 and after != -1 else []
+    if len(following) < 2 or "Step::Dispatch" not in following[1]:
+        violations.append("run loop: Step::Dispatch must follow LOOP.begin() after the wait")
+    for file, handler, step in STEP_GUARDED_HANDLERS:
+        body = function_body(sources.get(file, ""), handler)
+        first = re.split(r"\breturn\b|\bif\b|\bmatch\b", body, maxsplit=1)[0]
+        if not re.search(r"perf::server::enter\(\s*crate::perf::step::Step::" + step + r",", first):
+            violations.append(f"{file}: {handler} must enter Step::{step} before its first branch")
+    scheduled = function_body(server, "handle_scheduled_tasks_headless")
+    violations += nearest_mark_violations(scheduled, SCHEDULED_TASK_STEPS, SCHEDULED_MARK, "scheduled")
+    return violations
+
+
+def stall_step_sources() -> dict[str, str]:
+    root = PROJECT_ROOT / "src" / "server"
+    files = {file for file, _, _ in STEP_GUARDED_HANDLERS} | {"headless.rs"}
+    return {file: production_code((root / file).read_text(encoding="utf-8")) for file in files}
 
 
 def blank_non_newlines(chars: list[str], start: int, end: int) -> None:
@@ -391,6 +518,37 @@ pub(crate) fn snapshot() -> Vec<u64> { vec![1] }
         server = production_code((PROJECT_ROOT / "src" / "server" / "headless.rs").read_text(encoding="utf-8"))
         client = production_code((PROJECT_ROOT / "src" / "client" / "mod.rs").read_text(encoding="utf-8"))
         self.assertEqual(perf_heartbeat_order_violations(server, client), [])
+
+    def test_server_loop_branches_mark_their_stall_step(self) -> None:
+        # Fork (stall attribution): every branch of the server loop, every
+        # handler that can nest and every scheduled task marks its step.
+        self.assertEqual(stall_step_coverage_violations(stall_step_sources()), [])
+
+    def test_stall_step_scanner_catches_a_missing_mark(self) -> None:
+        sources = stall_step_sources()
+        server = sources["headless.rs"]
+        # Drop the ServerEvents mark: the drain then runs under ClientAccept.
+        sources["headless.rs"] = server.replace(
+            "crate::perf::server::step(crate::perf::step::Step::ServerEvents);", "", 1
+        )
+        self.assertEqual(
+            stall_step_coverage_violations(sources),
+            ["run loop: self.drain_server_events() runs under ClientAccept, expected ServerEvents"],
+        )
+        # Drop the session-save mark and a handler guard.
+        sources["headless.rs"] = server.replace(
+            "crate::perf::server::scheduled(crate::perf::step::ScheduledTask::SessionSave);", "", 1
+        )
+        sources["headless/render.rs"] = sources["headless/render.rs"].replace(
+            "crate::perf::server::enter(", "crate::perf::server::skipped(", 1
+        )
+        self.assertEqual(
+            stall_step_coverage_violations(sources),
+            [
+                "headless/render.rs: render_and_stream_with_graphics_limit must enter Step::FullRender before its first branch",
+                "scheduled: self.app.start_background_session_save() runs under UpdateChecks, expected SessionSave",
+            ],
+        )
 
     def test_loop_heartbeat_order_scanner_catches_a_missing_mark(self) -> None:
         server = """

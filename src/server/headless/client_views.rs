@@ -875,6 +875,12 @@ impl HeadlessServer {
         &mut self,
         mut msg: api::ApiRequestMessage,
     ) -> bool {
+        // Fork (stall attribution): a stall names the API method (the inner
+        // dispatch re-enters the same step).
+        let _step = crate::perf::server::enter(
+            crate::perf::step::Step::ApiRequest,
+            crate::perf::step::api_method_index(&msg.request.method),
+        );
         let target_before = self.default_shell_target();
         let popup_before = self.app.state.popup_pane.is_some();
         let method_claims_geometry = Self::public_request_may_change_geometry(&msg.request.method);
@@ -976,6 +982,12 @@ impl HeadlessServer {
         client_id: u64,
         msg: api::ApiRequestMessage,
     ) -> bool {
+        // Fork (stall attribution): a stall names the API method (the inner
+        // dispatch re-enters the same step).
+        let _step = crate::perf::server::enter(
+            crate::perf::step::Step::ApiRequest,
+            crate::perf::step::api_method_index(&msg.request.method),
+        );
         let focus_before = self.shell_focus_target(client_id);
         let focused_tabs_before = self.focused_shell_tabs();
         let method_claims_geometry = Self::shell_endpoint_claims_geometry(&msg.request.method);

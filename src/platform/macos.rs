@@ -30,6 +30,12 @@ mod shutdown;
 pub(crate) use shutdown::monitor_host_shutdown;
 mod power;
 pub(crate) use power::monitor_host_power;
+// Fork (stall attribution): the perf watchdog's machine and thread probes.
+mod perf_probe;
+pub(crate) use perf_probe::{
+    current_thread_cpu_clock, machine_pressure, process_major_faults, spawn_stack_sample,
+    thread_cpu_ns,
+};
 
 mod launchd_spawn;
 pub(crate) use launchd_spawn::{leave_launchd_job, spawn_launchd_job};

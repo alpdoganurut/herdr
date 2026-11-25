@@ -229,6 +229,11 @@ impl HeadlessServer {
         pty_sources: &HashSet<crate::layout::PaneId>,
     ) -> bool {
         crate::render_prof::event("retained_surface.attempt");
+        // Fork (stall attribution): a stall names the render pass.
+        let _step = crate::perf::server::enter(
+            crate::perf::step::Step::RetainedRender,
+            crate::perf::step::NO_DETAIL,
+        );
         let started = crate::render_prof::timer();
         macro_rules! fallback {
             ($reason:literal) => {{

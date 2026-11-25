@@ -2882,6 +2882,90 @@ async fn fork_smoke_perf_the_server_loop_is_not_busy_through_shutdown() {
     );
 }
 
+/// Fork (stall attribution): a real API request that blocks inside the
+/// server's dispatch, under a test watchdog on the real server-loop
+/// heartbeat: the stall names the request's method (the step the server
+/// marks on entering the handler), at detection and at its end.
+#[test]
+fn fork_smoke_stall_attr_a_blocked_api_request_names_its_method() {
+    use crate::perf::watchdog::{StallEvent, Watchdog};
+    use std::sync::atomic::AtomicBool;
+    use std::time::Duration;
+
+    static BLOCKED: AtomicBool = AtomicBool::new(false);
+    static DONE: AtomicBool = AtomicBool::new(false);
+    // The dispatch asks the host-shutdown probe first: block there once.
+    fn blocks_once() -> bool {
+        if !BLOCKED.swap(true, Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_millis(600));
+        }
+        false
+    }
+
+    let mut server = test_headless_server();
+    server.host_shutdown_probe = blocks_once;
+    let watcher = std::thread::spawn(|| {
+        let heartbeats = [&crate::perf::server::LOOP];
+        let mut watchdog = Watchdog::new(&heartbeats);
+        let mut events = Vec::new();
+        loop {
+            let done = DONE.load(Ordering::Relaxed);
+            std::thread::sleep(Duration::from_millis(20));
+            watchdog.check(crate::perf::now_ns(), crate::perf::wall_ns(), |event| {
+                events.push(event)
+            });
+            if done {
+                return events;
+            }
+        }
+    });
+
+    crate::perf::server::LOOP.begin();
+    crate::perf::server::step(crate::perf::step::Step::ApiRequests);
+    let (respond_to, responses) = std::sync::mpsc::channel();
+    server.handle_api_request_with_shutdown_check(api::ApiRequestMessage {
+        request: Request {
+            id: "blocked".into(),
+            method: Method::WorkspaceList(api::schema::EmptyParams::default()),
+        },
+        respond_to,
+        response_write_complete: None,
+        peer_pid: None,
+    });
+    crate::perf::server::LOOP.end();
+    DONE.store(true, Ordering::Relaxed);
+    let events = watcher.join().expect("watcher thread");
+    assert!(responses.try_recv().is_ok(), "the request was answered");
+    assert!(BLOCKED.load(Ordering::Relaxed), "the dispatch blocked");
+
+    let detected = events.iter().find_map(|event| match event {
+        StallEvent::Stalled { step, .. } => Some(step.describe()),
+        _ => None,
+    });
+    assert_eq!(
+        detected.as_deref(),
+        Some("api_request:workspace.list in api_requests"),
+        "{events:?}"
+    );
+    let attribution = events
+        .iter()
+        .find_map(|event| match event {
+            StallEvent::Ended { attribution, .. } => Some(*attribution),
+            _ => None,
+        })
+        .expect("the stall ended");
+    assert_eq!(
+        attribution.dominant.describe(),
+        "api_request:workspace.list in api_requests"
+    );
+    assert!(attribution.dominant_ms >= 200, "{attribution:?}");
+    // After the handler the guard put the loop's phase back.
+    assert_eq!(
+        crate::perf::server::LOOP.step.read().describe(),
+        "api_requests"
+    );
+}
+
 #[path = "fork_smoke/coordinator.rs"]
 mod coordinator;
 
