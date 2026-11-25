@@ -988,7 +988,7 @@ impl RemoteSsh {
     }
 
     #[cfg(unix)]
-    fn bounded_control_output(
+    pub(super) fn bounded_control_output(
         &self,
         mut command: Command,
         timeout: Duration,
@@ -1008,13 +1008,38 @@ impl RemoteSsh {
         )
     }
 
-    fn command(&self) -> Command {
+    pub(super) fn command(&self) -> Command {
         let mut command = self.base_command();
         if self.noninteractive {
             apply_noninteractive_ssh_options(&mut command);
         }
         command.arg("-T").arg(&self.target);
         command
+    }
+
+    /// Fork: the managed configuration is in the system's temporary directory,
+    /// which macOS empties of what nobody read for days.
+    #[cfg(unix)]
+    pub(super) fn configuration_lost(&self) -> bool {
+        self.options()
+            .is_some_and(|options| !options.config_path.is_file())
+    }
+
+    /// Fork: the managed options of every other noninteractive command, on a
+    /// connection of its own: no control path, so the shared master is neither
+    /// used nor made. The `first` options win over the managed ones. `None`
+    /// without a managed configuration.
+    #[cfg(unix)]
+    pub(super) fn unshared_command(&self, first: &[&str]) -> Option<Command> {
+        let options = self.options()?;
+        options.control_path.as_ref()?;
+        let mut command = Command::new("ssh");
+        command.arg("-C").arg("-F").arg(&options.config_path);
+        for option in first {
+            command.arg("-o").arg(option);
+        }
+        apply_noninteractive_ssh_options(&mut command);
+        Some(command)
     }
 
     fn base_command(&self) -> Command {
@@ -3443,7 +3468,7 @@ fn ssh_bridge_exit_error(status: std::process::ExitStatus, stderr: &[u8]) -> io:
     io::Error::new(io::ErrorKind::ConnectionAborted, message)
 }
 
-fn capture_ssh_stderr(mut stderr: impl io::Read) -> io::Result<Vec<u8>> {
+pub(super) fn capture_ssh_stderr(mut stderr: impl io::Read) -> io::Result<Vec<u8>> {
     let mut captured = Vec::new();
     let mut buffer = [0_u8; 4 * 1024];
     loop {
@@ -3456,7 +3481,7 @@ fn capture_ssh_stderr(mut stderr: impl io::Read) -> io::Result<Vec<u8>> {
     }
 }
 
-fn discard_remote_output_preamble(reader: &mut impl io::BufRead) -> io::Result<()> {
+pub(super) fn discard_remote_output_preamble(reader: &mut impl io::BufRead) -> io::Result<()> {
     let marker = REMOTE_OUTPUT_READY_MARKER.as_bytes();
     let mut matched = 0;
     let mut matching = true;

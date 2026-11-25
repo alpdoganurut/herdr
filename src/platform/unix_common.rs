@@ -752,12 +752,8 @@ mod tests {
 
 /// Shared OpenSSH sockets outlive individual helpers. Never adopt a directory
 /// belonging to another uid, a symlink, or a directory accessible by others.
-pub(crate) fn shared_ssh_control_path(namespace: &Path, target: &str) -> std::io::Result<PathBuf> {
-    use sha2::{Digest, Sha256};
-    use std::os::unix::{
-        ffi::OsStrExt,
-        fs::{DirBuilderExt, MetadataExt},
-    };
+pub(crate) fn shared_ssh_dir() -> std::io::Result<PathBuf> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 
     // Validate the resolved system temp directory, but retain the short /tmp
     // spelling for sockets. On macOS /tmp resolves to /private/tmp; those extra
@@ -778,6 +774,14 @@ pub(crate) fn shared_ssh_control_path(namespace: &Path, target: &str) -> std::io
         Err(error) => return Err(error),
     }
     validate_shared_ssh_dir(&dir)?;
+    Ok(dir)
+}
+
+pub(crate) fn shared_ssh_control_path(namespace: &Path, target: &str) -> std::io::Result<PathBuf> {
+    use sha2::{Digest, Sha256};
+    use std::os::unix::ffi::OsStrExt;
+
+    let dir = shared_ssh_dir()?;
     let namespace = if namespace.is_absolute() {
         namespace.to_owned()
     } else {
@@ -803,6 +807,40 @@ pub(crate) fn shared_ssh_control_path(namespace: &Path, target: &str) -> std::io
         ));
     }
     Ok(path)
+}
+
+/// Fork: the soft file limit [`raise_soft_file_limit`] gives a child of this
+/// process.
+#[allow(clippy::unnecessary_cast)] // rlim_t is not u64 on every unix
+pub(crate) fn soft_file_limit_for(wanted: u64) -> std::io::Result<u64> {
+    let mut limit = std::mem::MaybeUninit::<libc::rlimit>::uninit();
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, limit.as_mut_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let limit = unsafe { limit.assume_init() };
+    let wanted = (wanted as libc::rlim_t).min(limit.rlim_max);
+    Ok(limit.rlim_cur.max(wanted) as u64)
+}
+
+/// Fork: raises this process's soft file limit to `wanted` (its hard limit
+/// allowing; never lowers it) and returns the limit in force. Only system
+/// calls, no allocation: also for a child between fork and exec.
+#[allow(clippy::unnecessary_cast)] // rlim_t is not u64 on every unix
+pub(crate) fn raise_soft_file_limit(wanted: u64) -> std::io::Result<u64> {
+    let mut limit = std::mem::MaybeUninit::<libc::rlimit>::uninit();
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, limit.as_mut_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let mut limit = unsafe { limit.assume_init() };
+    let wanted = (wanted as libc::rlim_t).min(limit.rlim_max);
+    if limit.rlim_cur < wanted {
+        let previous = limit.rlim_cur;
+        limit.rlim_cur = wanted;
+        if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) } != 0 {
+            limit.rlim_cur = previous;
+        }
+    }
+    Ok(limit.rlim_cur as u64)
 }
 
 fn validate_shared_ssh_dir(dir: &Path) -> std::io::Result<()> {

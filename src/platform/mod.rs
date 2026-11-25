@@ -4,6 +4,8 @@
 //! modules don't scatter `#[cfg]` branches through product logic.
 
 #[cfg(unix)]
+pub(crate) mod network;
+#[cfg(unix)]
 pub(crate) mod ssh_agent;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -221,9 +223,13 @@ impl ChildExitReason {
     }
 }
 
+/// Fork: nanoseconds on the clock that goes on while the machine sleeps.
+#[cfg(unix)]
+pub(crate) use remote_bridge::now as clock_with_sleep_ns;
 #[cfg(unix)]
 pub(crate) use unix_common::{
-    classify_child_exit, poll_fd_readable, read_fd, shared_ssh_control_path, tty_fd_input_is_raw,
+    classify_child_exit, poll_fd_readable, raise_soft_file_limit, read_fd, shared_ssh_control_path,
+    shared_ssh_dir, soft_file_limit_for, tty_fd_input_is_raw,
 };
 
 // Tests inject their own probe because the recorded hangup is process-global.
