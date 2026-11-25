@@ -8,7 +8,9 @@
 #![allow(dead_code)]
 
 pub(crate) mod classify;
+mod companion;
 mod forward;
 mod gate;
 mod proxy;
+mod sidecar;
 mod ssh;
