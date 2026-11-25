@@ -110,3 +110,14 @@ test("every item acts on the clicked page's webContents, and reports what it did
   pageMenuActions({ wc: wc2, params: { srcURL: 'file:///etc/passwd' }, openTab() {}, copyText() {} })['save-image']();
   assert.deepEqual(calls2, []);
 });
+
+test('a remote companion offers no Inspect Element', () => {
+  for (const params of [{}, { linkURL: 'https://a.test/' }, { isEditable: true }, { selectionText: 'x' }, { mediaType: 'image', srcURL: 'https://a.test/i.png' }]) {
+    const local = ids(pageMenuItems(params, {}));
+    assert.deepEqual(local.slice(-2), ['|', 'inspect']);
+    assert.deepEqual(ids(pageMenuItems(params, {}, { inspect: false })), local.slice(0, -2));
+  }
+  const { wc } = fakeWc();
+  assert.equal(typeof pageMenuActions({ wc }).inspect, 'function');
+  assert.ok(!('inspect' in pageMenuActions({ wc, inspect: false })));
+});

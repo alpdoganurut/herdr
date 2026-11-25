@@ -3,6 +3,7 @@
 'use strict';
 const { EventEmitter } = require('node:events');
 const { Connection, ApiError } = require('./herdr-api.js');
+const { linkState } = require('./remote-rules.js');
 
 const EVENT_KINDS = [
   'tab.focused',
@@ -17,12 +18,20 @@ const EVENT_KINDS = [
 const BACKOFF_MS = [500, 1000, 2000, 4000, 5000];
 const SLOW_RETRY_MS = 5000;
 
+// A remote companion's helper (contract §2.3): its event for a link that is back, and what it
+// answers to a call it cannot pass on while the link is down.
+const LINK_UP = 'herdr.link_up';
+const LINK_DOWN = 'link_down';
+// what the helper passes on: an answer to one of them came over the link
+const RELAYED = new Set(['browser.host_state', 'browser.host_sync', 'browser.host_report', 'browser.send_page', 'tab.focus', 'link.file']);
+
 // Errors after which retrying cannot help until something on the herdr side changes.
 const TERMINAL = new Set(['unknown_method', 'host_protocol_unsupported']);
 const SLOW = new Set(['host_in_use', 'browser_disabled', 'host_disabled', 'host_verify_failed', 'attach_blocked']);
 
 class HerdrLink extends EventEmitter {
-  // opts: {socketPath, register: () => params, log}
+  // opts: {socketPath, register: () => params, log, remote: the socket is a remote
+  // companion's helper's}
   // herdr's API server answers ONE request per connection and then closes it, so every
   // request gets its own connection; only the events.subscribe stream stays open. The
   // stream closing (server restart, live handoff) or a failed heartbeat means "lost".
@@ -39,6 +48,36 @@ class HerdrLink extends EventEmitter {
     this.retryTimer = null;
     this.buffer = null; // events queued until the app has applied host_state
     this.status = { state: 'connecting', text: 'connecting to herdr…' };
+    // remote: the helper's link to the other machine's herdr: `linked`, `reconnecting`, or
+    // `in_use` (another Mac has it; `text` says which)
+    this.farLink = { state: 'linked', text: null };
+  }
+
+  // Remote: the other machine's herdr cannot be asked now (this lease lives on).
+  get down() {
+    return this.farLink.state !== 'linked';
+  }
+
+  _farLink(next) {
+    if (!this.opts.remote || !next) return;
+    const was = this.farLink;
+    if (next.state === was.state && next.text === was.text) return;
+    this.farLink = next;
+    this.emit('link', next);
+  }
+
+  // The helper's lease and heartbeat answers say how its link is (absent: nothing new). Back
+  // without the event (a stale answer had said down): as if it had come.
+  _leaseLink(lease) {
+    if (!this.opts.remote) return;
+    const next = linkState(lease && lease.link);
+    if (!next) {
+      // it does not say: ask over the link
+      if (this.down) this.call('browser.host_state').catch(() => {});
+      return;
+    }
+    if (next.state === 'linked' && this.down) this._onEvent({ event: LINK_UP, data: {} });
+    else this._farLink(next);
   }
 
   setStatus(state, text) {
@@ -73,7 +112,13 @@ class HerdrLink extends EventEmitter {
       throw new ApiError('unreachable', `herdr not reachable (${e.code || e.message})`);
     }
     try {
-      return await conn.request(method, params, { timeoutMs });
+      const res = await conn.request(method, params, { timeoutMs });
+      // a late link_down (its own connection) can come after the event that said it is back
+      if (this.opts.remote && this.down && RELAYED.has(method)) this._onEvent({ event: LINK_UP, data: {} });
+      return res;
+    } catch (e) {
+      if (e.code === LINK_DOWN && !this.down) this._farLink({ state: 'reconnecting', text: null });
+      throw e;
     } finally {
       conn.close();
     }
@@ -108,6 +153,7 @@ class HerdrLink extends EventEmitter {
     if (gen !== this.gen || this.stopped) return;
     this.lease = lease;
     this.attempt = 0;
+    this._farLink(linkState(lease.link) || { state: 'linked', text: null });
     // Events first, host_state after (in the app), buffering in between: no tab.focused is lost.
     this.buffer = [];
     const ev = new Connection(this.opts.socketPath, { prefix: 'e' });
@@ -131,6 +177,7 @@ class HerdrLink extends EventEmitter {
   }
 
   _onEvent(e) {
+    if (e.event === LINK_UP) this._farLink({ state: 'linked', text: null });
     if (this.buffer) this.buffer.push(e);
     else this.emit('event', e);
   }
@@ -154,6 +201,7 @@ class HerdrLink extends EventEmitter {
           // `update` is absent when there is none: an old note must not linger; likewise
           // `view_cycle_keys` (herdr's cycle key turned off or prefix-only)
           this.lease = { ...this.lease, update: undefined, view_cycle_keys: undefined, ...res.lease };
+          this._leaseLink(res.lease);
           this.emit('heartbeat', this.lease);
         }
       } catch (e) {
@@ -203,8 +251,8 @@ class HerdrLink extends EventEmitter {
   }
 
   // Plain request (no lease), e.g. tab.focus.
-  async request(method, params = {}) {
-    return this._rpc(method, params);
+  async request(method, params = {}, opts = {}) {
+    return this._rpc(method, params, opts);
   }
 
   // Test hook (`__hang`): stop heartbeating and never re-register, as a wedged app would.
@@ -228,4 +276,4 @@ class HerdrLink extends EventEmitter {
   }
 }
 
-module.exports = { HerdrLink, EVENT_KINDS };
+module.exports = { HerdrLink, EVENT_KINDS, LINK_UP, LINK_DOWN };

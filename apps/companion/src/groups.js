@@ -2,14 +2,20 @@
 // Pure data: no Electron. views.js attaches live WebContentsViews to entries by view_id.
 'use strict';
 
+const { cleanText, isFileToken, remoteEntry, retoken } = require('./remote-rules.js');
+
 const MAX_ENTRIES = 32;
 const MAX_URL = 2048;
 const MAX_TITLE = 300;
+const MAX_OPENER = 80; // another machine's opened_by
 
 const clip = (s, n) => (typeof s === 'string' ? (s.length > n ? s.slice(0, n) : s) : '');
 
 class GroupStore {
-  constructor() {
+  // `remote`: herdr's state is another machine's (src/remote.js): its text is cleaned, its
+  // entries are filtered (remote-rules.js) and a shown file is a token, never a path.
+  constructor({ remote = false } = {}) {
+    this.remote = remote;
     this.groups = new Map(); // tab_id -> group
     this.tabs = new Map(); // tab_id -> {tab_id, workspace_id, label}  (every herdr tab we know)
     this.focusedTabId = null;
@@ -45,6 +51,26 @@ class GroupStore {
     return null;
   }
 
+  // herdr's and a page's own text, as every surface shows it.
+  text(s, n) {
+    return this.remote ? cleanText(s, n) : clip(s, n);
+  }
+
+  // The current token of the shown file whose page was loaded with `pageToken`, or null.
+  serveOf(pageToken) {
+    for (const g of this.groups.values()) {
+      const e = g.entries.find((x) => x.serve && x.page_token === pageToken);
+      if (e) return e.serve;
+    }
+    return null;
+  }
+
+  // The URL herdr hears: a shown file's with its current token (its page keeps the one it was
+  // loaded with).
+  wireUrl(e) {
+    return e.serve && e.page_token ? retoken(e.url, e.page_token, e.serve) : e.url;
+  }
+
   label(tabId) {
     const t = this.tabs.get(tabId);
     return t ? t.label : tabId;
@@ -68,12 +94,13 @@ class GroupStore {
       target: entry.target || null,
       kind: entry.kind || 'web',
       url: clip(entry.url || 'about:blank', MAX_URL),
-      title: clip(entry.title || '', MAX_TITLE),
+      title: this.text(entry.title || '', MAX_TITLE),
       file: entry.file || null,
       root: entry.root || null,
+      serve: entry.serve || null, // another machine's file: its current token
       allow_network: !!entry.allow_network,
       // page API: an agent's html view without network only (main also checks the lease feature)
-      page_api: entry.kind === 'html_view' && !entry.allow_network && !!entry.page_api,
+      page_api: entry.kind === 'html_view' && !entry.allow_network && !!entry.page_api && !this.remote,
       opener: entry.opener || null,
       opened_by: entry.opened_by || 'user',
       title_fixed: !!entry.title_fixed, // runtime only: a restored view loses it
@@ -117,7 +144,7 @@ class GroupStore {
     let changed = false;
     for (const [k, v0] of Object.entries(patch)) {
       if (k === 'title' && e.title_fixed) continue;
-      const v = k === 'url' ? clip(v0, MAX_URL) : k === 'title' ? clip(v0, MAX_TITLE) : v0;
+      const v = k === 'url' ? clip(v0, MAX_URL) : k === 'title' ? this.text(v0, MAX_TITLE) : v0;
       if (e[k] !== v) {
         e[k] = v;
         changed = true;
@@ -135,7 +162,9 @@ class GroupStore {
     const seen = new Set();
     this.tabs = new Map();
     for (const t of state.tabs || []) {
-      this.tabs.set(t.tab_id, { tab_id: t.tab_id, workspace_id: t.workspace_id, label: t.label || t.tab_id });
+      const label = this.remote ? this.text(t.label, MAX_TITLE) : t.label;
+      const workspace_id = this.remote ? this.text(t.workspace_id, MAX_TITLE) : t.workspace_id;
+      this.tabs.set(t.tab_id, { tab_id: t.tab_id, workspace_id, label: label || t.tab_id });
     }
     for (const t of state.tabs || []) {
       let g = (t.key && this.groupByKey(t.key)) || null;
@@ -158,6 +187,7 @@ class GroupStore {
           g.key = t.key;
           this.markDirty(g.tab_id);
         }
+        if (this.remote) this.refreshServe(g, t.entries);
         seen.add(g);
         continue;
       }
@@ -166,23 +196,31 @@ class GroupStore {
         g = { tab_id: t.tab_id, key: t.key, entries: [], active: null };
         this.groups.set(t.tab_id, g);
         for (const e of t.entries.slice(0, MAX_ENTRIES)) {
+          const far = this.remote ? remoteEntry(e) : null;
+          if (this.remote && !far) continue;
+          const file = far ? null : e.file || null;
           const entry = {
             id: e.id,
             view_id: this.mintViewId(),
             target: null,
             kind: e.kind === 'html_view' ? 'html_view' : 'web',
-            url: clip(e.url || 'about:blank', MAX_URL),
-            title: clip(e.title || '', MAX_TITLE),
-            file: e.file || null,
-            root: e.file ? require('node:path').dirname(e.file) : null,
-            allow_network: !!e.allow_network,
-            page_api: e.kind === 'html_view' && !e.allow_network && !!e.page_api,
-            opener: e.opener || null,
-            opened_by: e.opened_by || 'user',
+            url: clip((far ? far.url : e.url) || 'about:blank', MAX_URL),
+            title: this.text(e.title || '', MAX_TITLE),
+            file,
+            root: file ? require('node:path').dirname(file) : null,
+            serve: far ? far.serve : null,
+            allow_network: !far && !!e.allow_network,
+            page_api: !far && e.kind === 'html_view' && !e.allow_network && !!e.page_api,
+            opener: far ? null : e.opener || null,
+            opened_by: (far ? this.text(e.opened_by, MAX_OPENER) : e.opened_by) || 'user',
             placeholder: true,
           };
           g.entries.push(entry);
           if (e.id === t.active) g.active = entry.view_id;
+        }
+        if (!g.entries.length) {
+          this.groups.delete(t.tab_id); // nothing of it may be kept
+          continue;
         }
         if (!g.active && g.entries.length) g.active = g.entries[0].view_id;
         seen.add(g);
@@ -200,6 +238,22 @@ class GroupStore {
     }
     if (state.focused_tab_id !== undefined) this.focusedTabId = state.focused_tab_id;
     return out;
+  }
+
+  // A new host_state carries new tokens: a live page keeps its URL (its requests go out under
+  // the new token), one not loaded yet is loaded under it.
+  refreshServe(g, entries) {
+    for (const e of g.entries) {
+      const now = e.id && e.kind === 'html_view' && (entries || []).find((x) => x && x.id === e.id);
+      if (!now || !isFileToken(now.serve)) continue;
+      if (!e.page_token) e.url = retoken(e.url, e.serve, now.serve);
+      e.serve = now.serve;
+    }
+  }
+
+  // Every group goes in the next syncs (the link to the other machine is back).
+  markAll() {
+    for (const id of this.groups.keys()) this.dirty.add(id);
   }
 
   dropGroup(tabId) {
@@ -243,10 +297,11 @@ class GroupStore {
       tab_id: g.tab_id,
       active: active ? active.id || active.view_id : null,
       entries: g.entries.map((e) => {
-        const x = { view_id: e.view_id, kind: e.kind, url: e.url, title: e.title };
+        const x = { view_id: e.view_id, kind: e.kind, url: this.wireUrl(e), title: e.title };
         if (e.id) x.id = e.id;
         if (e.target) x.target = e.target;
-        if (e.kind === 'html_view') {
+        if (e.kind === 'html_view' && e.serve) x.serve = e.serve;
+        else if (e.kind === 'html_view') {
           x.file = e.file;
           x.allow_network = !!e.allow_network;
           if (e.page_api) x.page_api = true;
@@ -287,4 +342,4 @@ class GroupStore {
   }
 }
 
-module.exports = { GroupStore, MAX_ENTRIES, MAX_URL, MAX_TITLE };
+module.exports = { GroupStore, MAX_ENTRIES, MAX_URL, MAX_TITLE, MAX_OPENER };

@@ -36,7 +36,8 @@ function show(d) {
   }
   card.hidden = false;
   card.dataset.type = d.type;
-  $('origin').textContent = d.origin ? `${d.origin} says` : 'This page says';
+  const who = d.origin ? `${d.origin} says` : 'This page says';
+  $('origin').textContent = d.machine ? `${d.machine} · ${who}` : who; // the machine first: a long origin is cut
   $('message').textContent = d.message;
   const field = $('field');
   field.hidden = d.type !== 'prompt';

@@ -54,6 +54,11 @@
       const project = dot > 0 ? dirs[dot - 1] : dot === 0 ? '' : dirs[dirs.length - 1] || '';
       return (project ? project + SEP + file : file) + frag;
     }
+    // another machine's shown file: its folder (the token in front is nobody's name) and the file
+    if (u.protocol === 'herdr-file:') {
+      const segs = decode(u.pathname).split('/').filter(Boolean);
+      return segs.slice(-2).join(SEP) + frag;
+    }
     if (u.protocol === 'http:' || u.protocol === 'https:') {
       const host = u.host.replace(/^www\./, '');
       const segs = u.pathname.split('/').filter(Boolean);
@@ -97,5 +102,17 @@
     return !!(s.urlFocus || s.menu || s.sendbar || s.permbar || s.status || s.needsYou || s.empty);
   }
 
-  return { NARROW_PX, ZONE_PX, HINT_PX, DWELL_MS, HIDE_MS, PULSE_MS, PIN_DEFAULTS, compactUrl, isNarrow, surface, pinnedFor, windowActions, held };
+  // A remote companion's status line, or null: herdr's own connection first (`status`, here
+  // the helper's), then the link to the machine (`link`), then the shown page (`page`:
+  // 'waits' | 'failed' | null, views.js).
+  function remoteLine({ machine, status, link, page }) {
+    if (status && status.state !== 'registered') return `${machine}: ${status.text}`;
+    if (link && link.state === 'in_use') return link.text || `the browser of ${machine} is on another Mac; quit herdr+ there`;
+    if (link && link.state === 'reconnecting') return `${machine}: reconnecting`;
+    if (page === 'waits') return `${machine}: no connection for this page; it loads when the connection is back`;
+    if (page === 'failed') return `${machine}: this page did not load; reload it`;
+    return null;
+  }
+
+  return { NARROW_PX, ZONE_PX, HINT_PX, DWELL_MS, HIDE_MS, PULSE_MS, PIN_DEFAULTS, compactUrl, isNarrow, surface, pinnedFor, windowActions, held, remoteLine };
 });

@@ -110,6 +110,12 @@ function render() {
   if (!state) return;
   document.body.classList.toggle('noinset', !state.inset);
   if (state.docked) document.body.classList.add('docked');
+  const machine = $('machine');
+  machine.hidden = !state.machine;
+  if (state.machine) {
+    machine.textContent = state.machine;
+    machine.title = `Pages of herdr on ${state.machine}`;
+  }
   const pill = $('count');
   const info = state.info;
   if (info && info.total > 0) {
@@ -141,7 +147,7 @@ function render() {
       const k = document.createElement('span');
       k.className = 'kind';
       k.textContent = '◇';
-      k.title = 'agent HTML view (sandboxed)';
+      k.title = state.machine ? `a file on ${state.machine}, shown by an agent (sandboxed)` : 'agent HTML view (sandboxed)';
       el.append(k);
     }
     const title = document.createElement('span');
@@ -209,7 +215,7 @@ function render() {
   up.disabled = !!(state.update && state.update.restarting);
   if (state.update) up.title = `herdr installed companion ${state.update.version}; Restart applies it (your pages come back)`;
   $('empty').hidden = !!state.active;
-  $('emptytext').textContent = state.session ? 'No pages in this session.' : 'Waiting for herdr…';
+  $('emptytext').textContent = state.session ? 'No pages in this session.' : state.machine ? `Waiting for ${state.machine}…` : 'Waiting for herdr…';
   notePulse();
   applyReveal();
 }

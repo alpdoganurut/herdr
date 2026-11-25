@@ -8,7 +8,7 @@
 //   editable   Undo, Redo | Cut, Copy, Paste, Select All (enabled by the field's edit flags)
 //   selection  Copy (text selected outside an editable field)
 //   page       Back, Forward, Reload (only when nothing more specific was clicked)
-//   always     Inspect Element
+//   always     Inspect Element (not in a remote companion: `inspect` false)
 
 'use strict';
 
@@ -21,7 +21,7 @@ const downloadAllowed = (url) => DOWNLOADABLE.test(String(url || ''));
 
 // `params`: Electron's context-menu params; `nav`: {canGoBack, canGoForward}.
 // Returns [{id, label, enabled}] with {type: 'separator'} between sections.
-function pageMenuItems(params = {}, nav = {}) {
+function pageMenuItems(params = {}, nav = {}, { inspect = true } = {}) {
   const sections = [];
   const flags = params.editFlags || {};
   const link = String(params.linkURL || '');
@@ -63,7 +63,7 @@ function pageMenuItems(params = {}, nav = {}) {
       { id: 'reload', label: 'Reload', enabled: true },
     ]);
   }
-  sections.push([{ id: 'inspect', label: 'Inspect Element', enabled: true }]);
+  if (inspect) sections.push([{ id: 'inspect', label: 'Inspect Element', enabled: true }]);
   const out = [];
   for (const s of sections) {
     if (out.length) out.push({ type: 'separator' });
@@ -76,7 +76,7 @@ function pageMenuItems(params = {}, nav = {}) {
 // enabled states are that page's too), never to whichever page is shown by the time the item
 // is chosen. deps: {wc, params, openTab(url), copyText(text), report(action): back, forward and
 // reload reported to herdr like the strip's buttons}. A page closed meanwhile: nothing.
-function pageMenuActions({ wc, params = {}, openTab, copyText, report = () => {} }) {
+function pageMenuActions({ wc, params = {}, openTab, copyText, report = () => {}, inspect = true }) {
   const link = String(params.linkURL || '');
   const src = String(params.srcURL || '');
   const live = (fn) => () => {
@@ -110,7 +110,7 @@ function pageMenuActions({ wc, params = {}, openTab, copyText, report = () => {}
       wc.reload();
       report('reload');
     }),
-    inspect: live(() => wc.inspectElement(params.x, params.y)),
+    ...(inspect ? { inspect: live(() => wc.inspectElement(params.x, params.y)) } : {}),
   };
 }
 

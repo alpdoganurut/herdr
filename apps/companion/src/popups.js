@@ -91,7 +91,7 @@ function openKind({ url, disposition, features } = {}) {
 // The window's shape is pinned too: the page's features never make it frameless, transparent,
 // unclosable, unmovable, see-through, larger than the screen or always on top (the companion
 // sets the level), so a popup always looks like a window and shows its title.
-function popupWindowOptions({ parent, show, preload }) {
+function popupWindowOptions({ parent, show, preload, devTools = true }) {
   return {
     parent,
     show,
@@ -132,6 +132,7 @@ function popupWindowOptions({ parent, show, preload }) {
       backgroundThrottling: false,
       preload,
       additionalArguments: [],
+      ...(devTools ? {} : { devTools: false }), // a remote companion's (Electron 45 ignores it here: remote.js closes them)
     },
   };
 }

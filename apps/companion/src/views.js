@@ -12,11 +12,17 @@ const NETWORK_URLS = ['http://*/*', 'https://*/*', 'ws://*/*', 'wss://*/*'];
 // every page view, every frame: the companion's alert/confirm/prompt (src/dialogs.js) and, in
 // html views without network, no WebRTC
 const PAGE_PRELOAD = path.join(__dirname, 'preload', 'page.js');
+const remote = require('./remote.js');
+const { FILE_SCHEME, cleanText, isFileToken, parseFileUrl, fileResponse } = require('./remote-rules.js');
 const { downloadAllowed } = require('./context-menu.js');
 const { openKind, popupWindowOptions, clampBounds, POPUP_CAP } = require('./popups.js');
 // The longest a hidden view paints for one capture hold (holdPaint); the sidecar asks for
 // what is left of its screenshot's deadline and lets go when its captures settle.
 const PAINT_HOLD_MAX_MS = 60000;
+// A remote companion's page that waits this long for its proxy reports load_failed.
+const GATE_REPORT_MS = 600;
+// Its first load that failed on the proxy is tried again this long after the proxy answers.
+const GATE_RETRY_MS = 1000;
 
 // A page session's user agent without the Electron/x.y.z token: sites that see it serve their
 // desktop-app pages (Slack: window drag regions, app-only behaviour) instead of the web ones.
@@ -85,27 +91,35 @@ function viewPartition(rootReal, allowNetwork) {
 const DEAD_PROXY = { proxyRules: 'http://127.0.0.1:9', proxyBypassRules: '<-loopback>' };
 
 // html_view sandbox: file:// limited to `rootReal` (canonicalized, no symlink escape),
-// network blocked unless allowed, every permission denied. Set up once per partition.
+// network blocked unless allowed, every permission denied. Set up once per partition. A remote
+// companion's serves one shown file's token (`far`: {token, read(rel, offset)}), no file here.
 const htmlSessions = new Map(); // partition -> {ses, rootReal, ready}
-function htmlSession(rootReal, allowNetwork, log) {
+function htmlSession(rootReal, allowNetwork, log, far = null) {
   const partition = viewPartition(rootReal, allowNetwork);
   const have = htmlSessions.get(partition);
   if (have) return have;
   const ses = session.fromPartition(partition); // no "persist:" => in memory
-  ses.protocol.handle('file', async (req) => {
-    let p;
-    try {
-      p = await fs.promises.realpath(fileURLToPath(req.url));
-    } catch {
-      return new Response('not found', { status: 404 });
-    }
-    if (!within(rootReal, p)) return new Response('outside the view directory', { status: 403 });
-    return net.fetch(pathToFileURL(p).toString(), { bypassCustomProtocolHandlers: true });
-  });
+  // a remote companion's sessions refuse file: already (remote.js), and it stays refused
+  if (!remote.on) {
+    ses.protocol.handle('file', async (req) => {
+      let p;
+      try {
+        p = await fs.promises.realpath(fileURLToPath(req.url));
+      } catch {
+        return new Response('not found', { status: 404 });
+      }
+      if (!within(rootReal, p)) return new Response('outside the view directory', { status: 403 });
+      return net.fetch(pathToFileURL(p).toString(), { bypassCustomProtocolHandlers: true });
+    });
+  } else if (far) {
+    const down = `${remote.machine}: no connection; this page loads when it is back`;
+    ses.protocol.handle(FILE_SCHEME, (req) => fileResponse(req, { token: far.token, pull: far.read, down }));
+  }
   let ready = Promise.resolve();
   if (!allowNetwork) {
     ses.webRequest.onBeforeRequest({ urls: NETWORK_URLS }, (_d, cb) => cb({ cancel: true }));
     ready = ses.setProxy(DEAD_PROXY).catch(() => {});
+    remote.offline(ses);
   }
   ses.setPermissionRequestHandler((_wc, _perm, cb) => cb(false));
   ses.setPermissionCheckHandler(() => false);
@@ -173,6 +187,7 @@ class ViewManager {
   // hooks: {log(...args), onNav(viewId, patch), onState(viewId), onError(viewId, kind, text), onOpen(fromViewId, url, disposition), onKey(input) -> bool,
   //         onPermission(viewId, {permission,label,origin}, done(allow)), onLeave(viewId, newOrigin|null),
   //         onDialogsEnd(viewId, frameKey|null): its dialogs are cancelled (navigation, crash, destroy),
+  //         readFile(pageToken, rel, offset): a remote companion's shown file (a link.file answer),
   //         onGone(viewId): its WebContents went without destroy() (window.close(), a CDP close),
   //         headless: popups never show, popupLevel() -> {raised, allSpaces} | null: the level popups take (the dock's),
   //         onPopupContextMenu(ownerViewId, win, params)}
@@ -247,7 +262,7 @@ class ViewManager {
           const show = !this.hooks.headless && this._popupMayShow(ownerId);
           return {
             action: 'allow',
-            overrideBrowserWindowOptions: popupWindowOptions({ parent, show, preload: PAGE_PRELOAD }),
+            overrideBrowserWindowOptions: popupWindowOptions({ parent, show, preload: PAGE_PRELOAD, devTools: !remote.on }),
           };
         }
       }
@@ -279,7 +294,10 @@ class ViewManager {
         host = new URL(wc.getURL()).host;
       } catch {}
       try {
-        if (!win.isDestroyed()) win.setTitle(host ? `${host} — ${t || ''}` : t || '');
+        if (win.isDestroyed()) return;
+        // the machine's name first: the rest is the page's
+        if (remote.on) win.setTitle([remote.machine, host, cleanText(t)].filter(Boolean).join(' — '));
+        else win.setTitle(host ? `${host} — ${t || ''}` : t || '');
       } catch {}
     };
     win.on('page-title-updated', (e, t) => {
@@ -507,13 +525,15 @@ class ViewManager {
 
   // The persistent web partition with the permission policy: PROMPTED permissions go to
   // hooks.onPermission(viewId, {permission, label, origin}, cb) (main asks in the strip;
-  // allow once grants this request and the page's checks until it leaves the origin).
-  _webSession() {
+  // allow once grants this request and the page's checks until it leaves the origin). A remote
+  // companion denies them all.
+  webSession() {
     const ses = session.fromPartition(WEB_PARTITION);
     if (this.webSessionReady) return ses;
     this.webSessionReady = true;
     guardDownloads(ses);
     webUserAgent(ses, this.log);
+    if (remote.on) return ses; // denied for every session (remote.js)
     ses.setPermissionRequestHandler((wc, permission, cb, details = {}) => {
       if (ALLOWED.has(permission)) return cb(true);
       const viewId = this.viewIdOf(wc);
@@ -558,15 +578,22 @@ class ViewManager {
     let ses;
     let rootReal = null;
     let sesReady = null;
-    const noNetwork = isHtml && !entry.allow_network;
+    const noNetwork = isHtml && (!entry.allow_network || remote.on); // a remote html view never has network
     // page API (src/page-api.js): window.herdr in the top frame of an opted-in view, while
     // herdr advertises page messages
-    const pageApi = noNetwork && !!entry.page_api && /^agent:./.test(entry.opened_by || '') && !!(this.hooks.pageApiOn && this.hooks.pageApiOn());
+    const pageApi = noNetwork && !remote.on && !!entry.page_api && /^agent:./.test(entry.opened_by || '') && !!(this.hooks.pageApiOn && this.hooks.pageApiOn());
     const extraArgs = [...(noNetwork ? ['--herdr-nonet'] : []), ...(pageApi ? ['--herdr-page-api'] : [])];
-    if (isHtml) {
+    if (isHtml && remote.on) {
+      // another machine's file, under the token its page is loaded with: no file here is looked
+      // at, every file: URL is refused
+      const token = isFileToken(entry.serve) ? entry.serve : null;
+      const far = token && { token, read: (rel, offset) => this.hooks.readFile(token, rel, offset) };
+      entry.page_token = token;
+      ({ ses, ready: sesReady } = htmlSession(`remote ${token || entry.view_id}`, false, this.log, far));
+    } else if (isHtml) {
       ({ ses, rootReal, ready: sesReady } = htmlSession(viewRoot(entry.root, entry.file), entry.allow_network, this.log));
     } else {
-      ses = this._webSession();
+      ses = this.webSession();
     }
     const view = new WebContentsView({
       webPreferences: {
@@ -580,6 +607,7 @@ class ViewManager {
         preload: PAGE_PRELOAD,
         nodeIntegrationInSubFrames: true,
         ...(extraArgs.length ? { additionalArguments: extraArgs } : {}),
+        ...remote.prefs,
       },
     });
     const wc = view.webContents; // kept: the view's own property goes when the page closes itself
@@ -591,7 +619,10 @@ class ViewManager {
     // pageApi: the bridge was given; pageToken: the current document's (a new document asks
     // for a new one: did-navigate clears it)
     // paintHeld/paintTimer: a hold for an agent's capture (holdPaint)
-    const rec = { view, entry, rootReal, target: null, ready: null, grants: new Set(), pageApi, pageToken: null, paintHeld: false, paintTimer: null };
+    // waiting: the URL a remote companion's page loads once its proxy answers; committed: it
+    // showed a page already; down: 'waits' (loads by itself once the other machine answers) or
+    // 'failed' (its page did not load), for the bar
+    const rec = { view, entry, rootReal, target: null, ready: null, grants: new Set(), pageApi, pageToken: null, paintHeld: false, paintTimer: null, waiting: null, committed: false, down: null };
     this.live.set(entry.view_id, rec);
     view.setVisible(false);
     (this.host || win).contentView.addChildView(view);
@@ -604,13 +635,42 @@ class ViewManager {
       await wc.loadURL(`about:blank#herdr-view=${entry.view_id}`).catch(() => {});
       if (wc.isDestroyed()) return null;
       rec.target = await targetIdOf(wc);
-      const url = isHtml ? pathToFileURL(entry.file).toString() : entry.url;
+      const url = isHtml && !remote.on ? pathToFileURL(entry.file).toString() : entry.url;
       if (url && url !== 'about:blank' && !wc.isDestroyed()) {
-        wc.loadURL(url).catch(() => {}); // failures surface as did-fail-load
+        // never waited for: a proxy that is down must not hold `ready`
+        this._load(rec, wc, url);
       }
       return rec.target;
     })();
     return rec.ready;
+  }
+
+  // A page's load. A remote companion's web page waits for its session's gate (remote.js); one
+  // whose proxy is down stays blank (or on its error) with its URL set and loads by itself when
+  // the proxy is back, unless it was navigated or closed meanwhile.
+  // `retry`: its load failed already (and was reported).
+  _load(rec, wc, url, { retry = false } = {}) {
+    const gate = rec.entry.kind === 'html_view' ? null : remote.gate(wc.session);
+    if (!gate) {
+      wc.loadURL(url).catch(() => {}); // failures surface as did-fail-load
+      return;
+    }
+    rec.waiting = url;
+    const waits = () => rec.waiting === url && this.live.get(rec.entry.view_id) === rec;
+    const slow = setTimeout(() => {
+      if (waits()) this._down(rec, 'waits');
+      if (!retry && waits()) this.hooks.onError(rec.entry.view_id, 'load_failed', `the browser's proxy does not answer (${remote.why(wc.session)}); it loads when the proxy is back: ${url}`);
+    }, GATE_REPORT_MS);
+    const go = () => {
+      if (!waits() || wc.isDestroyed()) return;
+      rec.waiting = null;
+      wc.loadURL(url).catch(() => {});
+    };
+    gate.then(() => {
+      clearTimeout(slow);
+      if (retry) setTimeout(go, GATE_RETRY_MS);
+      else go();
+    });
   }
 
   _wire(rec) {
@@ -629,8 +689,11 @@ class ViewManager {
       if (this.hooks.onLeave) this.hooks.onLeave(id, origin);
       this.hooks.onNav(id, { url });
     };
-    wc.on('did-navigate', () => {
+    wc.on('did-navigate', (_e, _url, status) => {
       rec.pageToken = null; // a committed main-frame navigation: a new document
+      // a shown file whose other machine did not answer: linkUp() loads it again
+      if (!rec.waiting) this._down(rec, remote.on && entry.kind === 'html_view' && status === 502 ? 'waits' : null);
+      if (!wc.getURL().startsWith('about:blank#herdr-view=')) rec.committed = true;
       nav();
     });
     wc.on('did-navigate-in-page', (_e, _url, isMainFrame) => isMainFrame && nav());
@@ -639,6 +702,11 @@ class ViewManager {
     wc.on('did-stop-loading', () => this.hooks.onState(id));
     wc.on('did-fail-load', (_e, code, desc, url, isMainFrame) => {
       if (isMainFrame && code !== -3) this.hooks.onError(id, 'load_failed', `${desc} (${code}) ${url}`);
+      if (!remote.on || !isMainFrame || code === -3 || entry.kind === 'html_view') return;
+      this._down(rec, 'failed');
+      if (code !== remote.PROXY_DOWN) return;
+      remote.lost(wc.session);
+      if (!rec.committed) this._load(rec, wc, url, { retry: true }); // nothing shown yet: its first load again
     });
     wc.on('render-process-gone', (_e, d) => {
       if (this.hooks.onDialogsEnd) this.hooks.onDialogsEnd(id, null);
@@ -652,6 +720,13 @@ class ViewManager {
       const key = frameKey(d.frame);
       if (key) this.hooks.onDialogsEnd(id, key); // no frame: nothing to match (never all of them)
     });
+    // navigated by someone else: what waited for the proxy is moot
+    wc.on('did-start-navigation', (d) => {
+      if (d && d.isMainFrame && !d.isSameDocument) {
+        rec.waiting = null;
+        this._down(rec, null);
+      }
+    });
     wc.on('before-input-event', (e, input) => {
       if (this.hooks.onKey(input)) e.preventDefault();
     });
@@ -660,6 +735,7 @@ class ViewManager {
     if (entry.kind === 'html_view') {
       wc.setWindowOpenHandler(() => ({ action: 'deny' }));
       wc.on('will-navigate', (e, url) => {
+        if (remote.on && entry.page_token && (parseFileUrl(url) || {}).token === entry.page_token) return;
         if (url.startsWith('file:')) {
           let p;
           try {
@@ -680,6 +756,26 @@ class ViewManager {
       // opener, anything else a new view in the same group (src/popups.js)
       wc.setWindowOpenHandler(this._openHandler(id));
       wc.on('did-create-window', (win, d) => this._adoptPopup(win, id, d));
+    }
+  }
+
+  _down(rec, state) {
+    if (rec.down === state) return;
+    rec.down = state;
+    this.hooks.onState(rec.entry.view_id);
+  }
+
+  // Why the page is not up, for the bar: 'waits', 'failed' or null.
+  downState(viewId) {
+    const rec = this.live.get(viewId);
+    return rec ? rec.down : null;
+  }
+
+  // The other machine answers again: the shown files that had no answer load now.
+  linkUp() {
+    for (const rec of this.live.values()) {
+      const wc = rec.down === 'waits' && rec.entry.kind === 'html_view' ? liveWc(rec) : null;
+      if (wc) wc.reload();
     }
   }
 
