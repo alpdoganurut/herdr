@@ -624,9 +624,13 @@ impl ClientCoordinatorState {
     }
 }
 
-/// The text a remote connection shows for the dashboard URL.
+/// The text a remote connection shows for the dashboard URL: the address
+/// without its scheme, as a terminal would open a link on this machine.
 pub(crate) fn dashboard_url_notice(url: &str) -> String {
-    format!("coordinator dashboard on the server host: {url}")
+    format!(
+        "the coordinator dashboard is on the server host only, not opened here: {}",
+        super::machine_surfaces::plain_address(url)
+    )
 }
 
 /// The text a wake that cannot be delivered now shows.

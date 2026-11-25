@@ -105,9 +105,8 @@ impl ClientShellState {
         if notification.event.pane_id.is_some()
             && !self.endpoint_is_online(&notification.endpoint_id)
         {
-            let label = self.endpoint_label(&notification.endpoint_id).to_owned();
-            self.receive_endpoint_unavailable(format!("{label} is unavailable"));
-            outcome.repaint = true;
+            let endpoint_id = notification.endpoint_id.clone();
+            self.say_machine_unavailable(&endpoint_id, outcome);
             return;
         }
         let notification = self
@@ -121,17 +120,13 @@ impl ClientShellState {
         let Some(pane_id) = notification.event.pane_id else {
             return;
         };
-        if notification.endpoint_id == self.active_endpoint_id {
-            self.push_endpoint_method(
-                crate::api::schema::Method::PaneFocus(crate::api::schema::PaneTarget { pane_id }),
-                outcome,
-            );
-        } else if self.endpoint_is_online(&notification.endpoint_id) {
-            outcome.actions.push(ClientShellAction::ActivateEndpoint {
-                endpoint_id: notification.endpoint_id,
-                target: Some(ClientEndpointFocusTarget::Pane(pane_id)),
-            });
-        }
+        // Fork (machine tabs): like a row click, so a toast of the machine
+        // still shown cancels a switch under way instead of being dropped.
+        self.focus_or_activate(
+            notification.endpoint_id,
+            ClientEndpointFocusTarget::Pane(pane_id),
+            outcome,
+        );
     }
 
     /// Moves cards between the sticky list and the timed queue after a live reload
@@ -334,6 +329,8 @@ impl ClientShellState {
             // Fork: final text for every delivery path (notification_format.rs).
             let mut pending = pending;
             pending.event = self.format_agent_notification(&pending.endpoint_id, pending.event);
+            // Fork (machine tabs): which machine, once there are several.
+            pending.event.title = self.name_machine(&pending.endpoint_id, pending.event.title);
             let target_active =
                 self.notification_target_is_active(&pending.endpoint_id, &pending.event);
             let suppress_external = target_active && self.outer_focused != Some(false);

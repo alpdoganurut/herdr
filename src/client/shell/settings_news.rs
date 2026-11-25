@@ -226,14 +226,17 @@ impl ClientShellState {
             Some(ClientNewsPicker::QuietHours(choices)) => {
                 // The active server writes its own config (`news.set_quiet_hours`,
                 // so a remote server's quiet hours change too); a server
-                // without the method gets the local write of older builds.
+                // without the method gets the local write of older builds,
+                // but never from a saved machine's settings: that would
+                // change this machine's desk (the request then says why not).
                 if let Some(window) = choices.get(selected).cloned() {
                     let method = crate::api::schema::Method::NewsSetQuietHours(
                         crate::api::schema::NewsSetQuietHoursParams {
                             quiet_hours: window.clone(),
                         },
                     );
-                    if self.supports_endpoint_method(&method) {
+                    if self.supports_endpoint_method(&method) || !self.active_endpoint_id.is_local()
+                    {
                         self.close_news_picker();
                         self.push_endpoint_method_with_kind(
                             method,

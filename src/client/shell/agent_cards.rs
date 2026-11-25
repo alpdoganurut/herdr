@@ -81,6 +81,9 @@ pub(super) struct AgentCardsState {
     /// Ids dismissed here and not yet gone from the server's list (a
     /// non-active machine, or a server without `agent.notice_dismiss`).
     pub(super) hidden: HashSet<String>,
+    /// Ids its server is not told about yet: the machine was not shown or
+    /// not online (sent by `tick_machines` once it is).
+    pub(super) unsent: HashSet<String>,
 }
 
 impl AgentCardsState {
@@ -88,6 +91,17 @@ impl AgentCardsState {
         self.notices
             .iter()
             .filter(|notice| !self.hidden.contains(&notice.id))
+    }
+
+    /// The dismissals to tell the server about now; they are hidden here.
+    pub(super) fn take_unsent(&mut self) -> Vec<String> {
+        if self.unsent.is_empty() {
+            return Vec::new();
+        }
+        let mut ids: Vec<String> = self.unsent.drain().collect();
+        ids.sort_unstable();
+        self.hidden.extend(ids.iter().cloned());
+        ids
     }
 }
 
@@ -113,6 +127,8 @@ pub(super) enum AgentCardHit {
 /// A card to draw: its machine and the notice.
 pub(super) struct AgentCardView<'a> {
     pub(super) endpoint_id: &'a ClientEndpointId,
+    /// The machine's name, with several endpoints.
+    pub(super) machine: Option<&'a str>,
     pub(super) notice: &'a AgentNoticeInfo,
 }
 
@@ -216,6 +232,7 @@ fn fill(buffer: &mut Buffer, rect: Rect, style: Style) {
 fn render_card(
     buffer: &mut Buffer,
     rect: Rect,
+    machine: Option<&str>,
     notice: &AgentNoticeInfo,
     now_unix: u64,
     palette: &Palette,
@@ -258,7 +275,8 @@ fn render_card(
     for y in rect.y + 1..bottom {
         put_text(buffer, x0, y, 1, "▌", accent_style);
     }
-    // header: glyph, name, · tab, then age and × at the right
+    // header: glyph, machine · (several machines), name, · tab, then age and
+    // × at the right
     let header_y = rect.y + 1;
     let age = age_label(now_unix, notice.unix);
     let tail = format!("{age}  × ");
@@ -274,8 +292,23 @@ fn render_card(
         glyph,
         accent_style.add_modifier(Modifier::BOLD),
     );
-    let name_x = text_x + 2;
-    let name_room = head_room.saturating_sub(2);
+    let mut name_x = text_x + 2;
+    let mut name_room = head_room.saturating_sub(2);
+    if let Some(machine) = machine {
+        // at most half of the line: the name stays readable
+        let machine = format!("{} · ", fit(machine, (name_room / 2).saturating_sub(3)));
+        let width = width_of(&machine);
+        put_text(
+            buffer,
+            name_x,
+            header_y,
+            width as u16,
+            &machine,
+            bg.fg(palette.subtext0),
+        );
+        name_x += width as u16;
+        name_room = name_room.saturating_sub(width);
+    }
     let name = fit(&notice.name, name_room);
     put_text(
         buffer,
@@ -367,7 +400,7 @@ pub(super) fn render_agent_cards(
             break;
         }
         let rect = Rect::new(x, y, width, height);
-        let close = render_card(buffer, rect, card.notice, now_unix, palette);
+        let close = render_card(buffer, rect, card.machine, card.notice, now_unix, palette);
         hits.push((
             close,
             AgentCardHit::Close {
@@ -422,9 +455,13 @@ pub(super) fn render_agent_card_banner(
     let notice = newest.notice;
     let (glyph, accent) = kind_accent(notice.kind, palette);
     let team = team_label(notice);
+    let machine = newest
+        .machine
+        .map(|machine| format!("{machine} · "))
+        .unwrap_or_default();
     let title = match &team {
-        Some(team) => format!("◆ {team} · {}: {}", notice.name, notice.title),
-        None => format!("{}: {}", notice.name, notice.title),
+        Some(team) => format!("{machine}◆ {team} · {}: {}", notice.name, notice.title),
+        None => format!("{machine}{}: {}", notice.name, notice.title),
     };
     let body = if cards.len() > 1 {
         Some(format!("+{} more", cards.len() - 1))
@@ -445,7 +482,12 @@ pub(super) fn render_agent_card_banner(
         buffer[dot].set_symbol(glyph);
     }
     // the title starts after ` ● `: its `◆` takes the accent
-    let diamond = (rect.x.saturating_add(3), rect.y);
+    let diamond = (
+        rect.x
+            .saturating_add(3)
+            .saturating_add(width_of(&machine) as u16),
+        rect.y,
+    );
     if team.is_some() && !rect.is_empty() && buffer.area.contains(diamond.into()) {
         buffer[diamond].set_fg(palette.accent);
     }
@@ -480,6 +522,7 @@ impl ClientShellState {
         if !same_boot {
             cards.seen.clear();
             cards.hidden.clear();
+            cards.unsent.clear();
         }
         let first = payload.initial || !same_boot;
         let fresh: Vec<AgentNoticeInfo> = if first {
@@ -499,6 +542,7 @@ impl ClientShellState {
             .collect();
         let present = &cards.seen;
         cards.hidden.retain(|id| present.contains(id));
+        cards.unsent.retain(|id| present.contains(id));
         cards.boot_id = payload.boot_id;
         cards.revision = payload.revision;
         cards.notices = payload.notices;
@@ -537,7 +581,8 @@ impl ClientShellState {
             if active && self.outer_focused != Some(false) {
                 continue;
             }
-            let title = format!("{}: {}", notice.name, notice.title);
+            let title =
+                self.name_machine(endpoint_id, format!("{}: {}", notice.name, notice.title));
             let body = notice.body.clone();
             match self.config.toast_delivery {
                 crate::config::ToastDelivery::Terminal => {
@@ -567,12 +612,14 @@ impl ClientShellState {
     }
 
     /// The boot an endpoint's snapshot reports: `None` for a machine no
-    /// longer in the list, `Some(None)` before its first snapshot.
+    /// longer in the list or turned off, `Some(None)` before its first
+    /// snapshot.
     fn agent_cards_endpoint_boot(&self, endpoint_id: &ClientEndpointId) -> Option<Option<&str>> {
         let endpoint = self
             .endpoints
             .iter()
-            .find(|endpoint| &endpoint.endpoint_id == endpoint_id)?;
+            .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
+            .filter(|endpoint| endpoint.status != ClientEndpointStatus::Disabled)?;
         let snapshot = if endpoint_id == &self.active_endpoint_id {
             self.snapshot.as_deref().or(endpoint.snapshot.as_deref())
         } else {
@@ -607,12 +654,14 @@ impl ClientShellState {
             if !self.agent_cards_shown(endpoint_id, cards) {
                 continue;
             }
+            let machine = self.machine_name(endpoint_id);
             for (index, notice) in cards.notices.iter().enumerate() {
                 if !cards.hidden.contains(&notice.id) {
                     views.push((
                         index,
                         AgentCardView {
                             endpoint_id,
+                            machine,
                             notice,
                         },
                     ));
@@ -626,6 +675,8 @@ impl ClientShellState {
                 .cmp(&a.notice.unix)
                 .then(ib.cmp(ia))
                 .then_with(|| a.notice.id.cmp(&b.notice.id))
+                // two machines' cards can be alike; the map has no order
+                .then_with(|| a.endpoint_id.cmp(b.endpoint_id))
         });
         views.into_iter().map(|(_, view)| view).collect()
     }
@@ -691,18 +742,23 @@ impl ClientShellState {
     }
 
     /// `×`: hide the card here and, on the active machine, tell the server
-    /// (which removes it on every client). Elsewhere it hides locally only.
+    /// (which removes it on every client). Another machine's server is told
+    /// once that machine is shown.
     pub(super) fn dismiss_agent_card(
         &mut self,
         endpoint_id: &ClientEndpointId,
         id: String,
         outcome: &mut ClientShellInput,
     ) {
+        let told = self.agent_notice_dismiss_supported(endpoint_id);
         if let Some(cards) = self.agent_cards.get_mut(endpoint_id) {
             cards.hidden.insert(id.clone());
+            if !told {
+                cards.unsent.insert(id.clone());
+            }
         }
         outcome.repaint = true;
-        if self.agent_notice_dismiss_supported(endpoint_id) {
+        if told {
             self.push_endpoint_method(
                 Method::AgentNoticeDismiss(AgentNoticeDismissParams {
                     ids: vec![id],
@@ -717,16 +773,25 @@ impl ClientShellState {
     /// server, `all: true`).
     pub(super) fn dismiss_all_agent_cards(&mut self, outcome: &mut ClientShellInput) {
         let active = self.active_endpoint_id.clone();
+        let told = self.agent_notice_dismiss_supported(&active);
         let mut active_had_cards = false;
         for (endpoint_id, cards) in &mut self.agent_cards {
             let ids: Vec<String> = cards.notices.iter().map(|n| n.id.clone()).collect();
             if endpoint_id == &active && !ids.is_empty() {
                 active_had_cards = true;
             }
+            if endpoint_id != &active || !told {
+                let fresh: Vec<String> = ids
+                    .iter()
+                    .filter(|id| !cards.hidden.contains(*id))
+                    .cloned()
+                    .collect();
+                cards.unsent.extend(fresh);
+            }
             cards.hidden.extend(ids);
         }
         outcome.repaint = true;
-        if active_had_cards && self.agent_notice_dismiss_supported(&active) {
+        if active_had_cards && told {
             self.push_endpoint_method(
                 Method::AgentNoticeDismiss(AgentNoticeDismissParams {
                     ids: Vec::new(),
@@ -749,29 +814,29 @@ impl ClientShellState {
         outcome: &mut ClientShellInput,
     ) {
         if !self.endpoint_is_online(endpoint_id) {
-            let label = self.endpoint_label(endpoint_id).to_owned();
-            self.receive_endpoint_unavailable(format!("{label} is unavailable"));
-            outcome.repaint = true;
+            self.say_machine_unavailable(endpoint_id, outcome);
             return;
         }
-        if endpoint_id == &self.active_endpoint_id {
-            let on_tab = tab_id.is_some()
-                && self
-                    .snapshot
-                    .as_deref()
-                    .is_some_and(|snapshot| snapshot.focused_tab_id == tab_id);
-            self.push_endpoint_method(
-                Method::PaneFocus(crate::api::schema::PaneTarget { pane_id }),
-                outcome,
-            );
-            if on_tab {
-                self.dismiss_agent_card(endpoint_id, id, outcome);
+        // On another machine, too: its window there stays on that tab.
+        let on_tab = tab_id.is_some()
+            && self
+                .endpoints
+                .iter()
+                .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
+                .and_then(|endpoint| endpoint.snapshot.as_deref())
+                .is_some_and(|snapshot| snapshot.focused_tab_id == tab_id);
+        self.focus_or_activate(
+            endpoint_id.clone(),
+            ClientEndpointFocusTarget::Pane(pane_id),
+            outcome,
+        );
+        if on_tab && endpoint_id == &self.active_endpoint_id {
+            self.dismiss_agent_card(endpoint_id, id, outcome);
+        } else if on_tab {
+            // gone once that machine is shown, not before: the switch can fail
+            if let Some(cards) = self.agent_cards.get_mut(endpoint_id) {
+                cards.unsent.insert(id);
             }
-        } else {
-            outcome.actions.push(ClientShellAction::ActivateEndpoint {
-                endpoint_id: endpoint_id.clone(),
-                target: Some(ClientEndpointFocusTarget::Pane(pane_id)),
-            });
         }
         outcome.repaint = true;
     }

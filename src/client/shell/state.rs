@@ -1533,6 +1533,14 @@ pub(crate) struct ClientShellState {
     /// Fork: each endpoint's quiet state (do-not-disturb tabs, pending
     /// counts) as its last `endpoint.quiet.v1` push listed it (`quiet.rs`).
     pub(super) quiet: HashMap<ClientEndpointId, super::quiet::ClientQuietState>,
+    /// Fork (machine tabs): each machine's News and coordinator tabs as it
+    /// last named them (`machine_surfaces.rs`).
+    pub(super) fixed_tabs: HashMap<ClientEndpointId, super::machine_surfaces::FixedTabs>,
+    /// Fork (machine tabs): the endpoint the last accepted snapshot was of.
+    pub(super) shown_endpoint_id: ClientEndpointId,
+    /// Fork (machine tabs): settings were saved to this client's config while
+    /// a saved machine was shown; Local's server reloads once it is shown.
+    pub(super) local_config_reload_due: bool,
     /// Fork (sidebar v3): the Pinned block folded (`None` until toggled; persisted).
     pub(super) pinned_agents_folded: Option<bool>,
     /// Fork (sidebar v3): the Scheduled block folded (`None` until toggled; persisted).
@@ -1785,6 +1793,9 @@ impl ClientShellState {
             tab_pins: HashMap::new(),
             tab_mutes: HashMap::new(),
             quiet: HashMap::new(),
+            fixed_tabs: HashMap::new(),
+            shown_endpoint_id: ClientEndpointId::Local,
+            local_config_reload_due: false,
             pinned_agents_folded,
             scheduled_agents_folded,
             expanded_runs,
@@ -1979,6 +1990,8 @@ impl ClientShellState {
         mut snapshot: Box<ClientShellSnapshot>,
         generation: Option<u64>,
     ) {
+        // Fork (machine tabs): another machine's notes, toasts.
+        self.note_shown_machine();
         snapshot
             .commands
             .retain(|command| command.action != crate::protocol::ClientShellCommandAction::Unknown);

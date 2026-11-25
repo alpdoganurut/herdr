@@ -2568,6 +2568,8 @@ async fn run_client_loop(
                         shell.tick_teams(now, &mut outcome);
                         shell.tick_browser(now, &mut outcome);
                         shell.tick_info_dock(now, &mut outcome);
+                        // Fork (machine tabs): what waited for the machine shown.
+                        shell.tick_machines(&mut outcome);
                         // Fork (companion launcher): the dock's placeholder and placement.
                         shell.tick_browser_dock(now, &mut outcome);
                         outcome.repaint |= notification_repaint

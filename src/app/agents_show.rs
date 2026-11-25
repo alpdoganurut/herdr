@@ -36,7 +36,7 @@ pub(crate) fn user_typing() -> ModelError {
 pub(crate) fn no_client() -> ModelError {
     ModelError::new(
         error_code::NO_CLIENT,
-        "no herdr window to move (none is attached, or the one in use shows no tabs yet); tell your user where it is instead",
+        "no herdr window to move (none is attached, or the one in use shows another machine or no tabs yet); tell your user where it is instead",
     )
 }
 

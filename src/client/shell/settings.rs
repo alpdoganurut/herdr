@@ -255,13 +255,19 @@ impl ClientShellState {
             return false;
         }
         self.reload_client_config();
-        self.push_endpoint_method_with_kind(
-            crate::api::schema::Method::ServerReloadConfig(
-                crate::api::schema::EmptyParams::default(),
-            ),
-            PendingEndpointKind::ReloadConfig,
-            outcome,
-        );
+        // Fork (machine tabs): this client's config is Local's server's; a
+        // saved machine's server does not read it. Requests reach the shown
+        // machine only, so Local's reloads once it is shown.
+        self.local_config_reload_due = !self.active_endpoint_id.is_local();
+        if !self.local_config_reload_due {
+            self.push_endpoint_method_with_kind(
+                crate::api::schema::Method::ServerReloadConfig(
+                    crate::api::schema::EmptyParams::default(),
+                ),
+                PendingEndpointKind::ReloadConfig,
+                outcome,
+            );
+        }
         outcome.repaint = true;
         true
     }

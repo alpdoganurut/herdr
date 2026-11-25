@@ -73,7 +73,19 @@ pub(crate) fn render_client_overlay(
             render_navigator_overlay(b, v, endpoints, active_endpoint_id, p)
         }
         ClientShellOverlay::Settings(v) => {
-            settings_overlay::render_settings_overlay(b, v, s.integration_updates_available, c, p)
+            // Fork (machine tabs): with several machines, whose settings.
+            let machine = endpoints
+                .iter()
+                .find(|endpoint| endpoints.len() > 1 && &endpoint.endpoint_id == active_endpoint_id)
+                .map(|endpoint| endpoint.label.as_str());
+            settings_overlay::render_settings_overlay(
+                b,
+                v,
+                s.integration_updates_available,
+                machine,
+                c,
+                p,
+            )
         }
         ClientShellOverlay::WorktreeCreate(v) => {
             worktree_overlays::render_worktree_create_overlay(b, v, p)

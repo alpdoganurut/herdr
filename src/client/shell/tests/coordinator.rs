@@ -1089,5 +1089,5 @@ fn a_remote_dashboard_reply_shows_its_url() {
     assert!(state
         .endpoint_error
         .as_deref()
-        .is_some_and(|text| text.contains("http://127.0.0.1:7718/")));
+        .is_some_and(|text| text.contains("127.0.0.1:7718") && !text.contains("http")));
 }

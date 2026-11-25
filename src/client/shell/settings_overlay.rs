@@ -37,6 +37,7 @@ pub(super) fn render_settings_overlay(
     buffer: &mut Buffer,
     settings: &ClientSettingsOverlay,
     integration_updates_available: bool,
+    machine: Option<&str>,
     config: &ClientShellConfig,
     palette: &Palette,
 ) -> Option<OverlayRender> {
@@ -81,6 +82,19 @@ pub(super) fn render_settings_overlay(
             .bg(palette.panel_bg)
             .add_modifier(Modifier::BOLD),
     );
+    if let Some(machine) = machine {
+        // Fork (machine tabs): ` settings · on Build`.
+        let title = display_width(" settings");
+        let scope = super::super::machine_surfaces::settings_scope(settings.section, machine);
+        put_text(
+            buffer,
+            inner.x.saturating_add(title),
+            inner.y,
+            inner.width.saturating_sub(title),
+            &format!(" · {scope}"),
+            Style::default().fg(palette.subtext0).bg(palette.panel_bg),
+        );
+    }
 
     let integration_badge = integration_updates_available
         || settings

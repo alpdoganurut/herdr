@@ -18,6 +18,14 @@
 //! serializes commands (`client/endpoint_commands.rs`), so no extra yield
 //! is needed against `endpoint_busy`. Replies never raise a notice: errors
 //! show in the dock body or footer.
+//!
+//! Fork (machine tabs): what the dock holds belongs to one machine
+//! (`endpoint`); session and tab keys repeat across machines. When another
+//! machine is shown (`sync_info_dock_endpoint`), an unsaved buffer and
+//! unsent ticks are parked with the machine they are for, said once in a
+//! notice, and saved there when it is shown again (compare-and-swap, so a
+//! page changed meanwhile asks). They live in this client only: quitting it
+//! while that machine is not shown drops them.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
@@ -351,9 +359,32 @@ struct RowsCache {
     rows: CachedRows,
 }
 
+/// Fork (machine tabs): a machine's dock state while another is shown.
+#[derive(Debug)]
+pub(crate) struct ParkedDock {
+    /// An unsaved buffer.
+    editor: Option<NotesEditor>,
+    /// Unsent task ticks.
+    queue: VecDeque<QueuedRequest>,
+    /// Scroll positions (their keys repeat across machines).
+    ui: BoundedMap<String, DockUi>,
+}
+
+impl ParkedDock {
+    fn unsaved(&self) -> bool {
+        self.editor.is_some() || !self.queue.is_empty()
+    }
+}
+
 /// The client-only dock state; `None` in the shell until the first toggle.
 #[derive(Debug)]
 pub(crate) struct ClientInfoDockState {
+    /// Fork (machine tabs): the machine `data`, `editor` and `ui` are of
+    /// (`None` before the first sync).
+    pub(crate) endpoint: Option<ClientEndpointId>,
+    pub(crate) parked: HashMap<ClientEndpointId, ParkedDock>,
+    /// A machine whose unsaved notes were just parked: the tick says so.
+    parked_notice: Option<ClientEndpointId>,
     pub(crate) open_tabs: HashSet<(ClientEndpointId, String)>,
     pub(crate) focused: bool,
     pub(crate) ui: BoundedMap<String, DockUi>,
@@ -380,6 +411,9 @@ pub(crate) struct ClientInfoDockState {
 impl Default for ClientInfoDockState {
     fn default() -> Self {
         Self {
+            endpoint: None,
+            parked: HashMap::new(),
+            parked_notice: None,
             open_tabs: HashSet::new(),
             focused: false,
             ui: BoundedMap::new(UI_CAP),
@@ -497,6 +531,58 @@ impl ClientInfoDockState {
         if self.editor.is_none() {
             self.queue(InfoRequest::NotesGet, None);
         }
+    }
+
+    /// Fork (machine tabs): the dock is `endpoint`'s from here on. What was
+    /// not saved for the machine it was of is parked there, what `endpoint`
+    /// had parked comes back.
+    fn show_endpoint(&mut self, endpoint: &ClientEndpointId) {
+        if self.endpoint.as_ref() == Some(endpoint) {
+            return;
+        }
+        let Some(left) = self.endpoint.replace(endpoint.clone()) else {
+            return;
+        };
+        let editor = self
+            .editor
+            .take()
+            .filter(|editor| editor.dirty || editor.conflict.is_some())
+            .map(|mut editor| {
+                // A save under way has no reply any more.
+                editor.save_pending = false;
+                editor.sent_text = None;
+                editor
+            });
+        let mut queue = std::mem::take(&mut self.data.queue);
+        queue.retain(|queued| matches!(queued.request, InfoRequest::NotesSet { tick: true, .. }));
+        let parked = ParkedDock {
+            editor,
+            queue,
+            ui: std::mem::replace(&mut self.ui, BoundedMap::new(UI_CAP)),
+        };
+        if parked.unsaved() {
+            self.parked_notice = Some(left.clone());
+        }
+        self.parked.insert(left, parked);
+        self.data.in_flight = None;
+        self.data.pulled_for = None;
+        self.data.next_poll = None;
+        self.data.clear_shown();
+        self.focused = false;
+        self.dragging = false;
+        self.last_divider_press = None;
+        self.flash = None;
+        if let Some(parked) = self.parked.remove(endpoint) {
+            self.ui = parked.ui;
+            self.data.queue = parked.queue;
+            self.editor = parked.editor.map(|mut editor| {
+                // It is saved and goes; a conflict stays for the user.
+                editor.leaving = editor.conflict.is_none();
+                editor
+            });
+        }
+        self.bump_ui();
+        self.bump_editor();
     }
 
     /// Queue a save of a dirty buffer (`leaving`: drop the editor once it is
@@ -805,6 +891,13 @@ impl ClientShellState {
             || (before.tab_id.is_some() && before.tab_id.as_deref() != self.info_dock_focused_tab())
     }
 
+    /// Fork (machine tabs): the dock follows the machine shown.
+    pub(super) fn sync_info_dock_endpoint(&mut self) {
+        if let Some(dock) = self.info_dock.as_deref_mut() {
+            dock.show_endpoint(&self.active_endpoint_id);
+        }
+    }
+
     fn info_dock_focused_tab(&self) -> Option<&str> {
         self.snapshot
             .as_deref()
@@ -917,6 +1010,7 @@ impl ClientShellState {
         }
         let key = (endpoint, tab_id);
         let dock = self.info_dock.get_or_insert_with(Box::default);
+        dock.show_endpoint(&self.active_endpoint_id);
         let opened = if dock.open_tabs.remove(&key) {
             if focused {
                 dock.commit_editor(true);
@@ -1006,9 +1100,9 @@ impl ClientShellState {
         if *endpoint_id == self.active_endpoint_id {
             self.toggle_info_pane(payload.tab_id, &mut outcome);
         } else {
+            // Fork (machine tabs): the user may be typing in the shown
+            // machine's dock, which this does not touch.
             dock.open_tabs.insert(key);
-            dock.focused = false;
-            dock.dragging = false;
         }
         outcome
     }
@@ -1479,6 +1573,8 @@ impl ClientShellState {
     /// Pull, poll, save and send. Returns at once while the focused tab's
     /// dock is closed and nothing is left to save.
     pub(crate) fn tick_info_dock(&mut self, now: Instant, outcome: &mut ClientShellInput) {
+        self.sync_info_dock_endpoint();
+        self.say_parked_notes(outcome);
         let Some(dock) = self.info_dock.as_deref() else {
             return;
         };
@@ -1558,6 +1654,44 @@ impl ClientShellState {
         self.pump_info_dock(now, outcome);
     }
 
+    /// Fork (machine tabs): say once that unsaved notes wait for the machine
+    /// that was left, or that they went with a machine that was removed.
+    fn say_parked_notes(&mut self, outcome: &mut ClientShellInput) {
+        let endpoints = &self.endpoints;
+        let Some(dock) = self
+            .info_dock
+            .as_deref_mut()
+            .filter(|dock| !dock.parked.is_empty())
+        else {
+            return;
+        };
+        let left = dock.parked_notice.take();
+        let mut dropped = false;
+        dock.parked.retain(|endpoint_id, parked| {
+            let listed = endpoints
+                .iter()
+                .any(|endpoint| &endpoint.endpoint_id == endpoint_id);
+            dropped |= !listed && parked.unsaved();
+            listed
+        });
+        let body = if dropped {
+            "The machine they were for was removed; they are dropped.".to_owned()
+        } else if let Some(left) = left {
+            format!(
+                "Your changes for {} are kept here and saved when you go back to it.",
+                self.endpoint_label(&left)
+            )
+        } else {
+            return;
+        };
+        outcome.repaint |= self.push_endpoint_notice(
+            ClientEndpointNoticeKind::Unavailable,
+            "info_pane:parked",
+            "Notes not saved",
+            body,
+        );
+    }
+
     /// When the tick must wake for the dock: `None` while it is closed and
     /// nothing is left to save.
     pub(crate) fn next_info_dock_deadline(&self, now: Instant) -> Option<Instant> {
@@ -1596,6 +1730,7 @@ impl ClientShellState {
     /// Send the next queued request when the slot is free: nothing of the
     /// dock in flight and no other command of this client pending.
     pub(super) fn pump_info_dock(&mut self, now: Instant, outcome: &mut ClientShellInput) {
+        self.sync_info_dock_endpoint();
         let open = self.info_dock_open_for_focused_tab();
         let tab_id = self.info_dock_focused_tab().map(str::to_owned);
         let Some(dock) = self.info_dock.as_deref() else {
@@ -1693,12 +1828,20 @@ impl ClientShellState {
             // A reply for a request the dock already gave up on.
             None => return (false, Vec::new()),
         };
+        // Fork (machine tabs): the machine is being left or is gone; a
+        // request sent from here would be dropped. The tick goes on.
+        let cancelled = matches!(
+            &result,
+            Err(error) if error.code.as_deref() == Some("endpoint_cancelled")
+        );
         match result {
             Err(error) => dock_reply_error(dock, request, error, now),
             Ok(result) => dock_reply(dock, request, result, now),
         }
         let mut outcome = ClientShellInput::default();
-        self.pump_info_dock(now, &mut outcome);
+        if !cancelled {
+            self.pump_info_dock(now, &mut outcome);
+        }
         (true, outcome.actions)
     }
 }
@@ -1895,8 +2038,13 @@ fn dock_reply_error(
         },
         "too_large" => {
             if matches!(request, InfoRequest::NotesGet) {
-                dock.data.notes_error =
-                    Some("notes too large to show (the file is under <config dir>/notes)".into());
+                let there = match dock.endpoint.as_ref() {
+                    Some(endpoint) if !endpoint.is_local() => " on that machine",
+                    _ => "",
+                };
+                dock.data.notes_error = Some(format!(
+                    "notes too large to show (the file is under <config dir>/notes{there})"
+                ));
                 dock.bump_data();
             } else {
                 dock.set_flash("notes too large", now);

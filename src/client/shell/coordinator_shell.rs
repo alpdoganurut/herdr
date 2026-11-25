@@ -200,6 +200,7 @@ impl ClientShellState {
         if let Some(notice) = self.coordinator.on_reply(kind, reply, snapshot) {
             self.set_endpoint_error(notice);
         }
+        self.remember_fixed_tabs();
         self.sync_coordinator_settings();
         (true, Vec::new())
     }

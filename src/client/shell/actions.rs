@@ -431,7 +431,19 @@ impl ClientShellState {
         }
         if !self.endpoint_is_online(&self.active_endpoint_id) {
             let label = self.active_endpoint_label().to_owned();
-            outcome.repaint |= self.receive_endpoint_unavailable(format!("{label} is not ready"));
+            let message = format!("{label} is not ready");
+            // Fork (machine tabs): on a saved machine every action the user
+            // takes is answered, not the first one per server boot.
+            if !self.active_endpoint_id.is_local()
+                && matches!(
+                    kind,
+                    PendingEndpointKind::Generic | PendingEndpointKind::ForceableAgentStop { .. }
+                )
+            {
+                self.endpoint_notice_seen
+                    .retain(|seen| seen.code != message);
+            }
+            outcome.repaint |= self.receive_endpoint_unavailable(message);
             return false;
         }
         let method_name = crate::api::api_method_name(&method).to_owned();
@@ -787,6 +799,17 @@ impl ClientShellState {
                     }) => {
                         self.url_click_consumes_until_up = completed_before_release;
                         (false, Vec::new())
+                    }
+                    // Fork (machine tabs): the dashboard of the coordinator
+                    // on the selected SSH machine is on that machine's
+                    // loopback; the same port here is another server's.
+                    Ok(crate::api::schema::ResponseResult::PaneLinkActivated {
+                        url: Some(url),
+                        handled: false,
+                    }) if replay.is_some() && self.is_remote_dashboard(&url) => {
+                        self.url_click_consumes_until_up = completed_before_release;
+                        self.set_endpoint_error(super::coordinator::dashboard_url_notice(&url));
+                        (true, Vec::new())
                     }
                     Ok(crate::api::schema::ResponseResult::PaneLinkActivated {
                         url: Some(url),

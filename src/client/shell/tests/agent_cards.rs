@@ -143,6 +143,7 @@ fn each_kind_draws_its_glyph_in_its_accent_on_the_panel_card() {
             0,
             &[AgentCardView {
                 endpoint_id: &endpoint,
+                machine: None,
                 notice: &notice,
             }],
             NOW,
@@ -238,6 +239,7 @@ fn the_card_chrome_follows_the_theme() {
         0,
         &[AgentCardView {
             endpoint_id: &endpoint,
+            machine: None,
             notice: &notice,
         }],
         NOW,
@@ -272,6 +274,7 @@ fn team_label_sits_in_the_top_border_and_in_the_banner() {
     );
     let views = [AgentCardView {
         endpoint_id: &endpoint,
+        machine: None,
         notice: &notice,
     }];
     let area = Rect::new(0, 0, 80, 20);
@@ -299,6 +302,7 @@ fn team_label_sits_in_the_top_border_and_in_the_banner() {
         0,
         &[AgentCardView {
             endpoint_id: &endpoint,
+            machine: None,
             notice: &long,
         }],
         NOW,
@@ -333,6 +337,7 @@ fn no_team_keeps_the_plain_border() {
     let notice = notice("n1", AgentNoticeKind::Info, "pane_2", "tab_2");
     let views = [AgentCardView {
         endpoint_id: &endpoint,
+        machine: None,
         notice: &notice,
     }];
     let area = Rect::new(0, 0, 80, 20);
@@ -374,6 +379,7 @@ fn bodies_wrap_to_two_lines_and_cards_beyond_four_fold() {
         .iter()
         .map(|notice| AgentCardView {
             endpoint_id: &endpoint,
+            machine: None,
             notice,
         })
         .collect();

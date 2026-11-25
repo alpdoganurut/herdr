@@ -405,12 +405,14 @@ impl ClientShellState {
                 // tracks: seat it on the current snapshot so learning the
                 // tab is not itself a change.
                 self.news.pulled_for = self.news_snapshot_signature();
+                self.remember_fixed_tabs();
                 self.sync_news_settings();
                 (true, Vec::new())
             }
             _ => {
                 if let Ok(crate::api::schema::ResponseResult::NewsGet { news }) = result {
                     self.news.info = Some(news);
+                    self.remember_fixed_tabs();
                     // The settings section shows the reply at once (the
                     // scheduling toggle goes through news.set_enabled).
                     self.sync_news_settings();

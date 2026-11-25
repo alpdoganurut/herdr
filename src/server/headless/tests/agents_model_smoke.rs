@@ -1530,6 +1530,71 @@ async fn fork_smoke_agents_show_moves_only_the_foreground_client_as_its_visit() 
     shutdown_test_runtimes(&mut server);
 }
 
+/// Fork (machine tabs): the user's client has this server as one of its
+/// machines and shows another one (its surface here is inactive): an agent
+/// here moves nothing and is told so (`no_client`), also though that client
+/// was the one last used here; shown again, the same request moves it.
+#[tokio::test]
+async fn fork_smoke_agents_show_never_takes_the_view_off_another_machine() {
+    let (mut server, _input, panes) = crew_server();
+    add_far_team(&mut server);
+    let dir = temp_dir("show-machine");
+    server.app.agents_model.dir = Some(dir.clone());
+    let bucket_tab = server.app.public_tab_id(0, 0).unwrap();
+    let far_tab = server.app.public_tab_id(2, 0).unwrap();
+    let (user, _user_render) = connect_test_shell(&mut server, 71, 80, 23);
+    assert!(server.focus_shell_client_on_tab(71, &bucket_tab));
+    server.promote_client_to_foreground(71);
+    let lead = public(&server, panes[0]);
+    user_turn_on(&mut server, 1, panes[0]);
+    let boot_id = server.client_shell_boot_id.clone();
+    let surface = |server: &mut HeadlessServer, active: bool| {
+        server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
+            client_id: 71,
+            boot_id: boot_id.clone(),
+            request: Box::new(crate::api::schema::Request {
+                id: format!("surface-{active}"),
+                method: Method::ClientShellSurfaceSet(
+                    crate::api::schema::ClientShellSurfaceSetParams { active },
+                ),
+            }),
+        });
+        server.render_and_stream();
+    };
+
+    surface(&mut server, false);
+    let _ = last_snapshot_tab(&user);
+    for foreground in [server.foreground_client_id, Some(71)] {
+        server.foreground_client_id = foreground;
+        let refused = show(&mut server, &lead, "far");
+        assert_eq!(refused["error"]["code"], "no_client", "{refused}");
+        assert!(
+            refused["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("another machine")),
+            "{refused}"
+        );
+        assert_eq!(
+            server.shell_tab_id_for_client(71).as_deref(),
+            Some(bucket_tab.as_str()),
+            "its place here stays too"
+        );
+        server.render_and_stream();
+        assert_ne!(last_snapshot_tab(&user).as_deref(), Some(far_tab.as_str()));
+    }
+
+    surface(&mut server, true);
+    server.promote_client_to_foreground(71);
+    let shown = show(&mut server, &lead, "far");
+    assert_eq!(
+        shown["result"]["tab"]["tab_id"],
+        far_tab.as_str(),
+        "{shown}"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+    shutdown_test_runtimes(&mut server);
+}
+
 /// Fork (agents show): outside its user's turn an agent moves no view
 /// (`non_user_turn`, logged); the coordinator shows a tab in its user's
 /// turn; an unknown target is `not_found`; with no client shell attached a

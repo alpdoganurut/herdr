@@ -45,6 +45,8 @@ mod input_source;
 mod link_hover;
 /// Fork (machine tabs): the machine row.
 mod machine_row;
+/// Fork (machine tabs): the surfaces beside the sidebar, per machine.
+mod machine_surfaces;
 /// Fork (machine tabs): the tabs layout with several endpoints.
 mod machine_tabs;
 mod mobile;

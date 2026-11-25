@@ -6,6 +6,10 @@
 //! the user's click: that client's location, the default target, focus
 //! events, tab geometry, and the visit that clears the tab's agent cards.
 //! Every other attached client stays where it is.
+//!
+//! Machine tabs: a client that shows another machine has its surface here
+//! inactive, so it is no window to move (`no_client`): an agent of machine B
+//! never takes the view off machine A.
 
 use super::HeadlessServer;
 use crate::api;

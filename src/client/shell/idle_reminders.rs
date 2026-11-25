@@ -167,23 +167,26 @@ impl ClientShellState {
     }
 
     /// The News tab's `important` is the desk's unread mark, not an agent
-    /// waiting for the reader: reminders leave it alone. (Known only for the
-    /// active endpoint, where `news.get` names the tab.)
+    /// waiting for the reader: reminders leave it alone. The coordinator sits
+    /// Done/Idle between wakes by design; it raises its own notifications
+    /// instead. `news.get` and `coordinator.get` name the active endpoint's;
+    /// another machine's are the ones it last named
+    /// (`machine_surfaces.rs`), as are this one's until it answers.
     fn is_news_tab(
         &self,
         endpoint_id: &crate::client::endpoint::ClientEndpointId,
-        tab_id: &str,
+        tab: &crate::protocol::ClientShellTab,
     ) -> bool {
-        *endpoint_id == self.active_endpoint_id
-            && (self
-                .news
-                .info
-                .as_ref()
-                .and_then(|info| info.tab_id.as_deref())
-                == Some(tab_id)
-                // Fork: the coordinator sits Done/Idle between wakes by
-                // design; it raises its own notifications instead.
-                || self.coordinator.is_coordinator_tab(tab_id))
+        if *endpoint_id != self.active_endpoint_id {
+            return self.is_fixed_tab_elsewhere(endpoint_id, tab);
+        }
+        self.news
+            .info
+            .as_ref()
+            .and_then(|info| info.tab_id.as_deref())
+            == Some(tab.tab_id.as_str())
+            || self.coordinator.is_coordinator_tab(&tab.tab_id)
+            || self.is_remembered_fixed_tab(endpoint_id, &tab.tab_id)
     }
 
     /// Important tabs that are waiting and unfocused, across every endpoint.
@@ -196,7 +199,7 @@ impl ClientShellState {
             for tab in snapshot.tabs.iter().filter(|tab| tab.important) {
                 // Fork: a muted tab is never reminded (its clock does not
                 // run; unmuting starts it fresh).
-                if self.is_news_tab(&endpoint.endpoint_id, &tab.tab_id)
+                if self.is_news_tab(&endpoint.endpoint_id, tab)
                     || self.tab_muted_on(&endpoint.endpoint_id, &tab.tab_id)
                 {
                     continue;
@@ -271,7 +274,7 @@ impl ClientShellState {
                 let Some(every) = known_interval(tab.remind_every) else {
                     continue;
                 };
-                if self.is_news_tab(&endpoint.endpoint_id, &tab.tab_id) {
+                if self.is_news_tab(&endpoint.endpoint_id, tab) {
                     continue;
                 }
                 // The tab's agent pane, else its first pane (a plain shell).
@@ -372,15 +375,19 @@ impl ClientShellState {
         if self.idle_reminders.is_empty()
             && !self.endpoints.iter().any(|endpoint| {
                 endpoint.snapshot.as_deref().is_some_and(|snapshot| {
-                    snapshot.tabs.iter().any(|tab| {
-                        tab.important && !self.is_news_tab(&endpoint.endpoint_id, &tab.tab_id)
-                    })
+                    snapshot
+                        .tabs
+                        .iter()
+                        .any(|tab| tab.important && !self.is_news_tab(&endpoint.endpoint_id, tab))
                 })
             })
         {
             return false;
         }
         let interval = reminder_interval(minutes);
+        // Fork (machine tabs): a machine that is not online reminds of
+        // nothing; its clocks keep their place and go on from its return.
+        let held = self.reminders_held();
         let waiting = self.waiting_important_tabs();
         self.idle_reminders
             .retain(|key, _| waiting.iter().any(|tab| &tab.key == key));
@@ -407,6 +414,9 @@ impl ClientShellState {
             // From now, not anchor + interval: a shorter interval after a live
             // reload must not fire a burst of catch-up reminders.
             reminder.anchor = now;
+            if held.contains(&tab.key.0) {
+                continue;
+            }
             let waited = now.saturating_duration_since(reminder.since).as_secs() / 60;
             let mut event = tab.event;
             let (title, lit) = match tab.status {
@@ -439,6 +449,7 @@ impl ClientShellState {
         {
             return false;
         }
+        let held = self.reminders_held();
         let tabs = self.scheduled_tabs(now);
         // Daily reminders go by the local clock: its date and the time past.
         let daily = tabs
@@ -519,6 +530,10 @@ impl ClientShellState {
             }
             // Fired or skipped, the schedule restarts from now.
             reminder.anchor = now;
+            // Fork (machine tabs): a daily one is due again on the return.
+            if held.contains(&tab.key.0) {
+                continue;
+            }
             if let Some((today, _)) = daily.filter(|_| tab.every == TabRemindInterval::Daily) {
                 reminder.last_daily = Some(today);
             }
