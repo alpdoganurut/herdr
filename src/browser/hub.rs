@@ -705,7 +705,9 @@ impl BrowserHub {
             self.inner.auto_repair_running.store(true, Ordering::Release);
             let _running = Running(&self.inner.auto_repair_running);
             if test_mode {
-                std::thread::sleep(fake.unwrap_or_default());
+                if let Some(delay) = fake {
+                    std::thread::sleep(delay);
+                }
                 return;
             }
             match setup::auto_repair(&self.config(), &self.setup_env()) {
