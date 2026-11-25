@@ -1,7 +1,8 @@
-// The e2e scripts' companions never outlive the script. A companion its control page's quit did
-// not end within the wait gets SIGTERM (its before-quit is bounded, so a quit signal ends it), and
-// one still running when the script exits (a failed run, ^C, its wrapper's TERM) gets SIGTERM on
-// the way out. Only the script's own children; never anything else.
+// Best effort: the e2e scripts' companions should not outlive the script. A companion its control
+// page's quit did not end within the wait gets SIGTERM (its before-quit is bounded), then SIGKILL
+// when that did not end it either; one still running when the script exits (a failed run, ^C,
+// its wrapper's TERM) gets SIGTERM on the way out. A script that is itself SIGKILLed leaves its
+// companion behind. Only the script's own children; never anything else.
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const running = (child) => child && child.exitCode === null && child.signalCode === null;
 
@@ -25,7 +26,7 @@ export function reapOnExit(children) {
 }
 
 // After a quit through the control page: its exit code, else (after `ms`) SIGTERM and up to 15 s
-// more; 'timeout' when even that did not end it.
+// more, then SIGKILL and up to 5 s; 'timeout' when even that did not end it.
 export async function awaitExit(child, exited, ms = 30000) {
   if (!running(child)) return child ? child.exitCode : 0;
   const code = await Promise.race([exited, sleep(ms).then(() => 'timeout')]);
@@ -34,5 +35,11 @@ export async function awaitExit(child, exited, ms = 30000) {
   try {
     child.kill('SIGTERM');
   } catch {}
-  return Promise.race([exited, sleep(15000).then(() => 'timeout')]);
+  const termed = await Promise.race([exited, sleep(15000).then(() => 'timeout')]);
+  if (termed !== 'timeout') return termed;
+  console.log(`companion pid ${child.pid} did not exit on SIGTERM; SIGKILL`);
+  try {
+    child.kill('SIGKILL');
+  } catch {}
+  return Promise.race([exited, sleep(5000).then(() => 'timeout')]);
 }

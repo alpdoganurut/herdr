@@ -364,6 +364,9 @@ pub struct Core {
     /// The current process unregistered (it is quitting on its own).
     unregistered: bool,
     lease_lost_since: Option<Instant>,
+    /// The last driver pass that saw a browser repair in flight: the
+    /// register deadline counts from it (`hold`).
+    held_at: Option<Instant>,
     crashes: VecDeque<Instant>,
     next_retry: Option<Instant>,
     pub next_retry_unix: Option<u64>,
@@ -405,6 +408,7 @@ impl Core {
             registered: false,
             unregistered: false,
             lease_lost_since: None,
+            held_at: None,
             crashes: VecDeque::new(),
             next_retry: None,
             next_retry_unix: None,
@@ -714,6 +718,15 @@ impl Core {
         }
     }
 
+    /// A browser repair is in flight (`auto_repair_once`; the companion's
+    /// registration waits for it): neither the register deadline nor the
+    /// lease-lost limit runs out meanwhile, and each counts afresh once it
+    /// ends.
+    pub fn hold(&mut self, now: Instant) {
+        self.held_at = Some(now);
+        self.lease_lost_since = None;
+    }
+
     /// One driver pass at `now`; `lease_live` is whether a lease lives.
     pub fn due(&mut self, now: Instant, lease_live: bool) -> Vec<Action> {
         let mut out = Vec::new();
@@ -729,6 +742,7 @@ impl Core {
                     && self.pid.is_some()
                     && self
                         .spawned_at
+                        .map(|at| self.held_at.map_or(at, |held| held.max(at)))
                         .is_some_and(|at| now.duration_since(at) >= REGISTER_DEADLINE)
                 {
                     self.begin_kill(
@@ -1564,6 +1578,16 @@ impl BrowserHub {
             companion_install::refresh_app_files(&home, running_app_dir(&home).as_deref())
         {
             tracing::warn!(event = "browser.companion.refresh", error = %err, "companion app files not refreshed");
+            // the launch goes on with the installed files: status and the
+            // overlay say why the update stays ready (after the start's
+            // reset_backoff, which cleared the last error)
+            {
+                let mut core = self.launcher().lock();
+                if core.generation == generation {
+                    core.last_error = Some(format!("{err}; `herdr browser setup` refreshes them"));
+                }
+            }
+            self.companion_changed();
         }
         let install = match companion_install::resolve(&home) {
             Ok(install) => install,
@@ -2032,7 +2056,15 @@ impl BrowserHub {
     fn companion_drive_once(&self) {
         let launcher = self.launcher();
         let lease_live = self.companion_live();
-        let actions = launcher.lock().due(Instant::now(), lease_live);
+        let repairing = self.auto_repair_running();
+        let actions = {
+            let now = Instant::now();
+            let mut core = launcher.lock();
+            if repairing {
+                core.hold(now);
+            }
+            core.due(now, lease_live)
+        };
         for action in actions {
             match action {
                 Action::Respawn => {

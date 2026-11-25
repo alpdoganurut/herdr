@@ -992,6 +992,111 @@ fn an_update_is_the_bundled_app_unless_this_herdr_is_older() {
     );
 }
 
+#[test]
+fn a_browser_repair_in_flight_holds_the_register_deadline_and_the_lease_rule() {
+    let t0 = Instant::now();
+    let term = |core: &Core, pid: u32| Action::Signal {
+        pid,
+        generation: core.generation,
+        signal: StopSignal::Term,
+    };
+    // launched, not registered: the deadline counts from the repair's end
+    let mut core = Core::new(0);
+    run_one(&mut core, StartReason::OnDemand, 40, t0);
+    let held = t0 + Duration::from_secs(50);
+    core.hold(held);
+    assert!(core.due(t0 + REGISTER_DEADLINE, false).is_empty());
+    assert!(core
+        .due(held + REGISTER_DEADLINE - Duration::from_secs(1), false)
+        .is_empty());
+    assert_eq!(
+        core.due(held + REGISTER_DEADLINE, false),
+        vec![term(&core, 40)]
+    );
+
+    // adopted, its lease not back while the repair runs: no SIGTERM meanwhile
+    let mut core = Core::new(0);
+    core.adopt(record(41, "tok"), t0, 0);
+    for s in 0..=90 {
+        let at = t0 + Duration::from_secs(s);
+        core.hold(at);
+        let actions = core.due(at, false);
+        assert!(!actions.contains(&term(&core, 41)), "{s} s: {actions:?}");
+    }
+    // the lease rule counts afresh from the last pass that saw it running
+    let end = t0 + Duration::from_secs(90);
+    assert!(!core
+        .due(end + Duration::from_secs(1), false)
+        .contains(&term(&core, 41)));
+    assert!(!core
+        .due(end + Duration::from_secs(29), false)
+        .contains(&term(&core, 41)));
+    assert!(core
+        .due(end + Duration::from_secs(30), false)
+        .contains(&term(&core, 41)));
+}
+
+#[test]
+fn a_slow_repair_runs_before_the_registration_writes_its_lease() {
+    let (hub, home, _) = companion_hub("slow-repair", true);
+    hub.set_auto_repair_delay_for_test(Duration::from_millis(1500));
+    let spawner = FakeSpawner::new(&hub, true);
+    hub.companion_start(StartReason::User).unwrap();
+    wait_for("the repair", Duration::from_secs(5), || {
+        hub.auto_repair_running()
+    });
+    // no lease is pending while it runs (its 40 s would run out on a slow npm ci)
+    assert!(hub.companion_lease_id_for_test().is_none());
+    assert!(!hub.companion_live());
+    assert_eq!(hub.companion_app_info().state, "starting");
+    wait_for("the registration", Duration::from_secs(10), || {
+        hub.companion_app_info().state == "running"
+    });
+    assert!(!hub.auto_repair_running());
+    assert!(hub.companion_live());
+    assert_eq!(spawner.spawns(), 1);
+    assert!(spawner.signals().is_empty(), "never signalled");
+    quick_stop(&hub);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn app_files_a_launch_cannot_refresh_show_as_the_last_error() {
+    use crate::integration::companion_assets::companion_app_sha12;
+    let (hub, home, _) = companion_hub("refresh-fails", true);
+    let spawner = FakeSpawner::new(&hub, true);
+    let companion_home = hub.companion_home();
+    // the previous herdr's files are installed; this herdr's cannot be written
+    let mut record = companion_install::read_install(&companion_home).unwrap();
+    record.app = "0.0.1".into();
+    record.app_sha256 = "a".repeat(64);
+    let old_dir = record.app_dir(&companion_home);
+    std::fs::create_dir_all(&old_dir).unwrap();
+    std::fs::write(old_dir.join("package.json"), "{}").unwrap();
+    std::fs::write(
+        companion_home.join(companion_install::INSTALL_FILE),
+        serde_json::to_string_pretty(&record).unwrap(),
+    )
+    .unwrap();
+    let bundled = companion_install::app_dir(&companion_home, &companion_app_sha12());
+    std::fs::remove_dir_all(&bundled).unwrap();
+    std::fs::write(&bundled, "in the way").unwrap();
+    hub.companion_start(StartReason::User).unwrap();
+    wait_for("the registration", Duration::from_secs(5), || {
+        hub.companion_app_info().state == "running"
+    });
+    let info = hub.companion_app_info();
+    assert!(info.update_ready, "it runs the old files: {info:?}");
+    let error = info.last_error.unwrap_or_default();
+    assert!(
+        error.contains("cannot write the app files") && error.contains("herdr browser setup"),
+        "{error}"
+    );
+    assert_eq!(spawner.spawns(), 1);
+    quick_stop(&hub);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
 // ----- audit 1 -----------------------------------------------------------------
 
 #[test]

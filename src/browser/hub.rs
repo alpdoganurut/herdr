@@ -114,6 +114,12 @@ struct Inner {
     auto_repaired: std::sync::Once,
     /// A browser start asked for the safe fixes (tests check the paths that do).
     auto_repair_asked: AtomicBool,
+    /// The safe fixes are running now (`npm ci` has no time limit): the
+    /// companion launcher lets no deadline run out meanwhile.
+    auto_repair_running: AtomicBool,
+    /// Tests: a fake repair that takes this long (test mode skips the real one).
+    #[cfg(test)]
+    auto_repair_delay: Mutex<Option<Duration>>,
     /// Skip the executable check and the `hello` node checks (fake host tests).
     test_mode: AtomicBool,
     /// Serializes the whole persistence transaction (snapshot, save, append,
@@ -312,6 +318,9 @@ impl BrowserHub {
                 supervisor: AtomicBool::new(false),
                 auto_repaired: std::sync::Once::new(),
                 auto_repair_asked: AtomicBool::new(false),
+                auto_repair_running: AtomicBool::new(false),
+                #[cfg(test)]
+                auto_repair_delay: Mutex::new(None),
                 test_mode: AtomicBool::new(false),
                 flush_lock: Mutex::new(()),
                 read_cache: Mutex::new(ReadCaches::default()),
@@ -646,6 +655,16 @@ impl BrowserHub {
     }
 
     #[cfg(test)]
+    pub fn set_auto_repair_delay_for_test(&self, delay: Duration) {
+        *self.inner.auto_repair_delay.lock().unwrap() = Some(delay);
+    }
+
+    /// The safe fixes are running now (`auto_repair_once`).
+    pub(crate) fn auto_repair_running(&self) -> bool {
+        self.inner.auto_repair_running.load(Ordering::Acquire)
+    }
+
+    #[cfg(test)]
     pub fn release_attempts_for_test(&self, pane: &str) -> Option<u32> {
         self.inner
             .release_backoff
@@ -656,17 +675,39 @@ impl BrowserHub {
     }
 
     /// The first browser start after a herdr update: the safe fixes (assets,
-    /// `npm ci` when the lock changed, runtime.json) run by themselves on
-    /// the start thread — never a user file, never on the App thread (a
-    /// `stop` can reach `ensure_host` from there), once per process.
+    /// `npm ci` when the lock changed, runtime.json, the companion's app
+    /// files) run by themselves, once per process — never a user file,
+    /// never on the App thread (a `stop` can reach `ensure_host` from
+    /// there). Callers: the start thread and `ensure_running` for a
+    /// launched browser; `host_register` on its connection thread for the
+    /// companion, before its lease is written (`npm ci` has no time limit,
+    /// so it runs outside every lease and attach deadline, and the
+    /// companion launcher holds its own deadlines while it runs).
     pub(super) fn auto_repair_once(&self) {
         self.inner.auto_repair_asked.store(true, Ordering::Relaxed);
-        if self.inner.test_mode.load(Ordering::Relaxed) {
+        let test_mode = self.inner.test_mode.load(Ordering::Relaxed);
+        #[cfg(test)]
+        let fake = *self.inner.auto_repair_delay.lock().unwrap();
+        #[cfg(not(test))]
+        let fake: Option<Duration> = None;
+        if test_mode && fake.is_none() {
             return;
         }
         // Once: concurrent first uses (an agent's run and a start) wait for
         // the one that runs it.
         self.inner.auto_repaired.call_once(|| {
+            struct Running<'a>(&'a AtomicBool);
+            impl Drop for Running<'_> {
+                fn drop(&mut self) {
+                    self.0.store(false, Ordering::Release);
+                }
+            }
+            self.inner.auto_repair_running.store(true, Ordering::Release);
+            let _running = Running(&self.inner.auto_repair_running);
+            if test_mode {
+                std::thread::sleep(fake.unwrap_or_default());
+                return;
+            }
             match setup::auto_repair(&self.config(), &self.setup_env()) {
                 Some(Ok(detail)) => {
                     tracing::info!(event = "browser.auto_repair", %detail, "browser helper refreshed after a herdr update")

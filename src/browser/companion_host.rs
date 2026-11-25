@@ -148,6 +148,14 @@ impl BrowserHub {
                 "the DevTools endpoint must be a loopback address with a port",
             ));
         }
+        // The first registration after a herdr update (with the herdr+
+        // window off every browser use goes to the companion, never past
+        // `ensure_running`'s companion return): the safe fixes before the
+        // sidecar starts, as for a launched browser. Before the pending
+        // lease is written, so no lease or attach deadline runs while it
+        // does (`npm ci` has no time limit); the launcher holds its own.
+        // Once per process; on this connection thread, never the App's.
+        self.auto_repair_once();
         let now = Instant::now();
         let replaced_port = {
             let mut slot = self.inner.companion_host.lock().unwrap();
@@ -537,11 +545,6 @@ impl BrowserHub {
         if already_attached {
             return Ok(());
         }
-        // The first attach after a herdr update (with the herdr+ window off
-        // every browser use comes here, never past `ensure_running`'s
-        // companion return): the safe fixes before the sidecar starts, as
-        // for a launched browser. Once per process.
-        self.auto_repair_once();
         self.ensure_host()?;
         let args = json!({ "port": port, "kind": "companion", "nonce": nonce });
         let mut attempt = 0;
