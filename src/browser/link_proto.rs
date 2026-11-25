@@ -110,13 +110,14 @@ pub const IN_USE_RETRY_MS: u64 = 30_000;
 /// The longest line, without its newline; a longer one drops the link.
 pub const MAX_LINE_BYTES: usize = 8 * 1024 * 1024;
 /// The bytes one `blob` or `file_re` carries, before base64.
-pub const CHUNK_BYTES: usize = 256 * 1024;
-/// The unacknowledged `blob` chunks on the link, all ops together: the next
-/// one goes out after the last one's `blob_ack`, however late (amendment A2,
-/// spike S4: more breaks the key echo; 64 KiB with 2 passed too).
-pub const BLOB_WINDOW: u64 = 1;
-/// The unanswered `file` requests on the link: the answer paces the next one.
-pub const FILE_WINDOW: usize = 1;
+pub const CHUNK_BYTES: usize = 64 * 1024;
+/// The unacknowledged `blob` chunks on the link, all ops together: past it
+/// the next one waits for a `blob_ack`, however late (amendment A5, measured
+/// on a relayed link of about 120 ms).
+pub const BLOB_WINDOW: u64 = 4;
+/// The unanswered `file` requests on the link: the answers pace the next
+/// ones (amendment A5).
+pub const FILE_WINDOW: usize = 4;
 /// The largest blob, all chunks.
 pub const BLOB_MAX_BYTES: u64 = 32 * 1024 * 1024;
 /// The largest file B serves.
@@ -1256,7 +1257,7 @@ pub mod code {
 }
 
 /// The exact texts of the link's errors and notes. `label` is A's name
-/// (`laptop1`), `machine` B's (`devhost1`).
+/// (`mbp`), `machine` B's (`buildbox`).
 pub mod text {
     /// `host_unavailable`: no link; `last` is the Mac that had it and the
     /// seconds since.
@@ -2072,46 +2073,46 @@ mod tests {
     #[test]
     fn the_texts_are_the_contracts() {
         assert_eq!(
-            text::not_connected(Some(("laptop1", 12 * 60))),
-            "no browser: the user's herdr+ client is not connected (last: laptop1, 12 min ago). Nothing was sent. Continue without the browser, or ask the user to open herdr+ there."
+            text::not_connected(Some(("mbp", 12 * 60))),
+            "no browser: the user's herdr+ client is not connected (last: mbp, 12 min ago). Nothing was sent. Continue without the browser, or ask the user to open herdr+ there."
         );
         assert_eq!(
             text::not_connected(None),
             "no browser: the user's herdr+ client is not connected. Nothing was sent. Continue without the browser, or ask the user to open herdr+ on their machine."
         );
         assert_eq!(
-            text::reconnecting("laptop1"),
-            "the connection to the browser on laptop1 dropped and is reconnecting; nothing was sent; call again in a few seconds"
+            text::reconnecting("mbp"),
+            "the connection to the browser on mbp dropped and is reconnecting; nothing was sent; call again in a few seconds"
         );
         assert_eq!(
-            text::not_installed("laptop1"),
-            "the browser is not installed on laptop1; ask the user to run \"herdr browser setup --companion\" there"
+            text::not_installed("mbp"),
+            "the browser is not installed on mbp; ask the user to run \"herdr browser setup --companion\" there"
         );
         assert_eq!(
-            text::start_failed("laptop1", " exited 5 times in 5 minutes\n"),
-            "the browser on laptop1 did not start (exited 5 times in 5 minutes); nothing was sent"
+            text::start_failed("mbp", " exited 5 times in 5 minutes\n"),
+            "the browser on mbp did not start (exited 5 times in 5 minutes); nothing was sent"
         );
         assert_eq!(
-            text::start_failed("laptop1", ""),
-            "the browser on laptop1 did not start; nothing was sent"
+            text::start_failed("mbp", ""),
+            "the browser on mbp did not start; nothing was sent"
         );
-        let happened = "the connection to laptop1 dropped while OP ran: it may or may not have happened. Check with browser_read or browser_snapshot before repeating it.";
+        let happened = "the connection to mbp dropped while OP ran: it may or may not have happened. Check with browser_read or browser_snapshot before repeating it.";
         for op in [
             "open", "show", "navigate", "history", "act", "eval", "dialog", "close",
         ] {
-            assert_eq!(text::link_lost("laptop1", op), happened.replace("OP", op));
+            assert_eq!(text::link_lost("mbp", op), happened.replace("OP", op));
         }
         assert_eq!(
-            text::link_lost("laptop1", "show_remote"),
+            text::link_lost("mbp", "show_remote"),
             happened.replace("OP", "show")
         );
         assert_eq!(
-            text::link_lost("laptop1", "read"),
-            "the connection to laptop1 dropped while read ran; it changed nothing, call it again"
+            text::link_lost("mbp", "read"),
+            "the connection to mbp dropped while read ran; it changed nothing, call it again"
         );
         // an op this build does not know may have done anything
         assert_eq!(
-            text::link_lost("laptop1", "future"),
+            text::link_lost("mbp", "future"),
             happened.replace("OP", "future")
         );
         assert_eq!(
@@ -2119,20 +2120,20 @@ mod tests {
                 rule: RefuseRule::Url,
                 what: "open url".into()
             }
-            .error("laptop1"),
+            .error("mbp"),
             LinkError::new(
                 "host_refused",
-                "laptop1 refuses open url for remote machines (only http, https and about:blank pages)"
+                "mbp refuses open url for remote machines (only http, https and about:blank pages)"
             )
         );
         assert_eq!(text::busy(), "32 browser ops are already running");
         assert_eq!(
-            text::control_there("laptop1"),
-            "the browser runs on laptop1; control it there"
+            text::control_there("mbp"),
+            "the browser runs on mbp; control it there"
         );
         assert_eq!(
-            text::link_in_use("devhost1", "laptop1", "14:02"),
-            "the browser of devhost1 is on laptop1 (since 14:02); quit herdr+ there"
+            text::link_in_use("buildbox", "mbp", "14:02"),
+            "the browser of buildbox is on mbp (since 14:02); quit herdr+ there"
         );
         assert_eq!(text::LOADS_ONCE, "loads once; show it again after changes");
         assert_eq!(
@@ -2176,9 +2177,9 @@ mod tests {
             ),
             (2_000, 250, 500, 5_000, 30_000)
         );
-        assert_eq!((MAX_LINE_BYTES, CHUNK_BYTES), (8 << 20, 256 << 10));
+        assert_eq!((MAX_LINE_BYTES, CHUNK_BYTES), (8 << 20, 64 << 10));
         assert_eq!((BLOB_MAX_BYTES, FILE_MAX_BYTES), (32 << 20, 32 << 20));
-        assert_eq!((BLOB_WINDOW, FILE_WINDOW), (1, 1));
+        assert_eq!((BLOB_WINDOW, FILE_WINDOW), (4, 4));
         assert_eq!((FILE_PULLS, OPS_IN_FLIGHT), (16, 32));
         let limits = &fixture(FRAMES)["limits"];
         assert_eq!(limits["chunk_bytes"], CHUNK_BYTES);

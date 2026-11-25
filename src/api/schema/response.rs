@@ -402,6 +402,11 @@ pub enum ResponseResult {
         #[serde(default)]
         placements: Vec<super::BrowserPlacementInfo>,
     },
+    /// Fork (remote browser): `browser.link_open`: the connection carries
+    /// the link's frames from here on.
+    BrowserLinkOpened {
+        link: super::BrowserLinkInfo,
+    },
     AgentPrompted {
         agent: AgentInfo,
     },

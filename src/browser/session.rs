@@ -268,6 +268,7 @@ impl TabBrowser {
                 page_api: entry.page_api,
                 opener: entry.opener.clone(),
                 opened_by: (!entry.opened_by.is_empty()).then(|| entry.opened_by.clone()),
+                serve: None,
             })
             .collect()
     }

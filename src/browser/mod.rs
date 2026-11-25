@@ -22,6 +22,8 @@ pub mod companion_install;
 pub mod host;
 pub mod hub;
 pub mod launch;
+// Fork (remote browser): the server's end of the link.
+pub mod link;
 // Fork (remote browser): what the link between a server and the Mac that
 // runs its browser speaks.
 pub mod link_proto;

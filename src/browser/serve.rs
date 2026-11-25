@@ -127,12 +127,12 @@ pub fn placement_report(
     encode_success(request_id, ResponseResult::Ok {})
 }
 
-fn encode_success(id: String, result: ResponseResult) -> String {
+pub(super) fn encode_success(id: String, result: ResponseResult) -> String {
     serde_json::to_string(&crate::api::schema::SuccessResponse { id, result })
         .unwrap_or_else(|err| encode_error(String::new(), "internal_error", err.to_string()))
 }
 
-fn encode_error(id: String, code: &str, message: impl Into<String>) -> String {
+pub(super) fn encode_error(id: String, code: &str, message: impl Into<String>) -> String {
     serde_json::to_string(&crate::api::schema::ErrorResponse {
         id,
         error: crate::api::schema::ErrorBody {

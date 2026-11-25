@@ -3841,6 +3841,13 @@
               "description": "Fork (page API): html_view shown with `page_api` (its page may\nmessage its opener).",
               "type": "boolean"
             },
+            "serve": {
+              "description": "Fork (remote browser): html_view on a linked browser, its current\nfile token (`herdr-file://<token>/…`); never `file` then.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "target": {
               "description": "The CDP target id while the host has the view.",
               "type": [
@@ -4118,6 +4125,88 @@
             "seq"
           ],
           "type": "object"
+        },
+        "BrowserLinkOpenParams": {
+          "description": "`browser.link_open`: A offers its browser.",
+          "properties": {
+            "detail": {
+              "description": "Why it is not ready.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "features": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "herdr": {
+              "default": "",
+              "description": "The helper's herdr version.",
+              "type": "string"
+            },
+            "host_id": {
+              "description": "Random per Mac, kept; the same one replaces its own link.",
+              "type": "string"
+            },
+            "instance": {
+              "description": "Random per companion launch; another one is a new set of pages.",
+              "type": "string"
+            },
+            "label": {
+              "default": "",
+              "description": "The Mac's name, for texts.",
+              "type": "string"
+            },
+            "link_protocol": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "ready": {
+              "$ref": "#/schemas/request/$defs/BrowserLinkReady"
+            },
+            "takeover": {
+              "description": "Reserved, always false in version 1.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "link_protocol",
+            "host_id",
+            "instance",
+            "ready"
+          ],
+          "type": "object"
+        },
+        "BrowserLinkReady": {
+          "description": "Whether A can run a browser (`browser.link_open`). Append-closed.",
+          "oneOf": [
+            {
+              "enum": [
+                "ready"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "not_installed",
+              "description": "The companion is not installed on A.",
+              "type": "string"
+            },
+            {
+              "const": "failed",
+              "description": "It is, but cannot start; `detail` says why.",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "A newer helper's value: treated as `failed`.",
+              "type": "string"
+            }
+          ]
         },
         "BrowserLogParams": {
           "properties": {
@@ -11988,6 +12077,23 @@
           "type": "object"
         },
         {
+          "description": "Fork (remote browser): the helper on the user's Mac offers its\nbrowser; the connection becomes the link (src/browser/link.rs, on\nthe connection thread). Not client-shell.",
+          "properties": {
+            "method": {
+              "const": "browser.link_open",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/BrowserLinkOpenParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
           "properties": {
             "method": {
               "const": "agent.prompt",
@@ -15716,6 +15822,17 @@
                 "state": ""
               }
             },
+            "link": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/BrowserLinkStatus"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Fork (remote browser): the Mac this server's browser runs on; absent\nwhile there never was one."
+            },
             "placements": {
               "description": "Fork (companion launcher): the browser host's last report on each\nclient's placement (`browser.placement_report`), so a client can say\nwhy its area is empty. Always current, also on an `unchanged` answer.",
               "items": {
@@ -15836,6 +15953,13 @@
             "page_api": {
               "description": "Fork (page API): html_view shown with `page_api` (its page may\nmessage its opener).",
               "type": "boolean"
+            },
+            "serve": {
+              "description": "Fork (remote browser): html_view on a linked browser, its current\nfile token (`herdr-file://<token>/…`); never `file` then.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "target": {
               "description": "The CDP target id while the host has the view.",
@@ -16024,6 +16148,84 @@
           "required": [
             "tab_id",
             "workspace_id"
+          ],
+          "type": "object"
+        },
+        "BrowserLinkInfo": {
+          "description": "The opened link (`BrowserLinkOpened { link }`).",
+          "properties": {
+            "boot_id": {
+              "description": "Random per server process.",
+              "type": "string"
+            },
+            "epoch": {
+              "description": "Per server process, one more per accepted open. Not on any frame: both\nsides key what is pending by `(epoch, id)`.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "features": {
+              "default": [],
+              "description": "The features both sides have.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "link_id": {
+              "type": "string"
+            },
+            "link_protocol": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "ping_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "ttl_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "link_id",
+            "epoch",
+            "boot_id",
+            "link_protocol",
+            "ping_ms",
+            "ttl_ms"
+          ],
+          "type": "object"
+        },
+        "BrowserLinkStatus": {
+          "description": "`BrowserGetInfo.link`: the Mac this server's browser runs on.",
+          "properties": {
+            "herdr": {
+              "default": "",
+              "type": "string"
+            },
+            "label": {
+              "default": "",
+              "type": "string"
+            },
+            "since_unix": {
+              "default": 0,
+              "description": "When the state was entered.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "state": {
+              "description": "`linked`, `reconnecting` (the link dropped, its lease still lives) or\n`gone` (the last one); absent while there never was one.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state"
           ],
           "type": "object"
         },
@@ -16605,6 +16807,17 @@
               "default": "",
               "description": "Where the ledger lives (the session data directory).",
               "type": "string"
+            },
+            "link": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/BrowserLinkStatus"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Fork (remote browser): the Mac this server's browser runs on; absent\nwhile there never was one."
             },
             "log": {
               "default": [],
@@ -22014,6 +22227,23 @@
                 "type",
                 "boot_id",
                 "rev"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Fork (remote browser): `browser.link_open`: the connection carries\nthe link's frames from here on.",
+              "properties": {
+                "link": {
+                  "$ref": "#/schemas/success_response/$defs/BrowserLinkInfo"
+                },
+                "type": {
+                  "const": "browser_link_opened",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "link"
               ],
               "type": "object"
             },

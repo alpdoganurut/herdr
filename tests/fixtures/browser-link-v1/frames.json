@@ -1,25 +1,25 @@
 {
   "about": "Link protocol 1, one line per frame (frozen). `helper` is sent A to B, `server` B to A; each round-trips exactly. `helper_ignored` and `server_ignored` are read as unknown; the `*_malformed` lines drop the link.",
   "link_protocol": 1,
-  "limits": {"max_line_bytes": 8388608, "chunk_bytes": 262144, "blob_window": 1, "file_window": 1},
+  "limits": {"max_line_bytes": 8388608, "chunk_bytes": 65536, "blob_window": 4, "file_window": 4},
   "open_params": [
-    {"link_protocol": 1, "host_id": "8f0c2d4e6a1b", "instance": "c5d7e9f1", "label": "laptop1", "herdr": "0.9.5", "features": [], "ready": "ready"},
-    {"link_protocol": 1, "host_id": "8f0c2d4e6a1b", "instance": "c5d7e9f1", "label": "laptop1", "herdr": "0.9.5", "features": ["grace.v1"], "ready": "not_installed"},
-    {"link_protocol": 1, "host_id": "8f0c2d4e6a1b", "instance": "c5d7e9f1", "label": "laptop1", "herdr": "0.9.5", "features": [], "ready": "failed", "detail": "exited 5 times in 5 minutes", "takeover": true}
+    {"link_protocol": 1, "host_id": "8f0c2d4e6a1b", "instance": "c5d7e9f1", "label": "mbp", "herdr": "0.9.5", "features": [], "ready": "ready"},
+    {"link_protocol": 1, "host_id": "8f0c2d4e6a1b", "instance": "c5d7e9f1", "label": "mbp", "herdr": "0.9.5", "features": ["grace.v1"], "ready": "not_installed"},
+    {"link_protocol": 1, "host_id": "8f0c2d4e6a1b", "instance": "c5d7e9f1", "label": "mbp", "herdr": "0.9.5", "features": [], "ready": "failed", "detail": "exited 5 times in 5 minutes", "takeover": true}
   ],
   "opened": [
     {"link_id": "K1a2b3c4", "epoch": 3, "boot_id": "5e6f7a8b", "link_protocol": 1, "features": [], "ping_ms": 3000, "ttl_ms": 15000}
   ],
   "link_status": [
-    {"state": "linked", "label": "laptop1", "herdr": "0.9.5", "since_unix": 1764144000},
-    {"state": "reconnecting", "label": "laptop1", "herdr": "0.9.5", "since_unix": 1764144060},
-    {"state": "gone", "label": "laptop1", "herdr": "0.9.5", "since_unix": 1764144075}
+    {"state": "linked", "label": "mbp", "herdr": "0.9.5", "since_unix": 1764144000},
+    {"state": "reconnecting", "label": "mbp", "herdr": "0.9.5", "since_unix": 1764144060},
+    {"state": "gone", "label": "mbp", "herdr": "0.9.5", "since_unix": 1764144075}
   ],
   "helper": [
     {"t": "ping", "n": 1},
     {"t": "ping", "n": 18446744073709551615},
     {"t": "ensure_re", "id": 4, "ok": true},
-    {"t": "ensure_re", "id": 5, "ok": false, "error": {"code": "host_unavailable", "message": "the browser is not installed on laptop1; ask the user to run \"herdr browser setup --companion\" there"}},
+    {"t": "ensure_re", "id": 5, "ok": false, "error": {"code": "host_unavailable", "message": "the browser is not installed on mbp; ask the user to run \"herdr browser setup --companion\" there"}},
     {"t": "host_up", "instance": "c5d7e9f1", "version": "0.2.13", "electron": "45.2.1", "tabs": []},
     {"t": "host_up", "instance": "c5d7e9f1", "version": "0.2.13", "electron": "45.2.1", "tabs": [{"target": "9A1F", "url": "http://localhost:3000/", "title": "Dev", "selected": true, "dialog_open": false}, {"target": "9A20", "url": "herdr-file://k3v9x0q2m7w1z8r4t6y5u0ab/report/index.html", "title": "Report", "selected": false, "dialog_open": true}]},
     {"t": "host_down", "reason": "the companion exited"},
@@ -51,7 +51,7 @@
     {"t": "api_re", "id": 7, "ok": true, "result": {"type": "browser_host_state", "state": {"tabs": []}}},
     {"t": "api_re", "id": 8, "ok": false, "error": {"code": "lease_unknown", "message": "no live companion lease with that id; register again"}},
     {"t": "event", "event": {"event": "tab.focused", "data": {"tab_id": "w2:t3"}}},
-    {"t": "bye", "code": "replaced", "message": "laptop1 opened a newer link"}
+    {"t": "bye", "code": "replaced", "message": "mbp opened a newer link"}
   ],
   "helper_ignored": [
     {"t": "op", "id": 1, "echo": 1, "op": "tabs", "deadline_ms": 1},

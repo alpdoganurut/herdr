@@ -297,6 +297,10 @@ operations::define_operations! {
     /// (the herdr_agents agents_show tool). The headless server handles it
     /// (src/server/headless/agents_show.rs). Not client-shell.
     AgentsShow(agents_model::AgentsShowParams) => "agents.show", true, false;
+    /// Fork (remote browser): the helper on the user's Mac offers its
+    /// browser; the connection becomes the link (src/browser/link.rs, on
+    /// the connection thread). Not client-shell.
+    BrowserLinkOpen(BrowserLinkOpenParams) => "browser.link_open", false, false;
     AgentPrompt(AgentPromptParams) => "agent.prompt", true, false;
     AgentWait(AgentWaitParams) => "agent.wait", false, false;
     PaneSplit(PaneSplitParams) => "pane.split", true, true;

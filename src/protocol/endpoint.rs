@@ -165,6 +165,12 @@ impl EndpointClientHello {
     }
 }
 
+/// Fork (remote browser): a client may start a browser helper for this server.
+fn browser_link_capability() -> Option<String> {
+    crate::browser::link::LINK_SUPPORTED
+        .then(|| crate::browser::link_proto::LINK_CAPABILITY.to_string())
+}
+
 impl EndpointServerWelcome {
     pub fn compatible(methods: Vec<String>) -> Self {
         Self {
@@ -184,7 +190,10 @@ impl EndpointServerWelcome {
                 HEALTH_CHECK_CAPABILITY.into(),
                 AGENT_VIEW_PROJECTION_CAPABILITY.into(),
                 AGENT_COMPLETIONS_CAPABILITY.into(),
-            ],
+            ]
+            .into_iter()
+            .chain(browser_link_capability())
+            .collect(),
             error: None,
         }
     }
@@ -403,6 +412,10 @@ mod tests {
                 AGENT_VIEW_PROJECTION_CAPABILITY.to_string(),
                 AGENT_COMPLETIONS_CAPABILITY.to_string(),
             ]
+            .into_iter()
+            // Fork (remote browser): not on Windows
+            .chain(cfg!(unix).then(|| "browser-link.v1".to_string()))
+            .collect::<Vec<_>>()
         );
     }
 
