@@ -132,10 +132,17 @@ fn listed(endpoint: &ClientShellEndpoint) -> bool {
     endpoint.status != ClientEndpointStatus::Disabled
 }
 
+/// Two machines or more are listed: whatever tells machines apart shows
+/// (the row, names, the settings scope). `multi_endpoint_active` also counts
+/// a disabled one: it is upstream's, for routing.
+pub(super) fn several_machines(endpoints: &[ClientShellEndpoint]) -> bool {
+    endpoints.iter().filter(|endpoint| listed(endpoint)).count() > 1
+}
+
 /// Rows the tabs sidebar keeps at its very top: the machine row and its rule
-/// while two machines or more are listed, else none.
+/// with several machines, else none.
 pub(super) fn machine_rows(endpoints: &[ClientShellEndpoint]) -> u16 {
-    if endpoints.iter().filter(|endpoint| listed(endpoint)).count() > 1 {
+    if several_machines(endpoints) {
         2
     } else {
         0

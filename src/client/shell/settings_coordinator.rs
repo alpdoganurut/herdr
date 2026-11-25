@@ -359,12 +359,15 @@ pub(crate) fn state_text(info: &CoordinatorGetInfo) -> String {
     }
 }
 
-/// The dashboard fact: the URL, or why there is none.
-pub(crate) fn dashboard_text(info: &CoordinatorGetInfo) -> String {
+/// The dashboard fact: the URL, or why there is none. `remote`: the server is
+/// not on this machine, so its address is shown without a scheme (a terminal
+/// would open the link on this one).
+pub(crate) fn dashboard_text(info: &CoordinatorGetInfo, remote: bool) -> String {
     match (
         info.dashboard_url.as_deref(),
         info.dashboard_error.as_deref(),
     ) {
+        (Some(url), _) if remote => super::machine_surfaces::plain_address(url).to_owned(),
         (Some(url), _) => url.to_owned(),
         (None, Some(error)) => error.to_owned(),
         (None, None) if !info.enabled => "off".to_owned(),
@@ -451,6 +454,7 @@ pub(crate) fn render_coordinator_section(
     settings: &ClientCoordinatorSettings,
     selected: usize,
     spaces_layout: bool,
+    remote: bool,
     palette: &Palette,
     hits: &mut Vec<(Rect, usize)>,
 ) {
@@ -576,7 +580,7 @@ pub(crate) fn render_coordinator_section(
     if let Some(notice) = info.notice.as_deref() {
         fact("notice", notice);
     }
-    fact("dashboard", &dashboard_text(info));
+    fact("dashboard", &dashboard_text(info, remote));
     fact("managed", &info.managed.len().to_string());
     fact("wakes", &wakes_text(info));
     let last_wake = match info.wake.last_at {

@@ -561,6 +561,82 @@ fn a_switch_drops_what_belonged_to_the_machine_left() {
     assert_eq!(listed(&state), ["tab_1", "tab_2", "tab_3", "tab_4"]);
 }
 
+/// A machine shown again has its fixed rows at once, from its last answers,
+/// and asks anew.
+#[test]
+fn the_news_and_coordinator_tabs_stay_in_their_rows_across_a_switch() {
+    let mut state = two_machines(SidebarLayoutConfig::Tabs);
+    switch(&mut state, &remote_id());
+    state.news.info = Some(
+        serde_json::from_value(serde_json::json!({
+            "enabled": true,
+            "times": [],
+            "quiet_hours": "",
+            "tab_id": "tab_2",
+            "unread": false,
+            "consecutive_failures": 0,
+            "pending_notifications": 0,
+        }))
+        .expect("news info"),
+    );
+    state.coordinator.info = Some(crate::api::schema::coordinator::CoordinatorGetInfo {
+        enabled: true,
+        tab_id: Some("tab_3".into()),
+        ..Default::default()
+    });
+    state.compose(COLS, ROWS).unwrap();
+    assert_eq!(listed(&state), ["tab_1", "tab_4"]);
+    switch(&mut state, &ClientEndpointId::Local);
+    state.compose(COLS, ROWS).unwrap();
+    assert_eq!(listed(&state), ["tab_1", "tab_2", "tab_3", "tab_4"]);
+    assert!(state.news_row().is_none() && state.coordinator_row().is_none());
+
+    switch(&mut state, &remote_id());
+    state.compose(COLS, ROWS).unwrap();
+    assert_eq!(listed(&state), ["tab_1", "tab_4"], "before any reply");
+    assert!(state.news_row().is_some() && state.coordinator_row().is_some());
+    let snapshot = state.snapshot.as_deref().unwrap();
+    let numbered = state
+        .keyboard_tab_list(snapshot, "ws_1")
+        .iter()
+        .map(|tab| tab.tab_id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(numbered, ["tab_1", "tab_4"]);
+    let mut outcome = ClientShellInput::default();
+    state.tick_news(std::time::Instant::now(), &mut outcome);
+    state.tick_coordinator(std::time::Instant::now(), &mut outcome);
+    assert_eq!(outcome.actions.len(), 2, "both asked anew");
+
+    // A restarted server names its tabs first.
+    switch(&mut state, &ClientEndpointId::Local);
+    state.cache_endpoint_snapshot(
+        &remote_id(),
+        Box::new(machine_snapshot("remote-boot-2", "remote")),
+    );
+    switch(&mut state, &remote_id());
+    assert!(state.news_row().is_none() && state.coordinator_row().is_none());
+}
+
+/// The phone lists every machine and draws no filter: one left set on a wide
+/// window must not hide tabs from the keys there.
+#[test]
+fn a_filter_the_phone_does_not_show_leaves_the_tab_keys_alone() {
+    use crate::input::KeybindAction::NextTab;
+    let mut state = two_machines(SidebarLayoutConfig::Tabs);
+    switch(&mut state, &remote_id());
+    state.sidebar_filter.set_query("remote-4");
+    state.sidebar_model.mark_dirty();
+    state.compose(COLS, ROWS).unwrap();
+    let next = |state: &mut ClientShellState| match state.endpoint_method_for_action(NextTab) {
+        Some(Method::TabFocus(target)) => target.tab_id,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(next(&mut state), "tab_4", "the filtered list");
+    state.compose(40, ROWS).unwrap();
+    assert!(!state.layout(40, ROWS).mobile_header.is_empty());
+    assert_eq!(next(&mut state), "tab_2", "the whole list");
+}
+
 /// A poll interrupted by a switch or a lost connection is neither the
 /// user's action nor an answer: no notice, the rows stay, and it asks again
 /// a second later, once a second while it keeps being refused.

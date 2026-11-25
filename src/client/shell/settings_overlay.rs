@@ -38,6 +38,7 @@ pub(super) fn render_settings_overlay(
     settings: &ClientSettingsOverlay,
     integration_updates_available: bool,
     machine: Option<&str>,
+    remote: bool,
     config: &ClientShellConfig,
     palette: &Palette,
 ) -> Option<OverlayRender> {
@@ -350,6 +351,7 @@ pub(super) fn render_settings_overlay(
                 &settings.coordinator,
                 settings.selected,
                 config.sidebar_layout != crate::config::SidebarLayoutConfig::Tabs,
+                remote,
                 palette,
                 &mut choice_hits,
             );

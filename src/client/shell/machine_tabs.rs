@@ -11,7 +11,7 @@
 use super::*;
 
 /// How soon a background read asks again after it was cut off.
-const POLL_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
+pub(super) const POLL_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// `endpoint_id`'s ids of a fold preference kept as one set for Local and one
 /// per saved machine (`collapsed_groups`, `expanded_runs`). Free function
@@ -50,6 +50,10 @@ pub(super) struct MachineView {
     list_scroll: usize,
     tab_history: super::tab_history::TabHistory,
     filter: super::sidebar_filter::SidebarFilter,
+    /// Its last answers: the News and coordinator tabs keep their fixed
+    /// rows until the next ones come.
+    news: Option<crate::api::schema::NewsGetInfo>,
+    coordinator: Option<crate::api::schema::coordinator::CoordinatorGetInfo>,
 }
 
 /// Whether the shown machine's rows are its last known ones: with several
@@ -59,7 +63,7 @@ pub(super) fn shows_cached_machine(
     endpoints: &[ClientShellEndpoint],
     active_endpoint_id: &ClientEndpointId,
 ) -> bool {
-    endpoints.len() > 1
+    super::machine_row::several_machines(endpoints)
         && endpoints
             .iter()
             .find(|endpoint| &endpoint.endpoint_id == active_endpoint_id)
@@ -130,8 +134,8 @@ impl ClientShellState {
     }
 
     /// Another machine is about to be shown in the `tabs` layout: the active
-    /// one's list scroll, tab history and filters are put aside (an empty
-    /// filter is left), its search field lets go of the keyboard.
+    /// one's list scroll, tab history, filters and fixed rows are put aside
+    /// (an empty filter is left), its search field lets go of the keyboard.
     pub(super) fn remember_machine_view(&mut self) {
         if !self.tabs_layout() {
             return;
@@ -152,14 +156,16 @@ impl ClientShellState {
                 list_scroll: self.agent_scroll,
                 tab_history,
                 filter,
+                news: self.news.info.take(),
+                coordinator: self.coordinator.info.take(),
             },
         );
     }
 
     /// The active machine is shown again (its snapshot is applied): its
-    /// filters come back, and with the same server its list scroll and tab
-    /// history. The list stays where it was while the same tab is focused,
-    /// else it reveals the focused one from there.
+    /// filters come back, and with the same server its list scroll, tab
+    /// history and fixed rows. The list stays where it was while the same
+    /// tab is focused, else it reveals the focused one from there.
     pub(super) fn restore_machine_view(&mut self) {
         let Some(view) = self.machine_views.remove(&self.active_endpoint_id) else {
             return;
@@ -175,6 +181,9 @@ impl ClientShellState {
         if snapshot.boot_id != view.boot_id {
             return;
         }
+        // The tick asks for both anew.
+        self.news.info = view.news;
+        self.coordinator.info = view.coordinator;
         self.agent_scroll = view.list_scroll;
         if snapshot.focused_tab_id == view.focused_tab_id {
             self.reveal_focused_workspace = false;

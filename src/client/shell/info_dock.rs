@@ -57,6 +57,8 @@ const DOCK_STEP: u16 = 4;
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
 /// Retry delay after `endpoint_busy`.
 const BUSY_RETRY: Duration = Duration::from_millis(250);
+/// The notice that unsaved notes went with their machine.
+const DROPPED_NOTICE: &str = "info_pane:dropped";
 /// A dirty editor saves after this long without a keystroke.
 const IDLE_SAVE: Duration = Duration::from_secs(2);
 const FLASH_FOR: Duration = Duration::from_secs(3);
@@ -487,6 +489,19 @@ impl ClientInfoDockState {
         }
     }
 
+    /// Something is left to save that does not need the dock open: the
+    /// editor's buffer, a queued save or task tick.
+    fn unsaved(&self) -> bool {
+        self.editor
+            .as_ref()
+            .is_some_and(|editor| editor.dirty || editor.save_pending)
+            || self
+                .data
+                .queue
+                .iter()
+                .any(|queued| !queued.request.needs_open_dock())
+    }
+
     /// The editor is shown (not on its way out).
     pub(crate) fn editing(&self) -> bool {
         self.editor.as_ref().is_some_and(|editor| !editor.leaving)
@@ -562,6 +577,9 @@ impl ClientInfoDockState {
         };
         if parked.unsaved() {
             self.parked_notice = Some(left.clone());
+        } else if self.parked_notice.as_ref() == Some(endpoint) {
+            // Back before the tick could say it: nothing waits any more.
+            self.parked_notice = None;
         }
         self.parked.insert(left, parked);
         self.data.in_flight = None;
@@ -1579,10 +1597,7 @@ impl ClientShellState {
             return;
         };
         let open = self.info_dock_open_for_focused_tab();
-        let unsaved = dock
-            .editor
-            .as_ref()
-            .is_some_and(|editor| editor.dirty || editor.save_pending);
+        let unsaved = dock.unsaved();
         if !open && !unsaved && dock.data.in_flight.is_none() && dock.flash.is_none() {
             return;
         }
@@ -1674,19 +1689,28 @@ impl ClientShellState {
             dropped |= !listed && parked.unsaved();
             listed
         });
-        let body = if dropped {
-            "The machine they were for was removed; they are dropped.".to_owned()
+        let (code, body) = if dropped {
+            // Every removal says it, not the first one per server boot.
+            self.endpoint_notice_seen
+                .retain(|seen| seen.code != DROPPED_NOTICE);
+            (
+                DROPPED_NOTICE,
+                "The machine they were for was removed; they are dropped.".to_owned(),
+            )
         } else if let Some(left) = left {
-            format!(
-                "Your changes for {} are kept here and saved when you go back to it.",
-                self.endpoint_label(&left)
+            (
+                "info_pane:parked",
+                format!(
+                    "Your changes for {} are kept here and saved when you go back to it.",
+                    self.endpoint_label(&left)
+                ),
             )
         } else {
             return;
         };
         outcome.repaint |= self.push_endpoint_notice(
             ClientEndpointNoticeKind::Unavailable,
-            "info_pane:parked",
+            code,
             "Notes not saved",
             body,
         );
@@ -1697,10 +1721,7 @@ impl ClientShellState {
     pub(crate) fn next_info_dock_deadline(&self, now: Instant) -> Option<Instant> {
         let dock = self.info_dock.as_deref()?;
         let open = self.info_dock_open_for_focused_tab();
-        let unsaved = dock
-            .editor
-            .as_ref()
-            .is_some_and(|editor| editor.dirty || editor.save_pending);
+        let unsaved = dock.unsaved();
         if !open && !unsaved {
             return None;
         }

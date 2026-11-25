@@ -575,6 +575,20 @@ impl ClientShellState {
         let Some(pending) = self.pending_requests.remove(request_id) else {
             return (false, Vec::new());
         };
+        // Fork (machine tabs): before the boot check, which drops what
+        // another machine's request was about.
+        if let (PendingEndpointKind::DeferredNoticeDismiss { endpoint_id, ids }, Err(error)) =
+            (&pending.kind, &result)
+        {
+            self.requeue_dismissals(
+                &pending.boot_id,
+                endpoint_id,
+                ids,
+                error,
+                std::time::Instant::now(),
+            );
+            return (false, Vec::new());
+        }
         if pending.boot_id != boot_id
             || self
                 .snapshot
@@ -667,6 +681,7 @@ impl ClientShellState {
             | PendingEndpointKind::ForceableAgentStop { .. }
             | PendingEndpointKind::ToolbarNewTab
             | PendingEndpointKind::ToolbarNewTabMove
+            | PendingEndpointKind::DeferredNoticeDismiss { .. }
             | PendingEndpointKind::PerfSummary => {}
             PendingEndpointKind::PaneLinkResolve { .. } => unreachable!("handled above"),
             PendingEndpointKind::InfoNotesGet
@@ -1469,7 +1484,7 @@ impl ClientShellState {
     /// Fork (sidebar filters): whether a filter is set and the tabs sidebar
     /// model applying it is current (the tabs layout, shown, one endpoint).
     fn ensure_sidebar_filter_model(&mut self) -> bool {
-        if !self.sidebar_filter.active() {
+        if !self.sidebar_filter.active() || !self.sidebar_filter_shown() {
             return false;
         }
         let news_row = self.news_row();

@@ -1161,6 +1161,13 @@ pub(super) enum PendingEndpointKind {
     /// Fork (perf watch): the readout's `server.perf_summary` poll; never a
     /// notice (`perf_readout.rs`).
     PerfSummary,
+    /// Fork (machine tabs): the `agent.notice_dismiss` of cards dismissed
+    /// while `endpoint_id` was not shown; unanswered, they wait again
+    /// (`machine_surfaces.rs`), never a notice.
+    DeferredNoticeDismiss {
+        endpoint_id: ClientEndpointId,
+        ids: Vec<String>,
+    },
 }
 
 pub(super) struct PendingEndpointRequest {
@@ -1943,6 +1950,8 @@ impl ClientShellState {
         self.last_composed_size = None;
         self.last_composed_at = None;
         self.selection_repaint_deadline = None;
+        // Fork (machine tabs): the dismissals among them wait again.
+        self.requeue_pending_dismissals();
         self.pending_requests.clear();
         // Fork (perf watch): the readout's poll in flight went with them.
         self.perf_readout.forget_server();

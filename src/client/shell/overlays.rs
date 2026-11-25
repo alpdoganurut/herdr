@@ -76,13 +76,15 @@ pub(crate) fn render_client_overlay(
             // Fork (machine tabs): with several machines, whose settings.
             let machine = endpoints
                 .iter()
-                .find(|endpoint| endpoints.len() > 1 && &endpoint.endpoint_id == active_endpoint_id)
+                .find(|endpoint| &endpoint.endpoint_id == active_endpoint_id)
+                .filter(|_| super::machine_row::several_machines(endpoints))
                 .map(|endpoint| endpoint.label.as_str());
             settings_overlay::render_settings_overlay(
                 b,
                 v,
                 s.integration_updates_available,
                 machine,
+                !active_endpoint_id.is_local(),
                 c,
                 p,
             )

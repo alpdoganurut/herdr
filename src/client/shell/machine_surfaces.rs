@@ -10,6 +10,10 @@
 use super::*;
 use crate::api::schema::{AgentNoticeDismissParams, EmptyParams, Method};
 
+/// How soon card dismissals a server refused or did not answer are sent
+/// again.
+const DISMISS_RETRY: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// The News and coordinator tabs a machine last named (`news.get`,
 /// `coordinator.*`), kept while another machine is shown.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -69,9 +73,9 @@ pub(super) fn plain_address(url: &str) -> &str {
 
 impl ClientShellState {
     /// The machine's name where it has to be told apart: with several
-    /// endpoints, Local included.
+    /// machines, Local included.
     pub(super) fn machine_name(&self, endpoint_id: &ClientEndpointId) -> Option<&str> {
-        if !self.multi_endpoint_active() {
+        if !super::machine_row::several_machines(&self.endpoints) {
             return None;
         }
         self.endpoints
@@ -119,7 +123,7 @@ impl ClientShellState {
     /// agent still waits and a click could not go there. Empty with one
     /// machine.
     pub(super) fn reminders_held(&self) -> Vec<ClientEndpointId> {
-        if !self.multi_endpoint_active() {
+        if !super::machine_row::several_machines(&self.endpoints) {
             return Vec::new();
         }
         self.endpoints
@@ -231,7 +235,11 @@ impl ClientShellState {
     }
 
     /// The tick: what waited for the machine now shown.
-    pub(crate) fn tick_machines(&mut self, outcome: &mut ClientShellInput) {
+    pub(crate) fn tick_machines(
+        &mut self,
+        now: std::time::Instant,
+        outcome: &mut ClientShellInput,
+    ) {
         if !self.endpoint_is_online(&self.active_endpoint_id) || self.snapshot.is_none() {
             return;
         }
@@ -243,18 +251,78 @@ impl ClientShellState {
                 outcome,
             );
         }
-        let unsent = self
+        self.send_deferred_dismissals(now, outcome);
+    }
+
+    /// The card dismissals that waited for the shown machine. Not for the
+    /// server its cards were not of: card ids repeat across boots.
+    fn send_deferred_dismissals(
+        &mut self,
+        now: std::time::Instant,
+        outcome: &mut ClientShellInput,
+    ) {
+        let Some(snapshot) = self.snapshot.as_deref() else {
+            return;
+        };
+        let Some(cards) = self
             .agent_cards
             .get_mut(&self.active_endpoint_id)
-            .map(super::agent_cards::AgentCardsState::take_unsent)
-            .unwrap_or_default();
-        if !unsent.is_empty() {
-            let method = Method::AgentNoticeDismiss(AgentNoticeDismissParams {
-                ids: unsent,
-                all: false,
-            });
-            if self.supports_endpoint_method(&method) {
-                self.push_endpoint_method(method, outcome);
+            .filter(|cards| cards.boot_id == snapshot.boot_id)
+        else {
+            return;
+        };
+        let ids = cards.take_unsent(now);
+        if ids.is_empty() {
+            return;
+        }
+        let method = Method::AgentNoticeDismiss(AgentNoticeDismissParams {
+            ids: ids.clone(),
+            all: false,
+        });
+        if !self.supports_endpoint_method(&method) {
+            return;
+        }
+        let kind = PendingEndpointKind::DeferredNoticeDismiss {
+            endpoint_id: self.active_endpoint_id.clone(),
+            ids,
+        };
+        self.push_endpoint_method_with_kind(method, kind, outcome);
+    }
+
+    /// The request that told `endpoint_id`'s server of `boot_id` about
+    /// dismissed cards failed: they wait again. Cut off (a machine switch, a
+    /// lost connection) it is due again soon, refused or timed out later.
+    pub(super) fn requeue_dismissals(
+        &mut self,
+        boot_id: &str,
+        endpoint_id: &ClientEndpointId,
+        ids: &[String],
+        error: &ClientShellEndpointError,
+        now: std::time::Instant,
+    ) {
+        let cancelled = error.code.as_deref() == Some("endpoint_cancelled");
+        if !cancelled {
+            tracing::debug!(code = ?error.code, "agent card dismissal failed, trying again later");
+        }
+        let wait = if cancelled {
+            super::machine_tabs::POLL_RETRY
+        } else {
+            DISMISS_RETRY
+        };
+        if let Some(cards) = self.agent_cards.get_mut(endpoint_id) {
+            cards.put_back(boot_id, ids, Some(now + wait));
+        }
+    }
+
+    /// The requests under way are about to be forgotten (another machine is
+    /// shown, the server restarted): no reply will tell about the
+    /// dismissals among them.
+    pub(super) fn requeue_pending_dismissals(&mut self) {
+        for pending in self.pending_requests.values() {
+            if let PendingEndpointKind::DeferredNoticeDismiss { endpoint_id, ids } = &pending.kind {
+                if let Some(cards) = self.agent_cards.get_mut(endpoint_id) {
+                    cards.put_back(&pending.boot_id, ids, None);
+                }
             }
         }
     }

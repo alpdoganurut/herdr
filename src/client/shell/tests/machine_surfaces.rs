@@ -559,8 +559,32 @@ fn click_card(state: &mut ClientShellState, endpoint_id: &ClientEndpointId) -> C
 
 fn tick_machines(state: &mut ClientShellState) -> ClientShellInput {
     let mut outcome = ClientShellInput::default();
-    state.tick_machines(&mut outcome);
+    state.tick_machines(Instant::now(), &mut outcome);
     outcome
+}
+
+/// The request id and the cards of the dismissal a tick `later` sends.
+fn dismissal(state: &mut ClientShellState, later: Duration) -> Option<(String, Vec<String>)> {
+    let mut outcome = ClientShellInput::default();
+    state.tick_machines(Instant::now() + later, &mut outcome);
+    match &sent(&outcome.actions)[..] {
+        [] => None,
+        [(to, id, Method::AgentNoticeDismiss(params))] => {
+            assert_eq!(to, &state.active_endpoint_id);
+            assert!(!params.all);
+            Some((id.clone(), params.ids.clone()))
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+/// Build's card `n1` dismissed while Local is shown, then Build shown.
+fn deferred_dismissal() -> ClientShellState {
+    let mut state = two_cards();
+    let mut outcome = ClientShellInput::default();
+    state.dismiss_agent_card(&build(), "n1".into(), &mut outcome);
+    switch(&mut state, &build());
+    state
 }
 
 #[test]
@@ -618,6 +642,146 @@ fn dismissing_another_machines_card_reaches_its_server_once_shown() {
     );
     assert!(tick_machines(&mut state).actions.is_empty(), "once");
     assert_eq!(shown_cards(&state), [(LOCAL, "n1")]);
+}
+
+/// The runtime cancels a machine's queued requests when it is left or lost.
+#[test]
+fn a_cancelled_dismissal_is_sent_again() {
+    let mut state = deferred_dismissal();
+    let (id, ids) = dismissal(&mut state, Duration::ZERO).expect("sent once shown");
+    assert_eq!(ids, ["n1"]);
+    assert!(!state.cancel_endpoint_request(&id));
+    assert!(state.visible_endpoint_notice.is_none(), "silent");
+    assert_eq!(shown_cards(&state), [(LOCAL, "n1")], "still hidden");
+    assert_eq!(dismissal(&mut state, Duration::ZERO), None, "not at once");
+    let (_, ids) = dismissal(&mut state, Duration::from_secs(2)).expect("again");
+    assert_eq!(ids, ["n1"]);
+
+    // The machine goes offline before it answered.
+    let mut state = deferred_dismissal();
+    dismissal(&mut state, Duration::ZERO).expect("sent");
+    state.mark_endpoint_disconnected(&build());
+    assert_eq!(dismissal(&mut state, MINUTE), None, "away");
+    state.set_endpoint_status(&build(), ClientEndpointStatus::Online);
+    assert!(dismissal(&mut state, MINUTE).is_some(), "back");
+}
+
+#[test]
+fn a_failed_or_timed_out_dismissal_is_sent_again_later() {
+    for code in ["endpoint_timeout", "server_unavailable", "internal"] {
+        let mut state = deferred_dismissal();
+        let (id, _) = dismissal(&mut state, Duration::ZERO).expect("sent");
+        let (repaint, actions) = state.handle_endpoint_result(
+            REMOTE_BOOT,
+            &id,
+            Err(ClientShellEndpointError {
+                code: Some(code.into()),
+                message: "no".into(),
+            }),
+        );
+        assert!(!repaint && actions.is_empty(), "{code}");
+        assert!(state.visible_endpoint_notice.is_none(), "{code}");
+        assert_eq!(
+            dismissal(&mut state, Duration::from_secs(2)),
+            None,
+            "{code}: no busy loop"
+        );
+        assert!(dismissal(&mut state, MINUTE).is_some(), "{code}");
+    }
+}
+
+#[test]
+fn a_dismissal_cut_off_by_a_switch_is_sent_when_its_machine_is_back() {
+    // Cancelled before or after the other machine is shown, or not at all.
+    for cancelled in [Some(true), Some(false), None] {
+        let mut state = deferred_dismissal();
+        let (id, _) = dismissal(&mut state, Duration::ZERO).expect("sent");
+        if cancelled == Some(true) {
+            state.cancel_endpoint_request(&id);
+        }
+        switch(&mut state, &LOCAL);
+        if cancelled == Some(false) {
+            state.cancel_endpoint_request(&id);
+        }
+        assert_eq!(dismissal(&mut state, MINUTE), None, "Local's was not");
+        switch(&mut state, &build());
+        let (_, ids) = dismissal(&mut state, MINUTE).expect("sent again");
+        assert_eq!(ids, ["n1"], "{cancelled:?}");
+    }
+    // The reply of the machine left comes while the other is shown, its
+    // request still known (a runtime that did not cancel it): the boot check
+    // must not eat the failure.
+    let mut state = deferred_dismissal();
+    let (id, _) = dismissal(&mut state, Duration::ZERO).expect("sent");
+    let pending = state.pending_requests.remove(&id).expect("pending");
+    switch(&mut state, &LOCAL);
+    state.agent_cards.get_mut(&build()).unwrap().unsent.clear();
+    state.pending_requests.insert(id.clone(), pending);
+    state.cancel_endpoint_request(&id);
+    switch(&mut state, &build());
+    assert!(dismissal(&mut state, MINUTE).is_some());
+}
+
+#[test]
+fn a_dismissal_its_server_confirmed_is_not_sent_again() {
+    // Its list came without the card before the request was cut off.
+    let mut state = deferred_dismissal();
+    let (id, _) = dismissal(&mut state, Duration::ZERO).expect("sent");
+    push_cards(&mut state, &build(), 3, &[]);
+    state.cancel_endpoint_request(&id);
+    assert_eq!(dismissal(&mut state, MINUTE), None);
+    // Or after it.
+    let mut state = deferred_dismissal();
+    let (id, _) = dismissal(&mut state, Duration::ZERO).expect("sent");
+    state.cancel_endpoint_request(&id);
+    push_cards(&mut state, &build(), 3, &[]);
+    assert_eq!(dismissal(&mut state, MINUTE), None);
+    // Or it answered.
+    let mut state = deferred_dismissal();
+    let (id, _) = dismissal(&mut state, Duration::ZERO).expect("sent");
+    answer(
+        &mut state,
+        &id,
+        ResponseResult::AgentNotices {
+            notices: Vec::new(),
+        },
+    );
+    switch(&mut state, &LOCAL);
+    switch(&mut state, &build());
+    assert_eq!(dismissal(&mut state, MINUTE), None);
+}
+
+/// Card ids start at `n1` on every boot.
+#[test]
+fn a_dismissal_never_reaches_a_restarted_server() {
+    let mut state = deferred_dismissal();
+    dismissal(&mut state, Duration::ZERO).expect("sent");
+    let mut snapshot = machine_snapshot(&build(), "build");
+    snapshot.boot_id = "remote-boot-2".into();
+    state.set_endpoint_snapshot(&build(), Box::new(snapshot));
+    let mut outcome = ClientShellInput::default();
+    state.tick_machines(Instant::now() + MINUTE, &mut outcome);
+    assert!(outcome.actions.is_empty(), "{:?}", outcome.actions);
+
+    // Its new list came first, with a card of the same id.
+    let mut state = deferred_dismissal();
+    dismissal(&mut state, Duration::ZERO).expect("sent");
+    state.receive_agent_notices(
+        &build(),
+        AgentNoticesPayload {
+            boot_id: "remote-boot-2".into(),
+            revision: 1,
+            notices: vec![card("n1")],
+            initial: true,
+        },
+    );
+    let mut snapshot = machine_snapshot(&build(), "build");
+    snapshot.boot_id = "remote-boot-2".into();
+    state.set_endpoint_snapshot(&build(), Box::new(snapshot));
+    let mut outcome = ClientShellInput::default();
+    state.tick_machines(Instant::now() + MINUTE, &mut outcome);
+    assert!(outcome.actions.is_empty(), "{:?}", outcome.actions);
+    assert!(shown_cards(&state).contains(&(build(), "n1")));
 }
 
 #[test]
@@ -765,7 +929,8 @@ fn the_news_tab_of_a_machine_not_shown_raises_no_reminder() {
         remind_after(&mut state, start, 6),
         ["Local · News still waiting"]
     );
-    // Shown again and not answered yet: still the one it named.
+    // Shown again, its last answer gone (the `spaces` layout keeps none) and
+    // the next not there yet: still the one it named.
     switch(&mut state, &LOCAL);
     let mut snapshot = state.endpoints[0].snapshot.clone().unwrap();
     snapshot.revision = 4;
@@ -777,7 +942,7 @@ fn the_news_tab_of_a_machine_not_shown_raises_no_reminder() {
     }
     snapshot.agents[0].tab_id = "tab_3".into();
     state.set_endpoint_snapshot(&LOCAL, snapshot);
-    assert!(state.news.info.is_none());
+    state.news.info = None;
     let start = start + MINUTE * 10;
     state.tick_notifications(start);
     assert!(remind_after(&mut state, start, 6).is_empty());
@@ -893,6 +1058,68 @@ fn a_machine_that_is_away_reminds_of_nothing_until_it_is_back() {
         remind_after(&mut state, start, 6),
         ["local-2 still waiting"]
     );
+}
+
+// ----------------------------------------------- one machine, one disabled
+
+/// Local and a saved machine that is turned off: one machine.
+fn local_and_a_disabled_machine() -> ClientShellState {
+    let mut state = one_machine();
+    let mut off = profile();
+    off.enabled = false;
+    state.set_endpoint_catalog(&[off]);
+    assert!(state.multi_endpoint_active());
+    state.compose(COLS, ROWS).unwrap();
+    state
+}
+
+#[test]
+fn a_disabled_machine_brings_no_names() {
+    let mut state = local_and_a_disabled_machine();
+    toast(&mut state, &LOCAL);
+    assert_eq!(titles(&state), ["local-2 needs attention"]);
+    push_cards(&mut state, &LOCAL, 1, &[]);
+    push_cards(&mut state, &LOCAL, 2, &["n1"]);
+    assert!(state.agent_card_views()[0].machine.is_none());
+}
+
+#[test]
+fn a_disabled_machine_holds_no_reminders_of_local() {
+    let mut state = local_and_a_disabled_machine();
+    important(&mut state, &LOCAL, "local");
+    let start = Instant::now();
+    state.tick_notifications(start);
+    state.mark_endpoint_disconnected(&LOCAL);
+    assert_eq!(
+        remind_after(&mut state, start, 6),
+        ["local-2 still waiting"]
+    );
+}
+
+#[test]
+fn a_disabled_machine_dims_nothing_of_local() {
+    let mut state = local_and_a_disabled_machine();
+    let sidebar = |state: &mut ClientShellState| {
+        let frame = state.compose(COLS, ROWS).expect("frame").frame;
+        let width = usize::from(state.layout(COLS, ROWS).sidebar.width);
+        frame
+            .cells
+            .chunks(usize::from(frame.width))
+            .flat_map(|row| row[..width].to_vec())
+            .collect::<Vec<_>>()
+    };
+    let online = sidebar(&mut state);
+    state.set_endpoint_status(&LOCAL, ClientEndpointStatus::Reconnecting);
+    assert!(sidebar(&mut state) == online, "drawn as with one machine");
+}
+
+#[test]
+fn a_disabled_machine_gives_the_settings_no_scope() {
+    let mut state = local_and_a_disabled_machine();
+    state.open_settings_overlay();
+    let text = frame_text(&mut state);
+    assert!(text.contains(" settings "), "{text}");
+    assert!(!text.contains("settings ·"), "{text}");
 }
 
 // ------------------------------------------------------------------ notes
@@ -1100,7 +1327,6 @@ fn a_machine_removed_later_takes_its_parked_notes_along() {
     switch(&mut state, &LOCAL);
     tick_notes(&mut state, Instant::now());
     state.visible_endpoint_notice = None;
-    state.endpoint_notice_seen.clear();
     // Turned off keeps them, removed drops them.
     state.retire_endpoint(&build());
     tick_notes(&mut state, Instant::now());
@@ -1111,6 +1337,88 @@ fn a_machine_removed_later_takes_its_parked_notes_along() {
     let notice = state.visible_endpoint_notice.as_ref().expect("said");
     assert!(notice.body.contains("removed"), "{}", notice.body);
     assert!(state.info_dock.as_ref().unwrap().parked.is_empty());
+}
+
+#[test]
+fn every_removed_machine_says_that_its_notes_went() {
+    let mut other = profile();
+    other.id = ProfileId::parse("fedcba9876543210fedcba9876543210").unwrap();
+    other.label = "Other".into();
+    let other_id = ClientEndpointId::Ssh(other.id.clone());
+    let mut state = two_machines();
+    state.set_endpoint_catalog(&[profile(), other.clone()]);
+    state.set_endpoint_status(&other_id, ClientEndpointStatus::Online);
+    state.set_endpoint_snapshot(&other_id, Box::new(machine_snapshot(&other_id, "other")));
+    for endpoint_id in [build(), other_id] {
+        switch(&mut state, &endpoint_id);
+        open_notes(&mut state, "a page");
+        type_notes(&mut state, "!");
+    }
+    switch(&mut state, &LOCAL);
+    tick_notes(&mut state, Instant::now());
+    for catalog in [&[other][..], &[]] {
+        state.visible_endpoint_notice = None;
+        state.set_endpoint_catalog(catalog);
+        tick_notes(&mut state, Instant::now());
+        let notice = state.visible_endpoint_notice.as_ref().expect("said");
+        assert!(notice.body.contains("removed"), "{}", notice.body);
+    }
+}
+
+#[test]
+fn notes_that_are_back_before_the_tick_are_not_said_to_wait() {
+    let mut state = two_machines();
+    open_notes(&mut state, "local page");
+    type_notes(&mut state, "!");
+    switch(&mut state, &build());
+    switch(&mut state, &LOCAL);
+    // Something is parked, so the tick has a look.
+    let dock = state.info_dock.as_ref().unwrap();
+    assert!(dock.parked.contains_key(&build()));
+    tick_notes(&mut state, Instant::now());
+    assert!(state.visible_endpoint_notice.is_none());
+}
+
+/// The user comes back to a tab whose dock is closed (a toast, a card).
+#[test]
+fn a_restored_tick_is_sent_while_the_dock_is_closed() {
+    let mut state = two_machines();
+    open_notes(&mut state, "- [ ] one");
+    let mut busy = ClientShellInput::default();
+    state.push_endpoint_method(Method::NewsRun(Default::default()), &mut busy);
+    let request = |tick_text: &str| InfoRequest::NotesSet {
+        key: NOTES_KEY.into(),
+        text: tick_text.into(),
+        base_revision: Some("rev".into()),
+        tick: true,
+    };
+    state
+        .info_dock
+        .as_mut()
+        .unwrap()
+        .queue(request("- [x] one"), None);
+    assert!(saves(&tick_notes(&mut state, Instant::now())).is_empty());
+    switch(&mut state, &build());
+    state.info_dock.as_mut().unwrap().open_tabs.clear();
+    switch(&mut state, &LOCAL);
+    let now = Instant::now() + MINUTE;
+    let retry = now + Duration::from_millis(50);
+    let dock = state.info_dock.as_mut().unwrap();
+    assert!(dock.editor.is_none() && dock.flash.is_none());
+    dock.queue(request("- [x] one"), Some(retry));
+    assert_eq!(state.next_info_dock_deadline(now), Some(retry));
+    assert_eq!(
+        saves(&tick_notes(&mut state, retry)),
+        [(LOCAL, "- [x] one".to_owned(), Some("rev".to_owned()))]
+    );
+    // What only the open dock needs is no reason to wake.
+    let mut state = two_machines();
+    open_notes(&mut state, "page");
+    let dock = state.info_dock.as_mut().unwrap();
+    dock.open_tabs.clear();
+    dock.queue(InfoRequest::NotesGet, Some(retry));
+    assert_eq!(state.next_info_dock_deadline(now), None);
+    assert!(tick_notes(&mut state, retry).actions.is_empty());
 }
 
 #[test]
@@ -1291,6 +1599,21 @@ fn a_remote_dashboard_is_never_opened_on_this_machine() {
             assert_eq!(opened, opens || !dashboard, "{url} on {endpoint_id:?}");
             assert_eq!(state.endpoint_error.take().is_some(), !opened);
         }
+    }
+}
+
+#[test]
+fn a_remote_dashboard_is_no_link_in_the_settings() {
+    for (endpoint_id, link) in [(build(), false), (LOCAL, true)] {
+        let mut state = two_machines();
+        switch(&mut state, &endpoint_id);
+        state.coordinator.info = Some(coordinator_info());
+        state.open_settings_overlay();
+        let mut outcome = ClientShellInput::default();
+        state.select_settings_section(ClientSettingsSection::Coordinator, &mut outcome);
+        let text = frame_text(&mut state);
+        assert!(text.contains("127.0.0.1:7718"), "{text}");
+        assert_eq!(text.contains("http://127.0.0.1:7718"), link, "{text}");
     }
 }
 

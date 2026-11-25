@@ -564,7 +564,7 @@ impl ClientShellState {
     }
 
     /// The expanded `tabs` sidebar is up, so its toolbar is.
-    fn sidebar_filter_shown(&self) -> bool {
+    pub(super) fn sidebar_filter_shown(&self) -> bool {
         self.tabs_sidebar_active()
             && (!self.multi_endpoint_active() || self.machine_sidebar_shown())
     }

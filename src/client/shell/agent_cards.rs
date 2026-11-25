@@ -84,6 +84,8 @@ pub(super) struct AgentCardsState {
     /// Ids its server is not told about yet: the machine was not shown or
     /// not online (sent by `tick_machines` once it is).
     pub(super) unsent: HashSet<String>,
+    /// `unsent` is not sent again before this: the last try failed.
+    pub(super) retry_at: Option<std::time::Instant>,
 }
 
 impl AgentCardsState {
@@ -94,14 +96,35 @@ impl AgentCardsState {
     }
 
     /// The dismissals to tell the server about now; they are hidden here.
-    pub(super) fn take_unsent(&mut self) -> Vec<String> {
-        if self.unsent.is_empty() {
+    pub(super) fn take_unsent(&mut self, now: std::time::Instant) -> Vec<String> {
+        if self.unsent.is_empty() || self.retry_at.is_some_and(|at| now < at) {
             return Vec::new();
         }
+        self.retry_at = None;
         let mut ids: Vec<String> = self.unsent.drain().collect();
         ids.sort_unstable();
         self.hidden.extend(ids.iter().cloned());
         ids
+    }
+
+    /// The server of `boot_id` did not confirm these dismissals: the cards
+    /// it still lists wait again (card ids repeat across boots).
+    pub(super) fn put_back(
+        &mut self,
+        boot_id: &str,
+        ids: &[String],
+        retry_at: Option<std::time::Instant>,
+    ) {
+        if self.boot_id != boot_id {
+            return;
+        }
+        let listed = &self.notices;
+        self.unsent.extend(
+            ids.iter()
+                .filter(|id| listed.iter().any(|notice| &notice.id == *id))
+                .cloned(),
+        );
+        self.retry_at = retry_at;
     }
 }
 
@@ -523,6 +546,7 @@ impl ClientShellState {
             cards.seen.clear();
             cards.hidden.clear();
             cards.unsent.clear();
+            cards.retry_at = None;
         }
         let first = payload.initial || !same_boot;
         let fresh: Vec<AgentNoticeInfo> = if first {
