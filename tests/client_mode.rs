@@ -1233,6 +1233,21 @@ fn federated_client_starts_without_local_and_survives_its_restart() {
         Duration::from_millis(20),
         || screen_text().contains("REMOTE_STILL_SELECTED")
     ));
+    // Fork: that frame precedes the final host-effects fence, so the remote is selected only
+    // once it takes input. Losing it earlier rolls back to Local instead.
+    assert!(
+        wait_until(REMOTE_INPUT_TIMEOUT, Duration::from_millis(100), || {
+            if screen_text().contains("REMOTE_RESELECTED") {
+                return true;
+            }
+            input
+                .write_all(b"printf 'REMOTE_%s\\n' RESELECTED\r")
+                .unwrap();
+            false
+        }),
+        "reselected remote must accept input: {}",
+        screen_text()
+    );
 
     let watermark = output_len(&output);
     support::stop_spawned_herdr(&mut *remote_server.child);
