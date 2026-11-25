@@ -10,8 +10,9 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{self, Read, Write};
-use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{self, sync_channel, SyncSender, TrySendError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use interprocess::local_socket::traits::Stream as _;
@@ -19,13 +20,13 @@ use interprocess::TryClone as _;
 
 use super::link_proto::{
     bye, code, text, ApiReply, ApiRequest, BlobAck, BlobChunk, BlobName, BrowserLinkInfo,
-    BrowserLinkOpenParams, BrowserLinkReady, Bye, EnsureReply, FileReply, FileRequest, FrameError,
-    HelperFrame, HostUp, LineBuffer, LinkError, LinkReply, ServerFrame, WriteLane, BLOB_MAX_BYTES,
-    FILE_PULLS, FILE_WINDOW, LINK_FEATURES, LINK_PROTOCOL, OPS_IN_FLIGHT, PING_MS, QUEUE_BYTES,
-    READ_POLL_MS, TTL_MS,
+    BrowserLinkOpenParams, BrowserLinkReady, Bye, Ensure, EnsureReply, FileReply, FileRequest,
+    FrameError, HelperFrame, HostUp, LineBuffer, LinkError, LinkOp, LinkReply, ServerFrame,
+    WriteLane, BLOB_MAX_BYTES, FILE_PULLS, FILE_WINDOW, LINK_FEATURES, LINK_PROTOCOL,
+    OPS_IN_FLIGHT, PING_MS, QUEUE_BYTES, READ_POLL_MS, TTL_MS,
 };
 use super::session::random_hex;
-use super::BrowserError;
+use super::{unix_now, BrowserError};
 use crate::api::schema::ResponseResult;
 use crate::ipc::{is_connection_closed_error, LocalStream};
 
@@ -67,6 +68,8 @@ pub enum LinkEnd {
     Replaced,
     /// The server stops or hands off.
     Stopping,
+    /// The config turned the browser or its link off.
+    Off,
 }
 
 impl LinkEnd {
@@ -76,6 +79,7 @@ impl LinkEnd {
             LinkEnd::Protocol(why) => (bye::PROTOCOL, why.clone()),
             LinkEnd::Replaced => (bye::REPLACED, "this Mac opened a newer link".into()),
             LinkEnd::Stopping => (bye::STOPPING, "herdr stops there".into()),
+            LinkEnd::Off => (bye::DISABLED, "the browser link is off there".into()),
             LinkEnd::Lost(_) | LinkEnd::Bye(_) | LinkEnd::Silent | LinkEnd::Backlog => return None,
         };
         Some(Bye {
@@ -95,6 +99,7 @@ impl std::fmt::Display for LinkEnd {
             LinkEnd::Backlog => f.write_str("the helper does not read"),
             LinkEnd::Replaced => f.write_str("replaced"),
             LinkEnd::Stopping => f.write_str("the server stops"),
+            LinkEnd::Off => f.write_str("off by the config"),
         }
     }
 }
@@ -235,10 +240,39 @@ pub struct Link {
     pub host_id: String,
     /// The Mac's name, for texts.
     pub label: String,
+    /// Whether the Mac can run a browser, and why not.
+    pub ready: BrowserLinkReady,
+    pub detail: String,
     /// When it opened, the server's local time (`14:02`).
-    since: String,
+    pub since: String,
     features: Vec<String>,
     queue: WriteQueue,
+    /// The last ping that arrived, 0 for none (`echo` of `op` and `ensure`).
+    echo: AtomicU64,
+    /// The server's own requests on this link: their ids and what waits.
+    next_id: AtomicU64,
+    pending: Mutex<HashMap<u64, mpsc::Sender<LinkReply>>>,
+    ensure: Mutex<Option<EnsureWait>>,
+}
+
+/// The `ensure` under way: everyone who needs the browser waits for the one.
+struct EnsureWait {
+    id: u64,
+    waiting: Vec<mpsc::Sender<EnsureReply>>,
+}
+
+/// Why a call over the link has no answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallError {
+    /// The link is over: nothing was sent.
+    NotSent,
+    /// [`OPS_IN_FLIGHT`] calls or [`QUEUE_BYTES`] wait already.
+    Busy,
+    /// Larger than a line may be.
+    TooLong,
+    /// The link ended before the answer.
+    Lost,
+    Timeout,
 }
 
 impl std::fmt::Debug for Link {
@@ -267,9 +301,148 @@ impl Link {
         }
     }
 
-    /// End the link now; the first reason stays.
+    /// [`Self::answer`] for a line made by hand.
+    fn answer_line(&self, lane: WriteLane, line: String) {
+        if self.queue.push(lane, line, ANSWER_BYTES) == Err(NotQueued::Full) {
+            self.end(LinkEnd::Backlog);
+        }
+    }
+
+    /// End the link now; the first reason stays. What waits for an answer
+    /// has none.
     pub fn end(&self, end: LinkEnd) {
         self.queue.end(end);
+        lock(&self.pending).clear();
+        lock(&self.ensure).take();
+    }
+
+    fn send(&self, frame: &ServerFrame) -> Result<(), CallError> {
+        let line = frame.encode().map_err(|_| CallError::TooLong)?;
+        self.queue
+            .push(frame.lane(), line, QUEUE_BYTES)
+            .map_err(|err| match err {
+                NotQueued::Ended => CallError::NotSent,
+                NotQueued::Full => CallError::Busy,
+            })
+    }
+
+    /// One op: sent, then its answer within `wait`. Never retried.
+    pub fn call(
+        &self,
+        op: &str,
+        target: Option<&str>,
+        args: serde_json::Value,
+        activity: Option<serde_json::Value>,
+        deadline: Duration,
+        wait: Duration,
+    ) -> Result<LinkReply, CallError> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let (tx, rx) = mpsc::channel();
+        {
+            let mut pending = lock(&self.pending);
+            if pending.len() >= OPS_IN_FLIGHT {
+                return Err(CallError::Busy);
+            }
+            pending.insert(id, tx);
+        }
+        let sent = self.send(&ServerFrame::Op(LinkOp {
+            id,
+            echo: self.echo.load(Ordering::Acquire),
+            op: op.to_string(),
+            target: target.map(str::to_string),
+            args,
+            deadline_ms: deadline.as_millis() as u64,
+            activity,
+        }));
+        if let Err(err) = sent {
+            lock(&self.pending).remove(&id);
+            return Err(err);
+        }
+        match rx.recv_timeout(wait) {
+            Ok(reply) => Ok(reply),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                lock(&self.pending).remove(&id);
+                Err(CallError::Timeout)
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(CallError::Lost),
+        }
+    }
+
+    /// Ask the Mac for its browser; whoever asks meanwhile waits for the
+    /// same answer.
+    pub fn ensure(&self, reason: &str, wait: Duration) -> Result<EnsureReply, CallError> {
+        let (tx, rx) = mpsc::channel();
+        let id = {
+            let mut under_way = lock(&self.ensure);
+            match under_way.as_mut() {
+                Some(ensure) => {
+                    ensure.waiting.push(tx);
+                    ensure.id
+                }
+                None => {
+                    let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+                    *under_way = Some(EnsureWait {
+                        id,
+                        waiting: vec![tx],
+                    });
+                    drop(under_way);
+                    let sent = self.send(&ServerFrame::Ensure(Ensure {
+                        id,
+                        echo: self.echo.load(Ordering::Acquire),
+                        reason: clip_text(reason),
+                    }));
+                    if let Err(err) = sent {
+                        self.forget_ensure(id);
+                        return Err(err);
+                    }
+                    id
+                }
+            }
+        };
+        match rx.recv_timeout(wait) {
+            Ok(reply) => Ok(reply),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                self.forget_ensure(id);
+                Err(CallError::Timeout)
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) if self.ended().is_some() => {
+                Err(CallError::Lost)
+            }
+            // the one that asked gave up on it
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(CallError::Timeout),
+        }
+    }
+
+    fn forget_ensure(&self, id: u64) {
+        let mut under_way = lock(&self.ensure);
+        if under_way.as_ref().is_some_and(|ensure| ensure.id == id) {
+            *under_way = None;
+        }
+    }
+
+    /// A `re`: to the call that waits for it, if one still does.
+    fn answered(&self, reply: LinkReply) {
+        let waiting = lock(&self.pending).remove(&reply.id);
+        if let Some(waiting) = waiting {
+            let _ = waiting.send(reply);
+        }
+    }
+
+    fn ensured(&self, reply: EnsureReply) {
+        let mut under_way = lock(&self.ensure);
+        if under_way
+            .as_ref()
+            .is_none_or(|ensure| ensure.id != reply.id)
+        {
+            return;
+        }
+        for waiting in under_way
+            .take()
+            .into_iter()
+            .flat_map(|ensure| ensure.waiting)
+        {
+            let _ = waiting.send(reply.clone());
+        }
     }
 
     /// Why it ended, once it did.
@@ -297,8 +470,12 @@ pub struct OpenFacts {
     pub enabled: bool,
     /// [`LINK_SUPPORTED`].
     pub supported: bool,
-    /// A companion on this machine holds the browser's lease.
+    /// `[browser] link = "off"`.
+    pub off: bool,
+    /// A companion on this machine holds the browser's lease, or is about to.
     pub local_host: bool,
+    /// Another Mac's dropped link still holds it: its name, since when.
+    pub held: Option<(String, String)>,
     /// This machine's name.
     pub machine: String,
     /// The local time now (`14:02`).
@@ -309,6 +486,8 @@ pub struct OpenFacts {
 struct SlotState {
     epoch: u64,
     live: Option<Arc<Link>>,
+    /// The Mac of the last link that ended, and when.
+    last: Option<(String, u64)>,
 }
 
 /// The server's one link.
@@ -329,7 +508,7 @@ impl Default for LinkSlot {
 impl LinkSlot {
     /// `browser.link_open`: refuse it, or make it the link (decided and
     /// stored under one lock). The same Mac's older link ends.
-    fn open(
+    pub(super) fn open(
         &self,
         params: &BrowserLinkOpenParams,
         facts: &OpenFacts,
@@ -341,6 +520,12 @@ impl LinkSlot {
             return Err(BrowserError::new(
                 code::LINK_DISABLED,
                 "this herdr takes no browser link",
+            ));
+        }
+        if facts.off {
+            return Err(BrowserError::new(
+                code::LINK_DISABLED,
+                "the browser link is off ([browser] link = \"off\")",
             ));
         }
         if params.link_protocol != LINK_PROTOCOL {
@@ -366,6 +551,12 @@ impl LinkSlot {
                 local_host_text(&facts.machine),
             ));
         }
+        if let Some((label, since)) = &facts.held {
+            return Err(BrowserError::new(
+                code::LINK_IN_USE,
+                text::link_in_use(&facts.machine, label, since),
+            ));
+        }
         if let Some(live) = state.live.as_ref() {
             if live.host_id != host_id {
                 return Err(BrowserError::new(
@@ -376,7 +567,7 @@ impl LinkSlot {
             live.end(LinkEnd::Replaced);
         }
         state.epoch += 1;
-        let label = clip(&params.label);
+        let label = clip_text(&params.label);
         let link = Arc::new(Link {
             link_id: format!("K{}", random_hex(24)),
             epoch: state.epoch,
@@ -386,6 +577,8 @@ impl LinkSlot {
             } else {
                 label
             },
+            ready: params.ready,
+            detail: clip_text(params.detail.as_deref().unwrap_or_default()),
             since: facts.now.clone(),
             features: LINK_FEATURES
                 .iter()
@@ -393,13 +586,17 @@ impl LinkSlot {
                 .map(|feature| (*feature).to_string())
                 .collect(),
             queue: WriteQueue::default(),
+            echo: AtomicU64::new(0),
+            next_id: AtomicU64::new(1),
+            pending: Mutex::default(),
+            ensure: Mutex::default(),
         });
         state.live = Some(Arc::clone(&link));
         Ok(link)
     }
 
     /// `link` is over: the slot is free, unless a newer link has it.
-    fn close(&self, link: &Link) {
+    pub(crate) fn close(&self, link: &Link) {
         let mut state = lock(&self.state);
         if state
             .live
@@ -407,7 +604,26 @@ impl LinkSlot {
             .is_some_and(|live| live.epoch == link.epoch)
         {
             state.live = None;
+            state.last = Some((link.label.clone(), unix_now()));
         }
+    }
+
+    /// The link, while there is one.
+    pub fn live(&self) -> Option<Arc<Link>> {
+        lock(&self.state).live.clone()
+    }
+
+    /// Whether `link` is the live one.
+    pub fn is_live(&self, link: &Link) -> bool {
+        lock(&self.state)
+            .live
+            .as_ref()
+            .is_some_and(|live| live.epoch == link.epoch)
+    }
+
+    /// The last Mac and when its link ended, while there is none.
+    pub fn last(&self) -> Option<(String, u64)> {
+        lock(&self.state).last.clone()
     }
 }
 
@@ -417,7 +633,7 @@ fn local_host_text(machine: &str) -> String {
 }
 
 /// A name from the helper, for texts: one line, at most [`LABEL_MAX_CHARS`].
-fn clip(text: &str) -> String {
+pub(super) fn clip_text(text: &str) -> String {
     text.trim()
         .chars()
         .filter(|c| !c.is_control())
@@ -449,8 +665,8 @@ fn local_hhmm() -> String {
 pub trait LinkHandler: Send + Sync {
     fn host_up(&self, _link: &Arc<Link>, _up: HostUp) {}
     fn host_down(&self, _link: &Arc<Link>, _reason: &str) {}
-    fn ensure_reply(&self, _link: &Arc<Link>, _reply: EnsureReply) {}
-    fn reply(&self, _link: &Arc<Link>, _reply: LinkReply) {}
+    /// A ping arrived: the Mac is there.
+    fn heard(&self, _link: &Arc<Link>) {}
     fn event(&self, _link: &Arc<Link>, _event: serde_json::Value) {}
     /// A chunk in its order; it is acknowledged when this returns.
     fn blob(&self, _link: &Arc<Link>, _chunk: &BlobChunk) {}
@@ -466,7 +682,7 @@ pub trait LinkHandler: Send + Sync {
                 code::INVALID_REQUEST,
                 format!(
                     "{} is not available over the browser link",
-                    clip(&request.method)
+                    clip_text(&request.method)
                 ),
             )),
         }));
@@ -475,9 +691,11 @@ pub trait LinkHandler: Send + Sync {
     fn closed(&self, _link: &Arc<Link>, _end: &LinkEnd) {}
 }
 
-/// No browser behind the link yet: nothing is served.
+/// Tests: no browser behind the link, nothing is served.
+#[cfg(test)]
 struct Unserved;
 
+#[cfg(test)]
 impl LinkHandler for Unserved {}
 
 fn no_file(id: u64) -> FileReply {
@@ -616,13 +834,13 @@ impl LinkReader {
             if let Some(end) = self.link.ended() {
                 return Some(end);
             }
-            let frame = match self.lines.next_line() {
-                Ok(Some(line)) => HelperFrame::decode(&line),
+            let (frame, line) = match self.lines.next_line() {
+                Ok(Some(line)) => (HelperFrame::decode(&line), line),
                 Ok(None) => return None,
-                Err(err) => Err(err),
+                Err(err) => (Err(err), Vec::new()),
             };
             let end = match frame {
-                Ok(frame) => self.frame(frame),
+                Ok(frame) => self.frame(frame, &line),
                 Err(err) => Some(LinkEnd::Protocol(protocol_text(&err))),
             };
             if end.is_some() {
@@ -631,16 +849,21 @@ impl LinkReader {
         }
     }
 
-    fn frame(&mut self, frame: HelperFrame) -> Option<LinkEnd> {
+    /// One frame; `line` is what it was read from.
+    fn frame(&mut self, frame: HelperFrame, line: &[u8]) -> Option<LinkEnd> {
         let link = &self.link;
         match frame {
-            HelperFrame::Ping { n } => link.answer(&ServerFrame::Pong { n }),
-            HelperFrame::EnsureRe(reply) => self.handler.ensure_reply(link, reply),
+            HelperFrame::Ping { n } => {
+                link.echo.store(n, Ordering::Release);
+                link.answer(&ServerFrame::Pong { n });
+                self.handler.heard(link);
+            }
+            HelperFrame::EnsureRe(reply) => link.ensured(reply),
             HelperFrame::HostUp(up) => self.handler.host_up(link, up),
             HelperFrame::HostDown { reason } => self.handler.host_down(link, &reason),
             HelperFrame::Re(reply) => {
                 self.blobs.answered(reply.id);
-                self.handler.reply(link, reply);
+                link.answered(reply);
             }
             HelperFrame::Ev { event } => self.handler.event(link, event),
             HelperFrame::Blob(chunk) => {
@@ -651,11 +874,23 @@ impl LinkReader {
                     }
                     self.handler.blob(link, &chunk);
                 }
-                link.answer(&ServerFrame::BlobAck(BlobAck {
-                    op: chunk.op,
-                    name: chunk.name,
-                    seq: chunk.seq,
-                }));
+                if chunk.name == BlobName::Unknown {
+                    // its own name back, as it came
+                    let name = serde_json::from_slice::<serde_json::Value>(line)
+                        .ok()
+                        .and_then(|frame| frame.get("name").cloned())
+                        .unwrap_or_default();
+                    let ack = serde_json::json!({
+                        "t": "blob_ack", "op": chunk.op, "name": name, "seq": chunk.seq,
+                    });
+                    link.answer_line(WriteLane::Work, format!("{ack}\n"));
+                } else {
+                    link.answer(&ServerFrame::BlobAck(BlobAck {
+                        op: chunk.op,
+                        name: chunk.name,
+                        seq: chunk.seq,
+                    }));
+                }
             }
             HelperFrame::File(request) => return self.file(request),
             HelperFrame::Api(request) => self.handler.api(link, request),
@@ -705,7 +940,7 @@ impl LinkReader {
 }
 
 fn protocol_text(err: &FrameError) -> String {
-    clip(&err.to_string())
+    clip_text(&err.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -745,20 +980,13 @@ fn write_line(sink: &mut impl Write, mut bytes: &[u8], link: &Link) -> io::Resul
     sink.flush()
 }
 
-/// The server process's link.
-fn slot() -> &'static LinkSlot {
-    static SLOT: OnceLock<LinkSlot> = OnceLock::new();
-    SLOT.get_or_init(LinkSlot::default)
-}
-
+/// What the server knows about a `browser.link_open` before the hub looks.
 fn open_facts() -> OpenFacts {
-    let hub = super::hub();
     OpenFacts {
-        enabled: hub.config().enabled,
         supported: LINK_SUPPORTED,
-        local_host: hub.companion_live(),
         machine: machine_name(),
         now: local_hhmm(),
+        ..OpenFacts::default()
     }
 }
 
@@ -770,13 +998,14 @@ pub fn serve(
     params: &BrowserLinkOpenParams,
     stopping: impl Fn() -> bool,
 ) -> io::Result<&'static str> {
+    let hub = super::hub();
     serve_with(
         stream,
         request_id,
         params,
-        slot(),
-        &open_facts(),
-        Arc::new(Unserved),
+        hub.link_slot(),
+        hub.link_open(params, open_facts()),
+        Arc::new(hub.clone()),
         stopping,
     )
 }
@@ -786,20 +1015,20 @@ fn serve_with(
     request_id: &str,
     params: &BrowserLinkOpenParams,
     slot: &LinkSlot,
-    facts: &OpenFacts,
+    opened: Result<Arc<Link>, BrowserError>,
     handler: Arc<dyn LinkHandler>,
     stopping: impl Fn() -> bool,
 ) -> io::Result<&'static str> {
-    let link = match slot.open(params, facts) {
+    let link = match opened {
         Ok(link) => link,
         Err(err) => {
-            tracing::info!(event = "browser.link.refused", code = %err.code, label = %clip(&params.label), "browser link refused");
+            tracing::info!(event = "browser.link.refused", code = %err.code, label = %clip_text(&params.label), "browser link refused");
             let line =
                 super::serve::encode_error(request_id.to_string(), err.code(), err.message());
             return write_answer(&mut stream, &line).map(|()| "error");
         }
     };
-    tracing::info!(event = "browser.link.open", epoch = link.epoch, label = %link.label, herdr = %clip(&params.herdr), ready = ready_text(params.ready), "browser link open");
+    tracing::info!(event = "browser.link.open", epoch = link.epoch, label = %link.label, herdr = %clip_text(&params.herdr), ready = ready_text(params.ready), "browser link open");
     // also frees the slot should a handler panic
     let live = LiveLink {
         slot,
@@ -885,4 +1114,4 @@ fn ready_text(ready: BrowserLinkReady) -> &'static str {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

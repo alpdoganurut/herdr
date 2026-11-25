@@ -37,12 +37,15 @@ use super::companion_app::SidecarProblem;
 #[path = "companion_host.rs"]
 mod companion_host;
 use companion_host::ShowRequest;
+// Fork (remote browser): the linked browser, a child module like it.
+#[path = "link_hub.rs"]
+mod link_hub;
 /// Tests: what the lease answer advertises.
 #[cfg(test)]
 pub use companion_host::SERVER_FEATURES;
 pub use companion_host::{
-    is_companion, lease_unknown, view_cycle_key_labels, window_disabled, COMPANION_PROFILE,
-    REPORT_MAX_EVENTS,
+    host_unavailable, is_companion, lease_unknown, view_cycle_key_labels, window_disabled,
+    COMPANION_PROFILE, REPORT_MAX_EVENTS,
 };
 
 /// Grace the hub adds to the sidecar's own deadline before giving up on a reply.
@@ -148,6 +151,9 @@ struct Inner {
     setup_env_override: Mutex<Option<SetupEnv>>,
     /// Fork (companion browser): the registered browser host's lease.
     companion_host: Mutex<Option<companion_host::CompanionLease>>,
+    /// Fork (remote browser): the link to the Mac that runs this server's
+    /// browser; its calls and ids are its own, never `pending`'s.
+    link: super::link::LinkSlot,
     /// Fork (companion browser): page errors waiting for their agents.
     page_errors: Mutex<super::page_errors::PageErrorQueue>,
     /// Fork (companion browser): the tabs `show` opened (HTML views).
@@ -332,6 +338,7 @@ impl BrowserHub {
                 setup: Mutex::new(SetupState::default()),
                 setup_env_override: Mutex::new(None),
                 companion_host: Mutex::new(None),
+                link: super::link::LinkSlot::default(),
                 page_errors: Mutex::new(Default::default()),
                 html_views: Mutex::new(HashSet::new()),
                 launcher: super::companion_app::Launcher::new(),
@@ -368,6 +375,12 @@ impl BrowserHub {
         let pin_now = config.show_activity && config.pin_dashboard;
         if pin_before != pin_now {
             self.push_dashboard(pin_now);
+        }
+        // Fork (remote browser): a link the config no longer takes ends.
+        if !config.enabled || config.link_off() {
+            if let Some(link) = self.inner.link.live() {
+                link.end(super::link::LinkEnd::Off);
+            }
         }
     }
 
@@ -504,7 +517,10 @@ impl BrowserHub {
     /// seen again in a call is armed again. Never blocks the caller.
     pub fn release_panes(&self, panes: Vec<String>) {
         // No sidecar, nothing to tidy yet: asked again once it runs.
-        if panes.is_empty() || self.inner.host.lock().unwrap().is_none() {
+        // Fork (remote browser): nor a linked browser.
+        let sidecar = self.inner.host.lock().unwrap().is_some();
+        let linked = self.link_up();
+        if panes.is_empty() || (!sidecar && linked.is_none()) {
             return;
         }
         let fresh: Vec<String> = {
@@ -535,13 +551,21 @@ impl BrowserHub {
         let _ = std::thread::Builder::new()
             .name("herdr-browser-release".into())
             .spawn(move || {
-                let outcome = hub.request(
-                    "release",
-                    None,
-                    None,
-                    json!({ "keys": fresh }),
-                    Duration::from_secs(5),
-                );
+                // Fork (remote browser): over the link when the Mac's
+                // browser is the one that has the groups.
+                let local = || {
+                    hub.request(
+                        "release",
+                        None,
+                        None,
+                        json!({ "keys": fresh }),
+                        Duration::from_secs(5),
+                    )
+                };
+                let outcome = match &linked {
+                    Some(link) => hub.release_over_link(link, &fresh),
+                    None => local(),
+                };
                 let (failed, reason): (Vec<String>, String) = match &outcome {
                     Ok(reply) => (
                         reply.result["failed"]
@@ -1442,7 +1466,13 @@ impl BrowserHub {
         // Fork (companion launcher): a page-creating op that names the
         // companion (`--profile companion`, a `companion:` tab) starts it on
         // demand too, like one routed there by `[browser] host`.
-        if is_companion(&profile) && Self::op_follows_host(&params.op) && !self.companion_live() {
+        // Fork (remote browser): a linked browser is started by any op, on
+        // the Mac; without a link, as before.
+        if is_companion(&profile)
+            && !self.ensure_link(params.op.name())?
+            && Self::op_follows_host(&params.op)
+            && !self.companion_live()
+        {
             self.ensure_companion(self.companion_register_wait(), actor.is_user())?;
         }
         self.ensure_running(&profile)?;
@@ -3554,6 +3584,12 @@ impl BrowserHub {
         deadline: Duration,
     ) -> Result<HostReply, BrowserError> {
         let _driving = self.agent_op_guard(op, profile, target);
+        // Fork (remote browser): the companion's ops go over the link.
+        if profile.is_some_and(is_companion) {
+            if let Some(answer) = self.request_over_link(op, target, &args, deadline) {
+                return answer;
+            }
+        }
         let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = mpsc::channel();
         self.inner.pending.lock().unwrap().insert(id, tx);

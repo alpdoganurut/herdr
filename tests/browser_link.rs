@@ -27,6 +27,14 @@ struct Server {
 
 impl Server {
     fn start(config: &str) -> Self {
+        let server = Self::spawn(config);
+        // the socket answers before the config is read; this call does not
+        assert!(server.request("browser.get", json!({}))["result"].is_object());
+        server
+    }
+
+    /// The server as soon as its socket answers.
+    fn spawn(config: &str) -> Self {
         static COUNT: AtomicU32 = AtomicU32::new(0);
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -85,15 +93,12 @@ impl Server {
         let child = pair.slave.spawn_command(cmd).unwrap();
         support::register_spawned_herdr_pid(child.process_id());
         support::wait_for_socket(&socket, WAIT);
-        let server = Self {
+        Self {
             base,
             socket,
             child,
             _master: pair.master,
-        };
-        // the socket answers before the config is read; this call does not
-        assert!(server.request("browser.get", json!({}))["result"].is_object());
-        server
+        }
     }
 
     fn connect(&self) -> Conn {
@@ -350,6 +355,11 @@ fn nothing_is_served_before_there_is_a_browser() {
         link.read(),
         json!({ "t": "blob_ack", "op": 1, "name": "inline", "seq": 0 })
     );
+    link.send(&json!({ "t": "blob", "op": 2, "name": "Thumb-1", "seq": 0, "data": "", "last": true, "size": 0 }));
+    assert_eq!(
+        link.read(),
+        json!({ "t": "blob_ack", "op": 2, "name": "Thumb-1", "seq": 0 })
+    );
     link.ping(1);
 }
 
@@ -373,6 +383,34 @@ fn an_open_is_refused_by_its_parameters() {
 
     let off = Server::start("[browser]\nenabled = false\n");
     assert_eq!(off.refusal(mac("mac-a", "mbp")).0, "browser_disabled");
+}
+
+#[test]
+fn a_link_taken_before_the_config_arrives_ends_when_it_does() {
+    for config in [
+        "[browser]\nenabled = false\n",
+        "[browser]\nlink = \"off\"\n",
+    ] {
+        let server = Server::spawn(config);
+        // at once: before or after the server read its config
+        let (mut conn, answer) = server.open(mac("mac-a", "mbp"));
+        if answer["result"]["type"] == "browser_link_opened" {
+            assert_eq!(conn.bye(), "disabled", "{config}");
+        } else {
+            assert!(conn.at_end());
+            let code = answer["error"]["code"].as_str().unwrap().to_string();
+            assert!(
+                ["browser_disabled", "link_disabled"].contains(&code.as_str()),
+                "{answer}"
+            );
+        }
+        let expected = if config.contains("enabled") {
+            "browser_disabled"
+        } else {
+            "link_disabled"
+        };
+        assert_eq!(server.refusal(mac("mac-a", "mbp")).0, expected);
+    }
 }
 
 #[test]

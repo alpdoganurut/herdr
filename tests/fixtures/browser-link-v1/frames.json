@@ -51,7 +51,10 @@
     {"t": "api_re", "id": 7, "ok": true, "result": {"type": "browser_host_state", "state": {"tabs": []}}},
     {"t": "api_re", "id": 8, "ok": false, "error": {"code": "lease_unknown", "message": "no live companion lease with that id; register again"}},
     {"t": "event", "event": {"event": "tab.focused", "data": {"tab_id": "w2:t3"}}},
-    {"t": "bye", "code": "replaced", "message": "mbp opened a newer link"}
+    {"t": "bye", "code": "replaced", "message": "mbp opened a newer link"},
+    {"t": "bye", "code": "stopping", "message": "herdr stops there"},
+    {"t": "bye", "code": "disabled", "message": "the browser link is off there"},
+    {"t": "bye", "code": "protocol", "message": "not a link frame: no JSON object"}
   ],
   "helper_ignored": [
     {"t": "op", "id": 1, "echo": 1, "op": "tabs", "deadline_ms": 1},

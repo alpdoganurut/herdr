@@ -433,6 +433,9 @@ pub mod bye {
     pub const STOPPING: &str = "stopping";
     /// A: the helper ends (the last client quit).
     pub const QUIT: &str = "quit";
+    /// B: the config turned the browser or its link off; reopening gets
+    /// `browser_disabled` or `link_disabled` until it is on again.
+    pub const DISABLED: &str = "disabled";
 }
 
 /// A frame the helper sends (A→B).
@@ -2159,6 +2162,25 @@ mod tests {
         ] {
             assert_eq!(text::ago(seconds), want);
         }
+    }
+
+    #[test]
+    fn every_goodbye_has_a_fixture() {
+        let frames = fixture(FRAMES);
+        let said: BTreeSet<String> = ["helper", "server"]
+            .iter()
+            .flat_map(|side| list(&frames, side))
+            .filter(|value| value["t"] == "bye")
+            .map(|value| value["code"].as_str().unwrap_or_default().to_string())
+            .collect();
+        let codes = [
+            bye::PROTOCOL,
+            bye::REPLACED,
+            bye::STOPPING,
+            bye::QUIT,
+            bye::DISABLED,
+        ];
+        assert_eq!(BTreeSet::from(codes.map(str::to_string)), said);
     }
 
     #[test]
