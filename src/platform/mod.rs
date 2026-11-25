@@ -4,6 +4,8 @@
 //! modules don't scatter `#[cfg]` branches through product logic.
 
 #[cfg(unix)]
+pub(crate) mod network;
+#[cfg(unix)]
 pub(crate) mod ssh_agent;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
