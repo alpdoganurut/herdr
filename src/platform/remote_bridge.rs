@@ -7,7 +7,7 @@ use std::time::Duration;
 
 pub(crate) const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
-fn now() -> io::Result<u64> {
+pub(crate) fn now() -> io::Result<u64> {
     let mut time = libc::timespec {
         tv_sec: 0,
         tv_nsec: 0,
