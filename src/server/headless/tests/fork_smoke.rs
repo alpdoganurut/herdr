@@ -1735,8 +1735,8 @@ fn voice_payloads(
     control: &std::sync::mpsc::Receiver<Vec<u8>>,
 ) -> Vec<crate::server::headless::voice::VoicePayload> {
     let mut payloads = Vec::new();
-    while let Ok(bytes) = control.try_recv() {
-        if let ServerMessage::EndpointControl { kind, data } = read_server_message(bytes) {
+    for message in delivered_control_messages(control) {
+        if let ServerMessage::EndpointControl { kind, data } = message {
             if kind == crate::server::headless::voice::VOICE_KIND {
                 payloads.push(
                     crate::server::headless::voice::VoicePayload::decode(&data)
@@ -1817,8 +1817,8 @@ async fn fork_smoke_voice_mode_reaches_every_client_keyed_like_the_agent_row() {
 
 fn agent_times_payloads(control: &std::sync::mpsc::Receiver<Vec<u8>>) -> Vec<(String, String)> {
     let mut payloads = Vec::new();
-    while let Ok(bytes) = control.try_recv() {
-        if let ServerMessage::EndpointControl { kind, data } = read_server_message(bytes) {
+    for message in delivered_control_messages(control) {
+        if let ServerMessage::EndpointControl { kind, data } = message {
             if kind == crate::server::headless::agent_times::AGENT_TIMES_KIND {
                 payloads.push((kind, data));
             }
@@ -1943,8 +1943,8 @@ fn tab_pins_payloads(
     control: &std::sync::mpsc::Receiver<Vec<u8>>,
 ) -> Vec<crate::server::headless::tab_pins::TabPinsPayload> {
     let mut payloads = Vec::new();
-    while let Ok(bytes) = control.try_recv() {
-        if let ServerMessage::EndpointControl { kind, data } = read_server_message(bytes) {
+    for message in delivered_control_messages(control) {
+        if let ServerMessage::EndpointControl { kind, data } = message {
             if kind == crate::server::headless::tab_pins::TAB_PINS_KIND {
                 payloads.push(
                     crate::server::headless::tab_pins::TabPinsPayload::decode(&data)
@@ -2231,8 +2231,8 @@ fn agent_context_payloads(
     control: &std::sync::mpsc::Receiver<Vec<u8>>,
 ) -> Vec<crate::server::headless::agent_context::AgentContextPayload> {
     let mut payloads = Vec::new();
-    while let Ok(bytes) = control.try_recv() {
-        if let ServerMessage::EndpointControl { kind, data } = read_server_message(bytes) {
+    for message in delivered_control_messages(control) {
+        if let ServerMessage::EndpointControl { kind, data } = message {
             if kind == crate::server::headless::agent_context::AGENT_CONTEXT_KIND {
                 let crate::client::endpoint::EndpointControlMessage::AgentContext(payload) =
                     crate::client::endpoint::decode_endpoint_control(&kind, &data)
@@ -3157,7 +3157,7 @@ async fn fork_smoke_a_relaunch_that_never_starts_toasts_the_shell() {
     let probe_at = resuming.probe_at.expect("typed into the shell: probed");
     assert!(probe_at < resuming.detect_by);
     assert_eq!(server.flush_relaunch_failure_notices(), 0, "settling");
-    while control.try_recv().is_ok() {}
+    let _ = delivered_control_messages(&control);
 
     assert!(server.app.start_pending_agent_restarts(probe_at));
     assert!(server.app.state.terminals[&terminal_id]
@@ -3470,8 +3470,8 @@ async fn fork_smoke_a_placement_action_reaches_only_its_client_once() {
     server.render_and_stream();
     let actions = |control: &std::sync::mpsc::Receiver<Vec<u8>>| {
         let mut payloads = Vec::new();
-        while let Ok(bytes) = control.try_recv() {
-            if let ServerMessage::EndpointControl { kind, data } = read_server_message(bytes) {
+        for message in delivered_control_messages(control) {
+            if let ServerMessage::EndpointControl { kind, data } = message {
                 if kind == PLACEMENT_ACTION_KIND {
                     payloads.push(PlacementActionPayload::decode(&data).expect("decodes"));
                 }
@@ -3564,8 +3564,8 @@ async fn fork_smoke_a_view_cycle_reaches_the_covered_client_else_the_foreground_
     server.render_and_stream();
     let cycles = |control: &std::sync::mpsc::Receiver<Vec<u8>>| {
         let mut payloads = Vec::new();
-        while let Ok(bytes) = control.try_recv() {
-            if let ServerMessage::EndpointControl { kind, data } = read_server_message(bytes) {
+        for message in delivered_control_messages(control) {
+            if let ServerMessage::EndpointControl { kind, data } = message {
                 if kind == VIEW_CYCLE_KIND {
                     payloads.push(ViewCyclePayload::decode(&data).expect("decodes"));
                 }

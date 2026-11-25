@@ -1222,6 +1222,18 @@ fn install_shared_view_test_runtime(server: &mut HeadlessServer) -> crate::layou
     pane_id
 }
 
+/// Every message the test writer delivered to a client's control stream,
+/// once it has been quiet for a while. The writer forwards from its own drain
+/// thread (`ClientWriter::test_channel`), so a `try_recv` right after a
+/// render pass can run before that pass's messages arrive.
+fn delivered_control_messages(control: &std::sync::mpsc::Receiver<Vec<u8>>) -> Vec<ServerMessage> {
+    let mut messages = Vec::new();
+    while let Ok(bytes) = control.recv_timeout(Duration::from_millis(100)) {
+        messages.push(read_server_message(bytes));
+    }
+    messages
+}
+
 fn connect_test_shell(
     server: &mut HeadlessServer,
     client_id: u64,

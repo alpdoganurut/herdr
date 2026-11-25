@@ -200,8 +200,8 @@ fn notes_reveal_payloads(
     control: &std::sync::mpsc::Receiver<Vec<u8>>,
 ) -> Vec<crate::server::headless::notes_reveal::NotesRevealPayload> {
     let mut payloads = Vec::new();
-    while let Ok(bytes) = control.try_recv() {
-        if let ServerMessage::EndpointControl { kind, data } = read_server_message(bytes) {
+    for message in delivered_control_messages(control) {
+        if let ServerMessage::EndpointControl { kind, data } = message {
             if kind == crate::server::headless::notes_reveal::NOTES_REVEAL_KIND {
                 payloads.push(
                     crate::server::headless::notes_reveal::NotesRevealPayload::decode(&data)

@@ -76,8 +76,8 @@ fn public_api(server: &mut HeadlessServer, method: Method) -> serde_json::Value 
 /// Every team payload in the control stream so far, in order.
 fn team_payloads(control: &std::sync::mpsc::Receiver<Vec<u8>>) -> Vec<TeamsPayload> {
     let mut payloads = Vec::new();
-    while let Ok(bytes) = control.try_recv() {
-        if let ServerMessage::EndpointControl { kind, data } = read_server_message(bytes) {
+    for message in delivered_control_messages(control) {
+        if let ServerMessage::EndpointControl { kind, data } = message {
             if kind == TEAMS_KIND {
                 payloads.push(TeamsPayload::decode(&data).expect("payload decodes"));
             }

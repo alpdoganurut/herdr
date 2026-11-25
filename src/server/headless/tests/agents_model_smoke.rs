@@ -120,7 +120,7 @@ async fn fork_smoke_agents_set_meta_from_a_client_reaches_the_team_push() {
     let (mut server, _input, panes) = crew_server();
     let (control, _render) = connect_test_shell(&mut server, 61, 80, 23);
     server.render_and_stream();
-    while control.try_recv().is_ok() {}
+    let _ = delivered_control_messages(&control);
     let fixer = public(&server, panes[1]);
     let result = client_api(
         &mut server,
@@ -135,8 +135,8 @@ async fn fork_smoke_agents_set_meta_from_a_client_reaches_the_team_push() {
     assert_eq!(result["result"]["meta"]["role"], "fixer", "{result}");
     server.render_and_stream();
     let mut roles = Vec::new();
-    while let Ok(bytes) = control.try_recv() {
-        if let ServerMessage::EndpointControl { kind, data } = read_server_message(bytes) {
+    for message in delivered_control_messages(&control) {
+        if let ServerMessage::EndpointControl { kind, data } = message {
             if kind == TEAMS_KIND {
                 let payload = TeamsPayload::decode(&data).unwrap();
                 roles.extend(
@@ -165,7 +165,7 @@ async fn fork_smoke_agents_mute_of_a_teammate_tab_reaches_the_mutes_push() {
     server.app.agents_model.dir = Some(dir.clone());
     let (control, _render) = connect_test_shell(&mut server, 63, 80, 23);
     server.render_and_stream();
-    while control.try_recv().is_ok() {}
+    let _ = delivered_control_messages(&control);
     let (lead, fixer) = (public(&server, panes[0]), public(&server, panes[1]));
     let fixer_tab = server.app.public_tab_id(1, 1).unwrap();
     let result = public_api(
