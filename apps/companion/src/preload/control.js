@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld('__herdrCompanion', {
   paint: (args) => call('paint', args), // {view_id, ms}: a hidden view paints for a capture (ms 0: let go)
   close: (viewId) => call('close', viewId),
   show: (args) => call('show', args),
+  showRemote: (args) => call('showRemote', args), // a remote companion's: {tab_id, opened_by, token, rel, focus, title}
   views: () => call('views'),
   dialogs: () => call('dialogs'), // {seq, dialogs: [{id, view_id, target_id, type, message, default_value, queued}]}
   dialog: (args) => call('dialog', args), // {view_id, id?, accept, text?}: answers the view's shown dialog

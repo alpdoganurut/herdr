@@ -89,6 +89,10 @@ pub const COMPANION_ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../apps/companion/src/popups.js"),
     ),
     (
+        "src/remote-rules.js",
+        include_bytes!("../../apps/companion/src/remote-rules.js"),
+    ),
+    (
         "src/remote.js",
         include_bytes!("../../apps/companion/src/remote.js"),
     ),

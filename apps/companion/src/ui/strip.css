@@ -42,6 +42,8 @@ body.noinset #bar { padding-left: 8px; }
 .pill .chev { width: 12px; height: 12px; stroke-width: 1.75; opacity: .8; }
 .pill:hover { color: var(--ink); box-shadow: inset 0 0 0 1px var(--rule); }
 #count[hidden] + .sep { display: none; }
+/* the machine a remote companion's pages are on: first, always whole enough to read */
+#machine { display: inline-block; height: 18px; line-height: 18px; max-width: 180px; padding: 0 8px; border-radius: 9px; font-size: 10.5px; font-weight: 600; color: var(--gold); background: var(--gold-tint); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .sep { width: 1px; height: 12px; background: var(--rule); margin: 0 2px; }
 .grow { flex: 1 0 0 !important; display: none; }
 .break { display: none; }
@@ -118,6 +120,7 @@ body.docked #bar { padding-left: 8px; -webkit-app-region: no-drag; }
 #bar.narrow { flex-wrap: wrap; padding-top: 1px; padding-bottom: 1px; }
 #bar.narrow > * { height: 26px; }
 #bar.narrow > .sep { height: 12px; }
+#bar.narrow > #machine { height: 18px; }
 #bar.narrow > #count { order: 1; height: 18px; }
 #bar.narrow > #countsep { order: 2; }
 #bar.narrow > #tabs { order: 3; }

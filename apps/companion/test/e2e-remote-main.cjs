@@ -51,6 +51,7 @@ const SES = { default: () => session.defaultSession, web: () => session.fromPart
 const ses = (n) => (SES[n] ? SES[n]() : session.fromPartition(n));
 const outcome = (p) => Promise.race([p, new Promise((r) => setTimeout(() => r('timeout'), 4000))]);
 const ops = {
+  titles: () => BrowserWindow.getAllWindows().map((w) => w.getTitle()),
   switches: () => Object.fromEntries(['disable-quic', 'host-resolver-rules', 'proxy-server', 'proxy-bypass-list'].map((k) => [k, app.commandLine.hasSwitch(k) ? app.commandLine.getSwitchValue(k) : null])),
   contents: () =>
     webContents.getAllWebContents().map((wc) => ({

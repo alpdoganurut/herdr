@@ -3,7 +3,7 @@
 // that must never be reached. Hidden: one Electron per scenario, each with a hard timer
 // (e2e-remote-main.cjs), a fresh profile, no clipboard, no download.
 //
-// Run: node test/e2e-remote-client.mjs [main files down restart two bad local]
+// Run: node test/e2e-remote-client.mjs [main files show link labels down restart two bad local]
 //   E2E_TMP            where the run directories go (default: the system's)
 //   ELECTRON_OVERRIDE_DIST_PATH  another Electron (electron's own variable)
 import { spawn, execFileSync } from 'node:child_process';
@@ -23,6 +23,7 @@ import { reapOnExit, awaitExit } from './e2e-reap.mjs';
 const require = createRequire(import.meta.url);
 const electronBin = require('electron');
 const { chromium } = require('playwright-core');
+const { isFileRel } = require('../src/remote-rules.js');
 const here = path.dirname(fileURLToPath(import.meta.url));
 const tmpRoot = process.env.E2E_TMP || os.tmpdir();
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -168,6 +169,61 @@ async function startProxy(log, ctx, secretRef, port = 0) {
   };
 }
 
+// ---------- B's files and the helper in front of them ----------
+
+// link.file, host_state with fresh tokens (§4.2), link_down on what is relayed. Files are a
+// map here: nothing of them is on this Mac's disk.
+const RELAYED = new Set(['browser.host_state', 'browser.host_sync', 'browser.host_report', 'browser.send_page', 'tab.focus', 'browser.page_message']);
+const CHUNK = 256 * 1024;
+function farSide(mock) {
+  const far = { epoch: 1, down: false, files: new Map(), tokens: new Map(), calls: [], asked: [], slowMs: 0, active: 0, peak: 0 };
+  far.mint = () => {
+    const a = 'abcdefghijklmnopqrstuvwxyz0123456789';
+    const t = 'k' + [...crypto.randomBytes(23)].map((x) => a[x % 36]).join('');
+    far.tokens.set(t, far.epoch);
+    return t;
+  };
+  // a shown file's entry as herdr sends it to the link: a new token each time
+  const serve = (e) => {
+    const m = e.kind === 'html_view' && /^herdr-file:\/\/[^/]+\/(.*)$/.exec(e.url || '');
+    if (!m || e.keep) return e;
+    const t = far.mint();
+    const { file, ...rest } = e;
+    return { ...rest, serve: t, url: `herdr-file://${t}/${m[1]}` };
+  };
+  mock.state.helper = async (method, params) => {
+    far.asked.push(method);
+    if (RELAYED.has(method) && far.down) return { error: { code: 'link_down', message: 'the link to devhost1 is down' } };
+    if (method === 'browser.host_state') {
+      const tabs = [...mock.state.tabs.values()].map((t) => ({
+        tab_id: t.tab_id,
+        workspace_id: t.workspace_id,
+        label: t.label,
+        ...(t.browser ? { key: t.browser.key, rev: t.browser.rev, active: t.browser.active, entries: t.browser.entries.map(({ target, view_id, ...e }) => serve(e)) } : {}),
+      }));
+      return { result: { type: 'browser_host_state', state: { focused_tab_id: mock.state.focused, tabs } } };
+    }
+    if (method !== 'link.file') return null;
+    far.calls.push({ ...params, at: Date.now() });
+    if (far.down) return { error: { code: 'link_down', message: 'the link to devhost1 is down' } };
+    far.active++;
+    far.peak = Math.max(far.peak, far.active);
+    await sleep(far.slowMs || 1);
+    far.active--;
+    if (far.tokens.get(params.token) !== far.epoch) return { result: { status: 403, mime: '', size: 0, data: '', eof: false } };
+    const f = far.files.get(decodeURIComponent(params.path));
+    if (!f) return { result: { status: 404, mime: '', size: 0, data: '', eof: false } };
+    const part = f.data.subarray(params.offset, params.offset + CHUNK);
+    return { result: { status: 200, mime: f.mime, size: f.data.length, data: part.toString('base64'), eof: params.offset + part.length >= f.data.length } };
+  };
+  far.put = (rel, mime, data) => far.files.set(rel, { mime, data: Buffer.from(data) });
+  far.linkUp = () => {
+    far.down = false;
+    for (const s of mock.state.subscribers) s.sock.write(JSON.stringify({ event: 'herdr.link_up', data: { type: 'link_up' } }) + '\n');
+  };
+  return far;
+}
+
 // ---------- one companion ----------
 
 const children = new Set();
@@ -188,7 +244,7 @@ async function startCanary() {
   return { port, hits: () => hits, close: () => (server.close(), udp.close()) };
 }
 
-async function rig({ remote = true, proxyUp = true, restore = null } = {}) {
+async function rig({ remote = true, proxyUp = true, restore = null, label = 'devhost1' } = {}) {
   const dir = fs.mkdtempSync(path.join(tmpRoot, 'hc-'));
   const canary = await startCanary();
   const log = [];
@@ -199,11 +255,12 @@ async function rig({ remote = true, proxyUp = true, restore = null } = {}) {
   if (!proxyUp) await px.cur.close();
   const homeDir = path.join(dir, 'home');
   fs.mkdirSync(homeDir, { mode: 0o700 });
-  const writeProxyFile = (port = px.port) => fs.writeFileSync(path.join(homeDir, 'proxy.json'), JSON.stringify({ port, secret: secretRef.v }), { mode: 0o600 });
+  const writeProxyFile = (port = px.port) => fs.writeFileSync(path.join(homeDir, 'proxy.json'), JSON.stringify({ port, secret: secretRef.v, label }), { mode: 0o600 });
   writeProxyFile();
   const sock = path.join(dir, 's.sock');
   const mock = createMockHerdr({ socketPath: sock, verifyCdp: true, heartbeatMs: 1000, ttlMs: 8000 });
-  if (restore) restore(mock);
+  const far = remote ? farSide(mock) : null;
+  if (restore) restore(mock, far);
   await mock.listen();
   const t0 = Date.now();
   const child = spawn(electronBin, [path.join(here, 'e2e-remote-main.cjs'), '--socket', sock, '--profile-dir', path.join(dir, 'profile'), '--headless', ...(remote ? ['--remote', homeDir] : [])], {
@@ -243,10 +300,17 @@ async function rig({ remote = true, proxyUp = true, restore = null } = {}) {
   const pageOf = (target) =>
     waitFor(async () => {
       for (const p of pages()) {
-        const s = await p.context().newCDPSession(p);
-        const { targetInfo } = await s.send('Target.getTargetInfo');
-        await s.detach();
-        if (targetInfo.targetId === target) return p;
+        // a page blocked in its dialog call answers nothing
+        const id = await Promise.race([
+          (async () => {
+            const s = await p.context().newCDPSession(p);
+            const { targetInfo } = await s.send('Target.getTargetInfo');
+            await s.detach();
+            return targetInfo.targetId;
+          })(),
+          sleep(1000),
+        ]);
+        if (id === target) return p;
       }
       return null;
     });
@@ -263,8 +327,16 @@ async function rig({ remote = true, proxyUp = true, restore = null } = {}) {
   };
   const errors = () => mock.state.reports.filter((x) => x.error === 'load_failed');
   return {
-    dir, mock, main, b, pages, call, open, pageOf, wcOf, errors, log, px, secretRef, canary, attach, registeredMs, t0, writeProxyFile, homeDir,
+    dir, mock, far, main, b, pages, call, open, pageOf, wcOf, errors, log, px, secretRef, canary, attach, registeredMs, t0, writeProxyFile, homeDir,
     out: () => out,
+    // the floating bar's page, and what the card shows (its text; null while none is up)
+    strip: () => pages().find((p) => p.url().startsWith('herdr-companion://ui/strip.html')),
+    card: () =>
+      waitFor(async () => {
+        const p = pages().find((x) => x.url().startsWith('herdr-companion://ui/dialog.html'));
+        return p.evaluate(() => (document.getElementById('card').hidden ? null : { origin: document.getElementById('origin').textContent, message: document.getElementById('message').textContent }));
+      }, 3000),
+    status: () => pages().find((p) => p.url().startsWith('herdr-companion://ui/strip.html')).evaluate(() => (document.getElementById('status').hidden ? null : document.getElementById('status').textContent)),
     views: () => call('views'),
     async proxyDown() {
       await px.cur.close();
@@ -285,6 +357,8 @@ async function rig({ remote = true, proxyUp = true, restore = null } = {}) {
       check(`${name}: no window was shown`, !/\[SHOWN\]/.test(out));
       check(`${name}: no uncaught exception`, !/uncaught|UnhandledPromise/i.test(out), out.split('\n').find((l) => /uncaught|Unhandled/i.test(l)));
       check(`${name}: the secret is not in the log`, !out.includes(secretRef.v));
+      if (far) check(`${name}: every file asked for is a clean relative path`, far.calls.every((c) => /^[a-z][a-z0-9]{23}$/.test(c.token) && isFileRel(c.path)), far.calls.filter((c) => !isFileRel(c.path)));
+      if (far) check(`${name}: no page_message call`, !far.asked.includes('browser.page_message'));
       if (remote) check(`${name}: canary 0`, canary.hits() === 0, canary.hits());
       canary.close();
       fs.rmSync(dir, { recursive: true, force: true });
@@ -492,14 +566,23 @@ const scenarios = {
       { id: 'b2', kind: 'html_view', url: 'file://' + htmlFile, file: htmlFile, title: 'restored view', opened_by: 'agent:w1:p1' },
       { id: 'b3', kind: 'html_view', url: 'file://' + htmlFile, file: htmlFile, allow_network: true, title: 'restored net view', opened_by: 'agent:w1:p1' },
       { id: 'b4', kind: 'web', url: 'http://app.test/tall', title: 'restored web', opened_by: 'agent:w1:p1' },
+      { id: 'b5', kind: 'html_view', url: 'herdr-file://x/sub/shown.html', title: 'restored shown file', opened_by: 'agent:w1:p1', page_api: true, allow_network: true },
+      { id: 'b6', kind: 'html_view', keep: true, serve: 'k'.repeat(24), url: `herdr-file://${'z'.repeat(24)}/sub/shown.html`, title: 'another token', opened_by: 'agent:w1:p1' },
+      { id: 'b7', kind: 'web', url: `herdr-file://${'z'.repeat(24)}/sub/shown.html`, title: 'a web page at a file', opened_by: 'agent:w1:p1' },
     ];
-    const r = await rig({ restore: (mock) => (mock.state.tabs.get('w1:t2').browser = { key: 'g-1', rev: 1, active: 'b4', entries }) });
+    const r = await rig({
+      restore: (mock, far) => {
+        far.put('sub/shown.html', 'text/html', '<title>SHOWN</title><script>window.api = typeof window.herdr</script>');
+        mock.state.tabs.get('w1:t2').browser = { key: 'g-1', rev: 1, active: 'b4', entries };
+      },
+    });
     const { call, open, main } = r;
     const a = await open('http://app.test/');
     await titled(a.p, 'app app.test');
     check('CDP goto file: in the web session', /ERR_/.test(await goto(a.p, fileUrl)), a.p.url());
     await goto(a.p, 'http://app.test/');
     for (const u of [fileUrl, 'FILE://' + secretFile, 'view-source:' + fileUrl]) {
+      await sleep(300); // Electron's own did-finish-load of the goto before would settle this loadURL
       const c = await r.wcOf(a.target_id);
       const got = await main('load', c.id, u);
       const body = await a.p.evaluate(() => document.documentElement.innerText).catch(() => '');
@@ -525,18 +608,27 @@ const scenarios = {
       return out;
     }, fileUrl);
     check('a page\'s own file: tries', pageTries.every((x) => x === 'no'), pageTries);
-    const v = await call('show', { file: htmlFile, tab_id: 'w1:t1', opened_by: 'agent:w1:p1', focus: false });
+    const before = (await call('views')).length;
+    const refused = await call('show', { file: htmlFile, tab_id: 'w1:t1', opened_by: 'agent:w1:p1', focus: false });
+    check('show of a local file: refused, no view', refused.error && refused.error.code === 'host_refused' && (await call('views')).length === before, refused);
+    const v = await call('showRemote', { tab_id: 'w1:t1', opened_by: 'agent:w1:p1', token: r.far.mint(), rel: 'sub/shown.html', focus: false, title: null });
     const vp = v.target_id && (await r.pageOf(v.target_id));
-    check('show of a local file: refused and reported', vp && (await waitFor(() => r.errors().some((x) => x.text.includes(htmlFile)))) && (await vp.title()) !== 'LEAK' && !(await vp.evaluate(() => document.body.innerText)).includes('leak'), r.errors().map((x) => x.text));
+    check('a shown file of the other machine loads', vp && (await titled(vp, 'SHOWN')), v);
     const vg = await goto(vp, 'file://' + htmlFile);
     check('CDP goto file: in the html session', /ERR_/.test(vg), vg);
     // the agents' restored pages loaded by themselves
     const rest = await waitFor(async () => {
       const x = (await call('views')).filter((y) => y.tab_id === 'w1:t2');
-      return x.length === 4 && x.every((y) => y.live && y.target_id) && x;
+      return x.length === 5 && x.every((y) => y.live && y.target_id) && x;
     }, 6000);
-    check('restored entries are live', rest);
-    await waitFor(() => r.errors().length >= 4, 3000);
+    check('restored: html views without a serve token are dropped, the others are live', rest && rest.map((x) => x.id).join() === 'b1,b4,b5,b6,b7', (await call('views')).map((x) => x.id));
+    const urls = Object.fromEntries((rest || []).map((x) => [x.id, x.url]));
+    check('... a web page at file: or herdr-file:, and a file of another token, are blank', ['b1', 'b6', 'b7'].every((id) => urls[id] === 'about:blank'), urls);
+    const b5 = rest && (await r.pageOf(rest.find((x) => x.id === 'b5').target_id));
+    check('... a shown file loads under its serve token', b5 && (await titled(b5, 'SHOWN')) && /^herdr-file:\/\/k[a-z0-9]{23}\/sub\/shown\.html$/.test(b5.url()), b5 && b5.url());
+    check('... without page API or network, whatever the entry says', b5 && (await b5.evaluate(() => window.api)) === 'undefined' && (await b5.evaluate(() => fetch('http://app.test/leak').then(() => 'LOADED', () => 'no'))) === 'no' && !r.log.some((e) => e.path === '/leak'));
+    check('herdr-file: in the web session: CDP goto and a page\'s own location are refused', /ERR_/.test(await goto(a.p, b5.url())) && (await a.p.evaluate((u) => { location.href = u; return 1; }, b5.url()).catch(() => 1)) && (await sleep(300), (await a.p.title().catch(() => '')) !== 'SHOWN'));
+    await goto(a.p, 'http://app.test/');
     let leaks = 0;
     for (const x of rest || []) {
       const p = await r.pageOf(x.target_id);
@@ -544,11 +636,292 @@ const scenarios = {
       if (/LEAK|leak|BEGIN CERT/.test(body)) leaks++;
     }
     check('restored file: entries show nothing (web, html, html with network)', leaks === 0);
-    check('... each reported', ['cert.pem', 'view.html'].every((n) => r.errors().some((x) => x.text.includes(n))), r.errors().map((x) => x.text));
     check('... and the restored web page loads', await waitFor(() => r.pages().find((p) => p.url() === 'http://app.test/tall')));
     const strip = r.pages().find((p) => p.url().startsWith('herdr-companion://ui/strip.html'));
     check('the bar is alive', strip && (await strip.evaluate(() => document.styleSheets.length > 0)));
     await r.stop('files');
+  },
+
+  // shown files of the other machine (herdr-file): relative files, no network, one token a page
+  async show() {
+    const r = await rig();
+    const { call, open, main, far, mock } = r;
+    const big = crypto.randomBytes(700 * 1024 + 13);
+    const put = (rel, mime, text) => far.put(rel, mime, text);
+    put('report/in dex.html', 'text/html; charset=utf-8', `<!doctype html><title>report</title><link rel=stylesheet href="css/a.css"><h1 id=h>hi</h1><img id=i src="pix%20%C3%BC.png"><a id=next href="two.html">two</a><a id=web href="http://app.test/tall">web</a><script src="app.js"></script><script type=module src="mod.mjs"></script><iframe id=f src="frame.html"></iframe>`);
+    put('report/css/a.css', 'text/css', '@import "b.css"; h1 { color: rgb(1, 2, 3) }');
+    put('report/css/b.css', 'text/css', 'h1 { margin: 7px }');
+    put('report/app.js', 'text/javascript', 'window.app = 1; window.api = typeof window.herdr; window.rtc = typeof window.RTCPeerConnection');
+    put('report/mod.mjs', 'text/javascript', 'import { n } from "./dep.mjs"; window.mod = n; window.dyn = (await import("./dep.mjs")).n');
+    put('report/dep.mjs', 'text/javascript', 'export const n = 42');
+    put('report/pix ü.png', 'image/png', PNG);
+    put('report/data.json', 'application/json', '{"a":1}');
+    put('report/big.bin', 'application/octet-stream', big);
+    put('report/frame.html', 'text/html', '<title>frame</title><p>framed</p>');
+    put('report/two.html', 'text/html', '<title>two</title><a id=back href="in%20dex.html">b</a>');
+    put('report/odd.txt', 'text/plain\r\nx: y', 'odd');
+    put('report/empty.txt', 'text/plain', '');
+    for (let i = 0; i < 40; i++) put(`many/${i}.json`, 'application/json', String(i));
+    put('many/index.html', 'text/html', '<title>many</title><script>Promise.all([...Array(40).keys()].map((i) => fetch(i + ".json").then((x) => x.json()))).then((x) => (window.sum = x.reduce((a, b) => a + b)))</script>');
+    const other = far.mint();
+    const showRemote = (rel, a = {}) => call('showRemote', { tab_id: 'w1:t1', opened_by: 'agent:w1:p1', token: far.mint(), rel, focus: false, title: null, ...a });
+
+    const token = far.mint();
+    for (const [name, a] of [
+      ['an uppercase token', { token: 'K' + token.slice(1) }], ['a short token', { token: token.slice(1) }], ['no token', { token: null }], ['a digit first', { token: '1'.repeat(24) }],
+      ['an absolute path', { rel: '/etc/hosts' }], ['an empty path', { rel: '' }], ['no path', { rel: null }], ['..', { rel: '../x.html' }], ['%2e%2E', { rel: 'a/%2e%2E/x.html' }], ['.', { rel: './x.html' }],
+      ['%2f', { rel: 'a%2fx.html' }], ['%5c', { rel: 'a%5Cx.html' }], ['\\', { rel: 'a\\x.html' }], ['%00', { rel: 'x%00.html' }], ['a query', { rel: 'x.html?y' }], ['a fragment', { rel: 'x.html#y' }], ['a long path', { rel: 'x/'.repeat(1100) + 'y' }],
+    ]) {
+      const o = await showRemote('x.html', { token, ...a });
+      check(`showRemote refuses ${name}`, o.error && o.error.code === 'invalid_request', o);
+    }
+    check('... and makes no view, asks for no file', (await call('views')).length === 0 && far.calls.length === 0);
+    const un = await showRemote('report/in%20dex.html', { tab_id: 'w9:t9' });
+    check('an unknown herdr tab: tab_unknown', un.error && un.error.code === 'tab_unknown', un);
+
+    // on the marker page at once, however slow the file
+    far.slowMs = 2500;
+    const t0 = Date.now();
+    const v = await showRemote('report/in%20dex.html', { allow_network: true, page_api: true, opener: 'o', file: '/etc/hosts', root: '/' });
+    const ms = Date.now() - t0;
+    const marked = await waitFor(() => r.pages().find((x) => x.url() === `about:blank#herdr-view=${v.view_id}`), 800);
+    check('answers at once with a target, on the marker page', ms < 1500 && v.target_id && marked, [ms, v]);
+    const p = v.target_id && (await r.pageOf(v.target_id));
+    far.slowMs = 0;
+    check('the page loads', p && (await titled(p, 'report')), p && p.url());
+    await waitFor(() => p.evaluate(() => window.dyn && document.getElementById('i').naturalWidth));
+    const got = await p.evaluate(async () => {
+      const h = getComputedStyle(document.getElementById('h'));
+      const bytes = new Uint8Array(await (await fetch('big.bin')).arrayBuffer());
+      const hash = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map((x) => x.toString(16).padStart(2, '0')).join('');
+      localStorage.setItem('a', '1');
+      const odd = await fetch('odd.txt');
+      return { color: h.color, margin: h.marginTop, img: document.getElementById('i').naturalWidth, app: window.app, mod: window.mod, dyn: window.dyn, json: await (await fetch('data.json')).json(), size: bytes.length, hash, frame: document.getElementById('f').contentDocument.title, ls: localStorage.getItem('a'), odd: odd.headers.get('content-type'), oddx: odd.headers.get('x'), empty: await (await fetch('empty.txt')).text(), secure: isSecureContext, head: await fetch('big.bin', { method: 'HEAD' }).then((x) => x.headers.get('content-length')), post: await fetch('data.json', { method: 'POST', body: 'x' }).then((x) => x.status) };
+    });
+    check('css, @import, script, modules, image, iframe, fetch, storage', got.color === 'rgb(1, 2, 3)' && got.margin === '7px' && got.img === 1 && got.app === 1 && got.mod === 42 && got.dyn === 42 && got.json.a === 1 && got.frame === 'frame' && got.ls === '1' && got.secure, got);
+    check('a file of 700 KiB comes whole, in pulls of 256 KiB', got.size === big.length && got.hash === crypto.createHash('sha256').update(big).digest('hex') && far.calls.filter((c) => c.path === 'report/big.bin').map((c) => c.offset).slice(0, 3).join() === '0,262144,524288', got.size);
+    check('HEAD, POST, an empty file, a mime with a line break', got.head === String(big.length) && got.post === 405 && got.empty === '' && got.odd === 'application/octet-stream' && got.oddx === null, got);
+    check('paths go out percent-encoded, without the leading slash', far.calls.some((c) => c.path === 'report/in%20dex.html') && far.calls.some((c) => c.path === 'report/pix%20%C3%BC.png'));
+    check('no page API, no WebRTC', (await p.evaluate(() => [window.api, window.rtc].join())) === 'undefined,undefined');
+
+    const net1 = await p.evaluate(async (c) => {
+      const out = {};
+      for (const u of ['http://app.test/leak', 'https://app.test/leak', `http://127.0.0.1:${c}/leak`]) out[u] = await fetch(u, { mode: 'no-cors' }).then(() => 'LOADED', () => 'no');
+      out.img = await new Promise((x) => Object.assign(new Image(), { onload: () => x('LOADED'), onerror: () => x('no'), src: 'https://cdn.test/leak.png' }));
+      out.ws = await new Promise((x) => { const w = new WebSocket('wss://ws.test/leak'); w.onopen = () => x('LOADED'); w.onerror = () => x('no'); });
+      const f = document.createElement('iframe');
+      f.src = 'http://app.test/leak';
+      document.body.append(f);
+      await new Promise((x) => setTimeout(x, 300));
+      out.beacon = navigator.sendBeacon('http://app.test/leak', 'x');
+      out.file = await fetch('file:///etc/hosts').then(() => 'LOADED', () => 'no');
+      out.open = window.open('http://app.test/leak') ? 'OPENED' : 'no';
+      return out;
+    }, r.canary.port);
+    await sleep(300);
+    check('no network, no file, no window', Object.entries(net1).every(([k, x]) => k === 'beacon' || x === 'no'), net1);
+    check('... and the proxy saw none of it', !r.log.some((e) => /leak/.test(e.path || '') || /leak|ws\.test|cdn\.test/.test(e.url || '')), r.log.slice(-3));
+
+    const asked = far.calls.length;
+    const cross = await p.evaluate(async (o) => {
+      const f = document.createElement('iframe');
+      f.src = `herdr-file://${o}/report/two.html`;
+      document.body.append(f);
+      await new Promise((x) => setTimeout(x, 400));
+      let title = 'opaque';
+      try { title = f.contentDocument.title; } catch {}
+      return { fetch: await fetch(`herdr-file://${o}/report/data.json`).then((x) => 'status ' + x.status, () => 'no'), title };
+    }, other);
+    check('another token\'s files: refused here, never asked for', cross.fetch !== 'status 200' && cross.title !== 'two' && far.calls.length === asked, cross);
+    const trav = await p.evaluate(async () => {
+      const out = {};
+      for (const u of ['../../../etc/hosts', '%2e%2e/%2e%2e/%2e%2e/etc/hosts', 'a%2f..%2fb', 'a%5c..%5cb', 'x%00', '..%2f..%2fetc', '/', 'gone.txt']) out[u] = await fetch(u).then((x) => x.status, () => 'no');
+      return out;
+    });
+    check('above the folder, encoded separators, NUL: never asked for; a missing file 404', trav['gone.txt'] === 404 && Object.values(trav).every((x) => x !== 200) && far.calls.every((c) => isFileRel(c.path)), trav);
+
+    // links: a file of the same folder here, the web in a tab of its own, file: nowhere
+    const n0 = (await call('views')).length;
+    await p.evaluate(() => document.getElementById('web').click());
+    check('a link to the web opens a tab, the view stays', (await waitFor(async () => (await call('views')).length === n0 + 1)) && /in%20dex\.html$/.test(p.url()), p.url());
+    await p.evaluate(() => { location.href = 'file:///etc/hosts'; });
+    await sleep(300);
+    check('a file: navigation goes nowhere', /in%20dex\.html$/.test(p.url()), p.url());
+    await p.evaluate(() => document.getElementById('next').click());
+    check('a link to a file beside it works', await titled(p, 'two'), p.url());
+    await p.goBack({ timeout: 4000 });
+    check('back', await titled(p, 'report'));
+    put('report/two.html', 'text/html', '<title>two again</title>');
+    check('CDP goto inside its folder, changed since', (await goto(p, `herdr-file://${far.calls[0].token}/report/two.html`)) === 200 && (await titled(p, 'two again')), p.url());
+    check('CDP goto of another token\'s file', (await goto(p, `herdr-file://${other}/report/two.html`)) === 403);
+
+    const m = await showRemote('many/index.html', { title: 'A \u202etitle\u0007\n2', focus: true });
+    const mp = await r.pageOf(m.target_id);
+    await waitFor(() => mp.evaluate(() => window.sum), 6000);
+    check('40 files at once: at most 16 pulls on the way', (await mp.evaluate(() => window.sum)) === 780 && far.peak <= 16 && far.peak > 4, far.peak);
+    check('a title is cleaned and stays; opened in its tab', (await call('views')).find((x) => x.view_id === m.view_id).title === 'A title 2', (await call('views')).find((x) => x.view_id === m.view_id).title);
+    const wcs = await main('contents');
+    check('html views: not the web session, file: handled', wcs.filter((x) => x.url.startsWith('herdr-file:')).every((x) => x.partition === 'other' && x.file), wcs.map((x) => [x.url.slice(0, 30), x.partition]));
+    const e = await waitFor(() => { const t = mock.state.tabs.get('w1:t1').browser; return t && t.entries.find((x) => x.view_id === m.view_id && x.id); });
+    check('host_sync: the token, no path, no flags', e && e.serve && e.url === `herdr-file://${e.serve}/many/index.html` && !('file' in e) && !e.allow_network && !e.page_api && e.opened_by === 'agent:w1:p1', e);
+    const reg = await waitFor(() => r.errors().length === 0);
+    check('nothing was reported as failed', reg, r.errors());
+    await r.stop('show');
+  },
+
+  // the link drops and comes back, another Mac has it
+  async link() {
+    const r = await rig();
+    const { call, open, far, mock } = r;
+    far.put('a/page.html', 'text/html', '<title>page</title><p>one</p>');
+    far.put('a/x.json', 'application/json', '{"x":1}');
+    const s = await call('showRemote', { tab_id: 'w1:t1', opened_by: 'agent:w1:p1', token: far.mint(), rel: 'a/page.html', focus: true, title: null });
+    const p = await r.pageOf(s.target_id);
+    await titled(p, 'page');
+    const t0 = far.calls[0].token;
+    const s2 = await call('showRemote', { tab_id: 'w1:t1', opened_by: 'agent:w1:p1', token: far.mint(), rel: 'a/page.html', focus: false, title: null });
+    const p2 = await r.pageOf(s2.target_id);
+    await titled(p2, 'page');
+    const w = await open('http://app.test/', { background: true });
+    await titled(w.p, 'app app.test');
+    check('linked: no status line', (await waitFor(async () => (await r.status()) === null, 8000)));
+    await waitFor(() => mock.state.tabs.get('w1:t1').browser && mock.state.tabs.get('w1:t1').browser.entries.every((x) => x.id));
+
+    // down: a dialog asked before it survives
+    const said = p.evaluate(() => confirm('keep me?')).catch((e2) => e2.message);
+    check('the card is up', (await r.card()).message === 'keep me?');
+    far.down = true;
+    mock.state.leaseLink = { state: 'reconnecting' };
+    check('the bar says reconnecting', await waitFor(async () => (await r.status()) === 'devhost1: reconnecting', 4000), await r.status());
+    check('... sending the page is off', await r.strip().evaluate(() => document.getElementById('send').disabled));
+    const n = far.asked.filter((x) => RELAYED.has(x)).length;
+    const o = await open('http://app.test/tall', { background: true }); // dirties the group
+    check('down: pages still open and load (the proxy is another matter)', o.target_id && (await titled(o.p, 'tall')));
+    await open('https://down.test/', { background: true }); // a report
+    await sleep(1500);
+    check('down: herdr is not asked again and again', far.asked.filter((x) => RELAYED.has(x)).length - n <= 1, far.asked.filter((x) => RELAYED.has(x)).length - n);
+    check('down: nothing is reported meanwhile', r.errors().length === 0);
+    check('down: a shown file that is loaded again says so', (await p2.reload({ timeout: 4000 })).status() === 502 && await waitFor(async () => /devhost1: no connection/.test(await p2.evaluate(() => document.body.innerText))), p2.url());
+    check('down: the card is still up, one registration', (await r.card()).message === 'keep me?' && mock.state.registers.length === 1);
+
+    // back, another epoch: the old tokens are refused
+    far.epoch = 2;
+    mock.state.leaseLink = { state: 'linked' };
+    const seq = mock.state.lease.seq;
+    const syncs = mock.state.syncs.length;
+    far.linkUp();
+    const full = await waitFor(() => mock.state.syncs.slice(syncs).find((x) => x.groups.some((g) => g.entries.length >= 5)));
+    check('back: everything is synced again, with a rising seq', full && full.seq > seq, full && [seq, full.seq]);
+    check('back: no new registration, the dialog is still up', mock.state.registers.length === 1 && (await r.card()).message === 'keep me?');
+    await call('dialog', { view_id: s.view_id, accept: true });
+    check('... and answered', (await said) === true, await said);
+    const e = full && full.groups.flatMap((g) => g.entries).find((x) => x.view_id === s.view_id);
+    check('back: the shown file is synced under its new token', e && e.serve !== t0 && far.tokens.get(e.serve) === 2 && e.url === `herdr-file://${e.serve}/a/page.html`, e);
+    check('back: its page keeps its URL, and its files come under the new token', p.url() === `herdr-file://${t0}/a/page.html` && (await p.evaluate(() => fetch('x.json').then((x) => x.status))) === 200 && far.calls.at(-1).token === e.serve, [p.url(), far.calls.at(-1)]);
+    check('... a reload too', (await p.reload({ timeout: 4000 })).status() === 200 && (await titled(p, 'page')));
+    check('back: the file that had no answer loads by itself', await titled(p2, 'page'), p2.url());
+    check('back: what was to report arrives', await waitFor(() => r.errors().some((x) => /down\.test/.test(x.text))), r.errors().map((x) => x.text));
+    check('back: the status line is gone', await waitFor(async () => (await r.status()) === null, 8000), await r.status());
+
+    // tokens of another epoch without the event yet: one refused answer brings the new ones
+    await sleep(2200); // at most one read in 2 s for refused files
+    far.epoch = 3;
+    check('a refused token: herdr\'s state is read, the file comes', (await p.evaluate(() => fetch('x.json').then((x) => x.status))) === 200 && far.tokens.get(far.calls.at(-1).token) === 3);
+    const states = far.asked.filter((x) => x === 'browser.host_state').length;
+    far.put('a/closed.json', 'application/json', '1');
+    await p.evaluate(() => Promise.all([...Array(20).keys()].map(() => fetch('gone.json'))));
+    check('missing files do not read herdr\'s state', far.asked.filter((x) => x === 'browser.host_state').length === states);
+
+    // another Mac, and back without the event
+    far.down = true;
+    mock.state.leaseLink = { state: 'in_use', text: 'the browser of devhost1 is on laptop1 (since 14:02); quit herdr+ there' };
+    check('another Mac has it: the bar says which', await waitFor(async () => (await r.status()) === 'the browser of devhost1 is on laptop1 (since 14:02); quit herdr+ there', 4000), await r.status());
+    await p.evaluate(() => fetch('x.json').then((x) => x.status)).then((st) => check('... a file of it: 502', st === 502, st));
+    check('... the line stays', (await r.status()) === 'the browser of devhost1 is on laptop1 (since 14:02); quit herdr+ there');
+    const syncs2 = mock.state.syncs.length;
+    far.down = false;
+    mock.state.leaseLink = { state: 'linked' };
+    check('back by a heartbeat alone: synced again', await waitFor(() => mock.state.syncs.length > syncs2 && mock.state.registers.length === 1, 4000));
+    check('... the line is gone', await waitFor(async () => (await r.status()) === null, 4000));
+
+    // the helper itself goes and comes back: registers again, as after a herdr restart
+    await mock.restart();
+    check('the helper restarts: the bar names the machine, then it registers again', await waitFor(() => mock.state.registers.length === 2 && mock.state.lease, 8000), await r.status());
+    await r.stop('link');
+  },
+
+  // the machine's name on every surface, and the other machine's text on them
+  async labels() {
+    const r = await rig({
+      label: 'leap\u202emini\u0007',
+      restore: (mock) => {
+        mock.state.tabs.get('w1:t1').label = 'pla\u202enner\n\u001b[1m';
+      },
+    });
+    const { call, open, main, mock } = r;
+    const titles = async (re) => waitFor(async () => (await main('titles')).some((x) => re.test(x)) && main('titles'), 3000);
+    check('the window names the machine and the tab', (await titles(/^herdr\+ companion — devhost1 — planner \[1m$/)), await main('titles'));
+    const a = await open('http://app.test/');
+    await titled(a.p, 'app app.test');
+    check('... and its pages', await titles(/^herdr\+ companion — devhost1 — planner \[1m \(1\)$/), await main('titles'));
+    check('the bar names the machine first', (await r.strip().evaluate(() => { const m = document.getElementById('machine'); return !m.hidden && document.getElementById('bar').firstElementChild === m && m.getBoundingClientRect().width > 20 && m.textContent; })) === 'devhost1');
+    for (const [name, prev] of [['docked', { dock: true, kind: 'side' }], ['full', { dock: true, kind: 'full' }]]) {
+      await call('strip_preview', prev);
+      await sleep(150);
+      check(`... ${name} too`, (await r.strip().evaluate(() => !document.getElementById('machine').hidden && document.getElementById('machine').textContent)) === 'devhost1');
+    }
+    await call('strip_preview', null);
+    mock.emit('tab.renamed', { tab_id: 'w1:t1', label: 'new\u202e name\u0000' });
+    await r.call('select', a.view_id);
+    check('a renamed tab: cleaned', await titles(/^herdr\+ companion — devhost1 — new name \(1\)$/), await main('titles'));
+
+    await a.p.evaluate(() => {
+      const w = window.open('https://idp.test/', 'a', 'popup,width=300,height=300');
+      setTimeout(() => (w.name = 'x'), 10);
+    });
+    const pop = await waitFor(async () => { const x = (await call('popups'))[0]; return x && /^devhost1 — idp\.test — /.test(x.title) && x; });
+    check('a popup\'s title: the machine, its host, its title', pop, pop || (await call('popups')));
+    const pp = await waitFor(() => r.pages().find((x) => x.url() === 'https://idp.test/'));
+    await pp.evaluate(() => (document.title = '\u202eherdr+ companion — mbp'));
+    check('... whatever the page calls itself', await waitFor(async () => (await call('popups'))[0].title === 'devhost1 — idp.test — herdr+ companion — mbp'), (await call('popups'))[0].title);
+    await pp.evaluate(() => window.close()).catch(() => {});
+
+    for (const [type, js] of [['alert', () => alert('hello')], ['confirm', () => confirm('hello')], ['prompt', () => prompt('hello', 'd')]]) {
+      const said = a.p.evaluate(js).catch(() => {});
+      const card = await r.card();
+      check(`the ${type} card names the machine and the site`, card && card.origin === 'devhost1 · http://app.test says' && card.message === 'hello', card);
+      await call('dialog', { view_id: a.view_id, accept: false });
+      await said;
+      await sleep(150);
+    }
+    await a.p.evaluate(() => document.body.append(Object.assign(document.createElement('iframe'), { srcdoc: '<script>setTimeout(() => alert("in"), 50)</script>' })));
+    const emb = await waitFor(async () => { const c = await r.card(); return c.message === 'in' && c; });
+    check('an embedded page\'s card too', emb && /^devhost1 · An embedded page/.test(emb.origin), emb);
+    await call('dialog', { view_id: a.view_id, accept: true });
+    r.far.put('d/i.html', 'text/html', '<title>i</title>');
+    const v = await call('showRemote', { tab_id: 'w1:t1', opened_by: 'agent:w1:p1', token: r.far.mint(), rel: 'd/i.html', focus: true, title: null });
+    const vp = await r.pageOf(v.target_id);
+    await titled(vp, 'i');
+    check('a shown file\'s address in the bar: its folder and name, no token', await waitFor(async () => (await r.strip().evaluate(() => document.getElementById('url').value)) === 'd › i.html'), await r.strip().evaluate(() => document.getElementById('url').value));
+    const said = vp.evaluate(() => alert('file')).catch(() => {});
+    const fc = await waitFor(async () => { const c = await r.card(); return c.message === 'file' && c; });
+    check('a shown file\'s card: the machine, no token', fc && fc.origin === 'devhost1 · This page says', fc);
+    await call('dialog', { view_id: v.view_id, accept: true });
+    await said;
+
+    // a page that is down
+    await r.proxyDown();
+    await call('select', a.view_id);
+    await goto(a.p, 'http://app.test/tall').catch(() => {});
+    check('a page that did not load: the bar says so', await waitFor(async () => (await r.status()) === 'devhost1: this page did not load; reload it'), await r.status());
+    const b = await open('http://app.test/first');
+    check('a page that waits: the bar says so', await waitFor(async () => /^devhost1: no connection for this page/.test(await r.status())), await r.status());
+    await r.proxyUp();
+    check('... and stops when it loads', (await titled(b.p, 'first')) && (await waitFor(async () => (await r.status()) === null)), await r.status());
+    await call('select', a.view_id);
+    await goto(a.p, 'http://app.test/tall');
+    check('... and after the reload', await waitFor(async () => (await r.status()) === null), await r.status());
+    await r.stop('labels');
   },
 
   // started with the proxy down
@@ -704,6 +1077,13 @@ const scenarios = {
     const v = await call('show', { file: htmlFile, tab_id: 'w1:t1', opened_by: 'agent:w1:p1', focus: false });
     const vp = v.target_id && (await r.pageOf(v.target_id));
     check('show of a local file works', vp && (await titled(vp, 'LOCAL')));
+    check('showRemote is unknown, herdr-file: is no scheme', (await call('showRemote', { token: 'k'.repeat(24), rel: 'x.html' })).error.code === 'unknown_op' && /ERR_UNKNOWN_URL_SCHEME|ERR_ABORTED|ERR_FAILED/.test(await goto(a.p, `herdr-file://${'k'.repeat(24)}/x.html`)));
+    check('no machine in the bar or the titles', (await r.strip().evaluate(() => document.getElementById('machine').hidden)) && (await main('titles')).every((x) => /^herdr\+ companion( — planner \(\d\))?$/.test(x)), await main('titles'));
+    const said = a.p.evaluate(() => alert('hi')).catch(() => {});
+    const card = await call('select', a.view_id).then(() => r.card());
+    check('... nor on the card', card && card.origin === `http://127.0.0.1:${r.canary.port} says`, card);
+    await call('dialog', { view_id: a.view_id, accept: true });
+    await said;
     check('the proxy saw nothing', r.log.length === 0, r.log.length);
     await r.stop('local');
   },

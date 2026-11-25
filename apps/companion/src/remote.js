@@ -8,6 +8,7 @@
 const electron = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
+const { cleanText } = require('./remote-rules.js');
 
 const PROXY_HOST = 'herdr-proxy.invalid'; // never a real name: only the MAP rule below knows it
 const PROXY_USER = 'herdr';
@@ -36,8 +37,7 @@ function readProxyFile(home) {
   const port = doc && doc.port;
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('proxy.json: no port');
   if (typeof doc.secret !== 'string' || !/^[\x21-\x7e]{1,256}$/.test(doc.secret)) throw new Error('proxy.json: no secret');
-  const label = typeof doc.label === 'string' ? doc.label.replace(/[\x00-\x1f\x7f-\x9f]/g, '').slice(0, LABEL_MAX) : '';
-  return { port, secret: doc.secret, label: label || null };
+  return { port, secret: doc.secret, label: cleanText(doc.label, LABEL_MAX) || null };
 }
 
 // The flags -> null (a local companion) or {home, config} | {home, error}. A remote companion
@@ -256,6 +256,7 @@ function createRemote({ argv = process.argv, app = electron.app, net = electron.
     error: (parsed && parsed.error) || null,
     home: parsed ? parsed.home : null,
     label: config ? config.label : null,
+    machine: (config && config.label) || 'remote machine', // its name on every surface
     prefs: on ? { devTools: false } : {}, // every webPreferences of the app
     install,
     gate,

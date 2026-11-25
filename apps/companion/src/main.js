@@ -6,10 +6,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { pathToFileURL, fileURLToPath } = require('node:url');
-const { GroupStore } = require('./groups.js');
+const { GroupStore, MAX_URL, MAX_TITLE, MAX_OPENER } = require('./groups.js');
 const { ViewManager, within, frameKey } = require('./views.js');
 const { DialogBook } = require('./dialogs.js');
-const { HerdrLink } = require('./host.js');
+const { HerdrLink, LINK_UP, LINK_DOWN } = require('./host.js');
 const { resolveSocketPath, serialized } = require('./herdr-api.js');
 const { parseManaged, registerFields, startupWindow, watchdogFor, onQuitSignals, quitOnce } = require('./managed.js');
 const { PlacementFeed, anyDockPlacement } = require('./dock/placements.js');
@@ -21,6 +21,7 @@ const bar = require('./ui/bar-model.js');
 const pageApi = require('./page-api.js');
 const keys = require('./keys.js');
 const remote = require('./remote.js');
+const rules = require('./remote-rules.js');
 
 const VERSION = require('../package.json').version;
 const APP_NAME = 'herdr+ companion'; // the macOS menu bar, Dock and window titles
@@ -41,6 +42,8 @@ const REPORT_BATCH = 50;
 const REPORT_RATE = 20; // events/s
 const SELECTION_MAX = 8000;
 const NOTE_MAX = 2000;
+const FILE_PULL_MS = 20000; // a remote companion's link.file call (the helper sees a dead link after 12 s)
+const TOKENS_FRESH_MS = 2000; // a refused file re-reads herdr's tokens at most this often
 const PROMPT_TIMEOUT_MS = 60000; // an unanswered permission prompt is denied
 
 // The bar's pins per surface (docked, full, floating), in the profile; defaults in bar-model.js.
@@ -129,6 +132,7 @@ else if (process.platform === 'darwin' && app.dock) {
 
 protocol.registerSchemesAsPrivileged([
   { scheme: SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true } },
+  ...(remote.on ? [{ scheme: rules.FILE_SCHEME, privileges: rules.FILE_PRIVILEGES }] : []),
 ]);
 
 // ---------- helpers ----------
@@ -140,6 +144,10 @@ function normalizeUrl(text) {
   if (!/\s/.test(t) && /\.[a-z]{2,}(:\d+)?(\/|$)/i.test(t)) return 'https://' + t;
   return 'https://duckduckgo.com/?q=' + encodeURIComponent(t);
 }
+
+// A page's origin as its dialog names it: none for an opaque one, nor for another machine's
+// shown file (a token).
+const shownOrigin = (origin) => (origin && origin !== 'null' && !(remote.on && origin.startsWith(`${rules.FILE_SCHEME}:`)) ? origin : '');
 
 const errOut = (code, message) => ({ error: { code, message } });
 
@@ -159,7 +167,9 @@ async function readDevToolsPort() {
 
 class Companion {
   constructor() {
-    this.store = new GroupStore();
+    this.store = new GroupStore({ remote: remote.on });
+    this.filePulls = new rules.Lanes(); // a remote companion's link.file calls
+    this.tokensRead = { at: 0, done: null }; // the last host_state read for new file tokens
     this.instance = crypto.randomBytes(16).toString('hex');
     this.nonce = crypto.randomBytes(16).toString('hex');
     this.win = null;
@@ -189,6 +199,7 @@ class Companion {
       onContextMenu: (id, params) => this.openPageMenu(id, params),
       onDialogsEnd: (id, frame) => this.dialogs.dismissView(id, { frame }),
       onGone: (id) => this.onViewGone(id),
+      readFile: (token, rel, offset) => this.readFile(token, rel, offset), // another machine's shown file
       onRaise: (host) => this.raiseDockBar(host),
       // pages' sign-in popups (src/popups.js): child windows of the companion's, never shown
       // headless, at the dock's level while docked; their right-click is the page menu
@@ -196,7 +207,7 @@ class Companion {
       popupLevel: () => this.popupLevel(),
       onPopupContextMenu: (owner, win, params) => this.openPageMenu(owner, params, { win }),
       // page API: views get window.herdr only while herdr advertises page messages
-      pageApiOn: () => !!(this.features && this.features.has(pageApi.FEATURE)),
+      pageApiOn: () => !remote.on && !!(this.features && this.features.has(pageApi.FEATURE)),
     });
     this.pageRates = new Map(); // view_id -> RateLimit (page API)
     // pages' alert / confirm / prompt (src/dialogs.js), shown in the dialog card over the page
@@ -260,7 +271,7 @@ class Companion {
       height: 820,
       minWidth: 480,
       minHeight: 300,
-      title: APP_NAME,
+      title: this.windowTitle(),
       backgroundColor: chromeBackground(),
       icon: path.join(ICON_DIR, 'eye-plus-512.png'),
       paintWhenInitiallyHidden: true,
@@ -316,6 +327,7 @@ class Companion {
     this.link = new HerdrLink({
       socketPath: SOCKET,
       log,
+      remote: remote.on,
       register: () => {
         // herdr attaches its sidecar before it answers, and the attach stalls on a page blocked
         // in its dialog call (its renderer answers no CDP until then): open dialogs are
@@ -346,6 +358,10 @@ class Companion {
       this.onViewCycleKeys(lease);
     });
     this.link.on('lost', () => this.pushStrip());
+    this.link.on('link', (l) => {
+      log('remote: link', l.state, l.text || '');
+      this.pushStrip();
+    });
     this.link.on('event', (ev) => this.onEvent(ev));
     // Docking: herdr's placements, the terminal windows, and what the dock does with them.
     this.feed = new PlacementFeed({ link: this.link, log });
@@ -504,8 +520,40 @@ class Companion {
     this.refreshTimer = setTimeout(() => this.refreshState(), ms);
   }
 
+  // The helper's link to the other machine is back (its pages and dialogs went on): herdr's
+  // state with the new file tokens, then everything here again. The lease is the helper's and
+  // lives on: no new registration.
+  async onLinkUp() {
+    this.store.markAll();
+    await this.freshTokens(true);
+    if (this.link.down) return; // gone again
+    this.views.linkUp();
+    this.scheduleSync(0);
+  }
+
+  // A host_state read: it brings the shown files' current tokens.
+  freshTokens(now = false) {
+    const t = this.tokensRead;
+    if (now || !t.done || Date.now() - t.at > TOKENS_FRESH_MS) this.tokensRead = { at: Date.now(), done: this.refreshState() };
+    return this.tokensRead.done;
+  }
+
+  // A piece of another machine's shown file, for the page loaded with `pageToken`: asked under
+  // the entry's current token. Refused, the token may be an older link's: once more with a new one.
+  async readFile(pageToken, rel, offset) {
+    const ask = (token) => this.filePulls.run(() => this.link.request('link.file', { token, path: rel, offset }, { timeoutMs: FILE_PULL_MS }));
+    const token = this.store.serveOf(pageToken);
+    if (!token) return { status: 404 };
+    const res = await ask(token);
+    if (!res || res.status !== 403) return res;
+    await this.freshTokens();
+    const now = this.store.serveOf(pageToken);
+    return now && now !== token ? ask(now) : res;
+  }
+
   onEvent(ev) {
     const d = ev.data || {};
+    if (remote.on && ev.event === LINK_UP) return void this.onLinkUp().catch((e) => log('link resync failed', e.message));
     switch (ev.event) {
       case 'tab.focused':
         clearTimeout(this.focusTimer);
@@ -520,7 +568,7 @@ class Companion {
         break;
       case 'tab.renamed': {
         const t = this.store.tabs.get(d.tab_id);
-        if (t) t.label = d.label;
+        if (t) t.label = remote.on ? rules.cleanText(d.label) || d.tab_id : d.label;
         if (d.tab_id === this.shownTab) this.pushStrip();
         break;
       }
@@ -652,12 +700,14 @@ class Companion {
   }
 
   // `herdr+ companion — <label> (3)`: the shown session and its page count.
+  // A remote companion's: `herdr+ companion — <machine> — <label> (3)`.
   windowTitle() {
-    if (!this.shownTab) return APP_NAME;
+    const name = remote.on ? `${APP_NAME} — ${remote.machine}` : APP_NAME;
+    if (!this.shownTab) return name;
     const label = this.store.label(this.shownTab);
     const g = this.shownGroup();
     const n = g ? g.entries.length : 0;
-    return `${APP_NAME} — ${label}${n ? ` (${n})` : ''}`;
+    return `${name} — ${label}${n ? ` (${n})` : ''}`;
   }
 
   // ---------- docked mode (launcher design §3.4; dock/dock.js decides) ----------
@@ -683,7 +733,7 @@ class Companion {
       acceptFirstMouse: true,
       width: 600,
       height: 400,
-      title: APP_NAME,
+      title: this.windowTitle(),
       backgroundColor: DOCK_BACKGROUND,
       paintWhenInitiallyHidden: true,
       webPreferences: {
@@ -1089,7 +1139,7 @@ class Companion {
       if (!viewId && this.views.isPopupWc(e.sender)) this.views.noteAutoAnswer(`dialog ${req && req.type}`, e.sender);
       return reply(null);
     }
-    const d = this.dialogs.open(viewId, req, reply, { frame, ancestors, alive, info: { origin: origin && origin !== 'null' ? origin : '', embedded } });
+    const d = this.dialogs.open(viewId, req, reply, { frame, ancestors, alive, info: { origin: shownOrigin(origin), embedded } });
     if (!d) return;
     log('dialog', d.id, d.type, viewId);
     const hit = this.store.findView(viewId);
@@ -1163,6 +1213,7 @@ class Companion {
         value: d.value,
         // a frame's never reads as the page's own (an opaque origin: sandboxed, data:, srcdoc)
         origin: d.embedded ? (d.origin ? `An embedded page at ${d.origin}` : 'An embedded page') : d.origin,
+        ...(remote.on ? { machine: remote.machine } : {}),
         docked: host === this.dockWin,
         space,
         focus,
@@ -1259,6 +1310,8 @@ class Companion {
         }
         case 'show':
           return await this.ctlShow(a || {});
+        case 'showRemote':
+          return await this.ctlShowRemote(a || {});
         case 'views':
           return this.listViews();
         case 'dialogs':
@@ -1445,6 +1498,7 @@ class Companion {
   }
 
   async ctlShow(a) {
+    if (remote.on) return errOut('host_refused', 'show takes a path of this machine; not for remote machines');
     const file = a.file;
     if (!file || !path.isAbsolute(file)) return errOut('invalid_request', 'file must be an absolute path');
     let st;
@@ -1472,6 +1526,32 @@ class Companion {
         title: a.title || path.basename(file),
         title_fixed: !!a.title, // an explicit --title: the page's <title> never replaces it
         opened_by: a.opened_by || 'agent',
+      },
+      { background: !a.focus },
+    );
+    if (a.focus) await this.ctlFocus(e.view_id);
+    return { view_id: e.view_id, target_id: e.target, tab_id: tabId };
+  }
+
+  // Another machine's file in a sandboxed view, without network or page API: never a path here,
+  // `herdr-file://<token>/<rel>` through the helper (readFile). Answers on the view's blank
+  // marker page; the file loads after it.
+  async ctlShowRemote(a) {
+    if (!remote.on) return errOut('unknown_op', 'unknown control op showRemote');
+    const url = rules.isFileToken(a.token) && rules.isFileRel(a.rel) ? rules.fileUrl(a.token, a.rel) : '';
+    if (!url || url.length > MAX_URL) return errOut('invalid_request', 'showRemote needs a file token and a relative path');
+    const tabId = await this.resolveTab(a.tab_id);
+    if (!tabId) return errOut('tab_unknown', `herdr tab ${a.tab_id || '(focused)'} is not known to the companion`);
+    const title = rules.cleanText(a.title, MAX_TITLE);
+    const e = await this.openEntry(
+      tabId,
+      {
+        kind: 'html_view',
+        serve: a.token,
+        url,
+        title: title || bar.compactUrl(url),
+        title_fixed: !!title,
+        opened_by: rules.cleanText(a.opened_by, MAX_OPENER) || 'agent',
       },
       { background: !a.focus },
     );
@@ -1659,6 +1739,8 @@ class Companion {
       case 'navigate': {
         const url = normalizeUrl(String(a || ''));
         if (!this.shownTab) return;
+        // another machine's shown file is nobody's to open by hand: the shown one loads again
+        if (remote.on && url.startsWith(`${rules.FILE_SCHEME}:`)) return this.handleKey('r');
         if (!e || e.kind === 'html_view') return this.newTab(url);
         if (wc) {
           this.endDialogs(e.view_id);
@@ -1744,8 +1826,12 @@ class Companion {
     const status = this.link ? this.link.status : { state: 'connecting', text: 'starting…' };
     let line = null;
     if (this.flash && this.flash.until > Date.now()) line = { level: this.flash.level, text: this.flash.text };
-    else if (status.state !== 'registered') line = { level: 'warn', text: status.text };
+    else if (remote.on) {
+      const text = bar.remoteLine({ machine: remote.machine, status, link: this.link && this.link.farLink, page: active ? this.views.downState(active.view_id) : null });
+      if (text) line = { level: 'warn', text };
+    } else if (status.state !== 'registered') line = { level: 'warn', text: status.text };
     return {
+      ...(remote.on ? { machine: remote.machine } : {}),
       inset: process.platform === 'darwin' && !dock,
       docked: dock,
       info: this.sessionInfo(),
@@ -1774,7 +1860,7 @@ class Companion {
         const p = active && this.prompts.find((x) => x.view_id === active.view_id);
         return p ? { id: p.id, label: p.label, origin: p.origin, permission: p.permission } : null;
       })(),
-      attached: status.state === 'registered',
+      attached: status.state === 'registered' && !(remote.on && this.link.down),
       bar: this.barState(dock),
       status: line,
       update: this.update ? { version: this.update, restarting: this.restarting } : null,
@@ -1956,6 +2042,7 @@ class Companion {
   }
 
   say(level, text, ms = 6000) {
+    if (remote.on) text = rules.cleanText(text);
     this.flash = { level, text, until: Date.now() + ms };
     this.pushStrip();
     setTimeout(() => this.pushStrip(), ms + 50).unref();
@@ -2064,7 +2151,7 @@ class Companion {
     }
     const params = {
       tab_id: g.tab_id,
-      url: e.url,
+      url: this.store.wireUrl(e),
       title: e.title,
       selection: String(selection || '').slice(0, SELECTION_MAX),
       note: String(note || '').slice(0, NOTE_MAX),
@@ -2102,6 +2189,7 @@ class Companion {
 
   async doSync() {
     if (!this.link || !this.link.lease) return; // a new lease resyncs everything
+    if (this.link.down) return; // so does a link that is back (onLinkUp)
     // Byte-bounded: the groups left over stay dirty and go in the next sync (its own seq).
     const payload = this.store.takeSync(this.link.lease.lease_id, { maxBytes: SYNC_BUDGET_BYTES });
     if (!payload) return;
@@ -2135,7 +2223,7 @@ class Companion {
   // ---------- host_report (contract §5.3) ----------
 
   ctx(entry, group) {
-    return { tab_id: group.tab_id, view_id: entry.view_id, target: entry.target || undefined, url: entry.url };
+    return { tab_id: group.tab_id, view_id: entry.view_id, target: entry.target || undefined, url: this.store.wireUrl(entry) };
   }
 
   report(kind, action, entry, group) {
@@ -2158,7 +2246,7 @@ class Companion {
   }
 
   async flushReports() {
-    if (!this.reports.length || this.reporting || !this.link || !this.link.lease) return;
+    if (!this.reports.length || this.reporting || !this.link || !this.link.lease || this.link.down) return;
     if (this.features && !this.features.has('host_report')) {
       this.reports = [];
       return;
@@ -2169,6 +2257,7 @@ class Companion {
       await this.link.call('browser.host_report', { events });
     } catch (e) {
       log('host_report failed', e.code || e.message);
+      if (remote.on && e.code === LINK_DOWN) this.reports = [...events, ...this.reports].slice(-200); // they go when it is back
     } finally {
       this.reporting = false;
     }

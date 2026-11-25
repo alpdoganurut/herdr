@@ -36,6 +36,8 @@ export function createMockHerdr({ socketPath, verifyCdp = false, log = () => {},
     update: null, // an installed update the lease answer names, as herdr's launcher does
     companionCalls: [], // browser.companion requests (the update chip's restart)
     companionDelayMs: 0, // their (failing) answer comes this late
+    helper: null, // async (method, params) => {result} | {error: {code, message}} | null: plays a remote companion's helper (asked first)
+    leaseLink: null, // the helper's `link` on lease answers
     viewCycleKeys: null, // herdr's keys.cycle_browser for the lease (null: an older herdr, no view_cycle)
     viewCycles: [], // browser.view_cycle calls (the companion's cycle key)
     viewCycleRefuse: null, // an error code browser.view_cycle answers (not_found: no herdr client)
@@ -97,6 +99,8 @@ export function createMockHerdr({ socketPath, verifyCdp = false, log = () => {},
 
   async function handle(req, sock) {
     const { id, method, params = {} } = req;
+    const helped = state.helper && (await state.helper(method, params));
+    if (helped) return helped.error ? err(id, helped.error.code, helped.error.message) : ok(id, helped.result);
     switch (method) {
       case 'browser.host_register': {
         state.registers.push({ at: Date.now(), instance: params.instance });
@@ -238,7 +242,7 @@ export function createMockHerdr({ socketPath, verifyCdp = false, log = () => {},
   }
 
   function leaseBody() {
-    return { lease_id: state.lease.lease_id, profile: 'companion', state: 'attached', heartbeat_ms: heartbeatMs, ttl_ms: ttlMs, expires_unix: now() + Math.round(ttlMs / 1000), host_protocol: 1, server_features: ['host_sync', 'host_report', 'send_page', 'show', 'page_errors', ...(state.noPageMessages ? [] : ['page_messages']), ...(state.viewCycleKeys ? ['view_cycle'] : [])], ...(state.update ? { update: state.update } : {}), ...(state.viewCycleKeys && state.viewCycleKeys.length ? { view_cycle_keys: state.viewCycleKeys } : {}) };
+    return { lease_id: state.lease.lease_id, profile: 'companion', state: 'attached', heartbeat_ms: heartbeatMs, ttl_ms: ttlMs, expires_unix: now() + Math.round(ttlMs / 1000), host_protocol: 1, server_features: ['host_sync', 'host_report', 'send_page', 'show', 'page_errors', ...(state.noPageMessages ? [] : ['page_messages']), ...(state.viewCycleKeys ? ['view_cycle'] : [])], ...(state.update ? { update: state.update } : {}), ...(state.leaseLink ? { link: state.leaseLink } : {}), ...(state.viewCycleKeys && state.viewCycleKeys.length ? { view_cycle_keys: state.viewCycleKeys } : {}) };
   }
 
   function focus(tab_id) {

@@ -28,9 +28,10 @@
     <symbol id="i-chevron" viewBox="0 0 24 24"><path d="M6 9.5l6 6 6-6"/></symbol>
   </svg>
   <header id="chrome">
-    <!-- One row: [count ▾] | tabs + | ‹ › ⟳ [url] ➤ | pin ⤢ ✕. Narrow (below 560 px) it wraps
+    <!-- One row: [machine, of a remote companion] [count ▾] | tabs + | ‹ › ⟳ [url] ➤ | pin ⤢ ✕. Narrow (below 560 px) it wraps
          into two: the count, tabs and window actions, then navigation, the URL and send. -->
     <div id="bar">
+      <span id="machine" hidden></span>
       <button id="count" class="pill" hidden><span id="counttext"></span><svg class="ico chev"><use href="#i-chevron"/></svg></button>
       <div id="countsep" class="sep"></div>
       <div id="tabs" role="tablist"></div>
