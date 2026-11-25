@@ -15,6 +15,8 @@ import readline from 'node:readline';
 import fs from 'node:fs';
 import { EXTRACT_SOURCE, LINKS_SOURCE } from './extract.mjs';
 import { Overlay, Companion, NUDGE_URL, dismissPanes, CaptureLane, laneShot, shotParams, firstShot, cleanCapture, clearClipEmulation, PaintHolds, SELECT_BUDGET_MS, describe, probePages, ControlPage, ViewWatches, viewRefs, cssRefs, reloadKeepingState, refsInside, isFurnitureUrl, VIEW_MARKER, CompanionDialog, reconcileDialogs, pruneAnswered, DIALOG_BINDING } from './activity.mjs';
+// Fork (remote browser), used only by a profile attached with `remote: true`
+import { InputLane, releaseModifiers, isRemoteTabUrl, remoteRefusal, isRemoteFile } from './activity.mjs';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import nodePath from 'node:path';
 // the act's change probe and timeout message (on a line of their own)
@@ -35,6 +37,8 @@ const NETWORK_RING = 500;
 const TEXT_CAP = 2048;
 const HTML_CAP = 200 * 1024;
 const SCREENSHOT_STALL_MS = 5000;
+/** The largest picture that goes back in an answer (a remote profile's screenshots). */
+const REMOTE_SHOT_MAX = 32 * 1024 * 1024;
 
 const profiles = new Map(); // name -> Profile
 // Fork (companion browser): file watches of HTML views (`show`, `watch`).
@@ -92,6 +96,8 @@ class PageState {
     this.overlay = new Overlay(this);
     this.overlay.log = (text) => log('debug', text);
     this.captures = new CaptureLane(); // every Page.captureScreenshot of this page, one at a time
+    // Fork (remote browser): this page's input ops, one at a time
+    this.input = profile.remote ? new InputLane({ release: () => releaseModifiers(page.keyboard) }) : null;
   }
   pushConsole(entry) {
     entry.seq = ++this.consoleSeq;
@@ -121,6 +127,9 @@ class Profile {
     this.kind = 'chromium';
     this.control = null;
     this.hostDetail = '';
+    // Fork (remote browser): the companion serves another machine's agents
+    this.remote = false;
+    this.waiting = new WeakSet(); // its pages outside the allowlist, looked at again when they navigate
     // Fork (companion dialogs): the companion's last pushed dialogs, target -> dialog
     this.dialogSeq = 0;
     this.dialogs = new Map();
@@ -153,6 +162,7 @@ async function track(profile, page, initiator) {
   if (page.url() === NUDGE_URL) return null; // the companion's wake-up tab: never a herdr tab
   if (isFurnitureUrl(page.url())) return null; // the companion browser's own pages (control page, strip)
   if (profile.pending.has(page)) return profile.pending.get(page);
+  if (profile.remote && !isRemoteTabUrl(page.url())) return trackLater(profile, page);
   const promise = (async () => {
     const { targetId, session } = await targetIdOf(profile, page);
     const state = new PageState(profile, page, targetId);
@@ -198,13 +208,14 @@ async function track(profile, page, initiator) {
     page.on('framenavigated', (frame) => {
       if (frame !== page.mainFrame()) return;
       state.overlay.navigated();
+      if (hiddenAway(profile, frame.url())) return;
       event('tab', { profile: profile.name, target: targetId, kind: 'navigated', url: frame.url(), title: '', initiator: state.inflight > 0 ? 'command' : 'other' });
     });
     // A new document while the frame should be up: the overlay comes back with it.
-    page.on('domcontentloaded', () => { state.overlay.reapply().catch(() => {}); });
+    page.on('domcontentloaded', () => { if (!hiddenAway(profile, page.url())) state.overlay.reapply().catch(() => {}); });
     page.on('load', async () => {
       const title = await page.title().catch(() => '');
-      if (title) event('tab', { profile: profile.name, target: targetId, kind: 'title', title });
+      if (title && !hiddenAway(profile, page.url())) event('tab', { profile: profile.name, target: targetId, kind: 'title', title });
     });
     page.on('close', () => {
       state.closed = true;
@@ -231,6 +242,19 @@ async function track(profile, page, initiator) {
   promise.catch(() => profile.pending.delete(page));
   return promise;
 }
+
+/** Fork (remote browser): a page outside the allowlist (DevTools, anything that is no web
+ *  page or shown file) is no tab, until it navigates to a page that is. */
+function trackLater(profile, page) {
+  if (profile.waiting.has(page)) return null;
+  profile.waiting.add(page);
+  page.on('framenavigated', (frame) => {
+    if (frame === page.mainFrame()) track(profile, page, 'other').catch((err) => log('warn', `track failed: ${err.message}`));
+  });
+  return null;
+}
+/** Fork (remote browser): a tab that left the allowlist: its address and title stay here. */
+const hiddenAway = (profile, url) => profile.remote && !isRemoteTabUrl(url);
 
 async function attach(profile, port, deadlineMs, pinDashboard) {
   if (profile.browser && profile.browser.isConnected()) {
@@ -330,18 +354,23 @@ function wireBrowser(profile, browser) {
 // Fork (companion browser): a registered browser host. No extension sweep,
 // no dashboard, no new tab page: the control page answers the nonce, then
 // every page but the companion's own is tracked.
+// `remote` (the browser link's helper only; herdr never sends it): the
+// companion serves the agents of another machine. Its tabs are an allowlist,
+// checked before every op, its input ops run one at a time per page, pictures
+// go back in the answer, and `show_remote` takes the place of `show`.
 
 const allPages = (profile) => (profile.browser ? profile.browser.contexts().flatMap((ctx) => ctx.pages()) : []);
 
-async function attachCompanion(profile, port, deadlineMs, nonce) {
+async function attachCompanion(profile, port, deadlineMs, nonce, remote = false) {
   profile.kind = 'companion';
   profile.companion.state = 'host'; // never 'ready': the extension paths stay off
-  if (profile.browser && profile.browser.isConnected() && profile.port === port) {
+  if (profile.browser && profile.browser.isConnected() && profile.port === port && profile.remote === remote) {
     await profile.control.verify(nonce);
     return Object.assign(await tabs(profile), { companion: { state: 'host', detail: profile.hostDetail } });
   }
   if (profile.browser) { await profile.browser.close().catch(() => {}); profile.browser = null; }
   profile.port = port;
+  profile.remote = remote;
   const t0 = Date.now();
   let browser;
   try {
@@ -554,7 +583,7 @@ function armView(name, target, file, state, root) {
 
 async function tabs(profile) {
   // every tab asked at once: the per-tab caps no longer add up over many tabs
-  const states = [...profile.pages.values()].filter((state) => !state.closed && !isFurnitureUrl(state.page.url()));
+  const states = [...profile.pages.values()].filter((state) => !state.closed && !isFurnitureUrl(state.page.url()) && !hiddenAway(profile, state.page.url()));
   const out = await Promise.all(states.map(async (state) => {
     let selected = false;
     let title = '';
@@ -617,6 +646,7 @@ async function pageInfo(state) {
   const dialogOpen = await dialogStillOpen(state);
   let title = '';
   if (!dialogOpen) title = await withTimeout(state.page.title(), 800, 'x', 'x').catch(() => '');
+  if (hiddenAway(state.profile, state.page.url())) return { url: 'about:blank', title: '', dialog_open: dialogOpen, status: state.lastStatus || null };
   return { url: state.page.url(), title, dialog_open: dialogOpen, status: state.lastStatus || null };
 }
 function waitUntilOf(wait) {
@@ -685,7 +715,7 @@ const ops = {
   async attach({ profile: name, args, deadline_ms }) {
     let profile = profiles.get(name);
     if (!profile) { profile = new Profile(name); profiles.set(name, profile); }
-    if (args.kind === 'companion') return attachCompanion(profile, args.port, deadline_ms, String(args.nonce || ''));
+    if (args.kind === 'companion') return attachCompanion(profile, args.port, deadline_ms, String(args.nonce || ''), args.remote === true);
     return attach(profile, args.port, deadline_ms, args.pin_dashboard);
   },
   async detach({ profile: name }) {
@@ -911,6 +941,9 @@ const ops = {
     // clipReady in activity.mjs).
     const shots = [];
     let buffer;
+    // Fork (remote browser): no file is written here; the pictures go back in the answer
+    const remote = state.profile.remote;
+    let inlineData = null;
     // The agent's picture is the page: the activity overlay steps aside for
     // both captures (the file and the inline copy).
     await state.overlay.suspend(true);
@@ -962,14 +995,15 @@ const ops = {
       if (scope && /Timeout/i.test(err.message)) fail('element_not_visible', `${args.ref ? `ref ${args.ref}` : `selector ${args.selector}`} did not become visible in time; scroll it into view or take a new snapshot`);
       throw err;
     }
-    if (args.path) {
+    if (remote && buffer.length > REMOTE_SHOT_MAX) fail('too_large', `the screenshot is ${buffer.length} bytes; take the viewport, a part (--selector or --ref), or jpeg`);
+    if (args.path && !remote) {
       fs.mkdirSync(nodePath.dirname(args.path), { recursive: true });
       fs.writeFileSync(args.path, buffer);
     }
     size = imageSize(buffer, type);
     const maxPx = args.max_px || 1568;
     const longEdge = Math.max(size.width, size.height);
-    if (longEdge > maxPx && args.inline_path) {
+    if (longEdge > maxPx && (args.inline_path || remote)) {
       // Downscale with CDP's clip.scale (no image library needed), the same
       // region as the file: the element's box, the document or the viewport.
       const scale = maxPx / longEdge;
@@ -996,14 +1030,18 @@ const ops = {
         if (/Timeout/i.test(err.message)) fail('tab_not_rendered', 'the tab could not be drawn for the inline copy; try again');
         throw err;
       }
-      fs.writeFileSync(args.inline_path, Buffer.from(answer.data, 'base64'));
-      inlinePath = args.inline_path;
+      if (remote) inlineData = answer.data;
+      else {
+        fs.writeFileSync(args.inline_path, Buffer.from(answer.data, 'base64'));
+        inlinePath = args.inline_path;
+      }
     }
     } finally {
       for (const shot of shots) shot.abandon();
       if (hold) await paints.release(hold.token);
       await state.overlay.suspend(false);
     }
+    if (remote) return { result: { full: buffer.toString('base64'), inline: inlineData, width: size.width, height: size.height, bytes: buffer.length }, page: await pageInfo(state) };
     return { result: { path: args.path, inline_path: inlinePath, width: size.width, height: size.height, bytes: buffer.length }, page: await pageInfo(state) };
   },
 
@@ -1379,6 +1417,56 @@ const ops = {
   },
 };
 
+// Fork (remote browser): the ops of a remote profile only (for any other: unknown_op).
+const remoteOps = {
+  // A file of the remote machine in a sandboxed view: never a path here, the companion
+  // serves `herdr-file://<token>/<rel>` through the link. Always without network or
+  // page_api, loaded once (no watch).
+  async show_remote({ profile: name, args, deadline_ms }) {
+    const profile = needProfile(name);
+    const { token, rel } = args;
+    if (!isRemoteFile(token, rel)) fail('invalid_request', 'show_remote needs a file token and a relative path');
+    const deadlineAt = Date.now() + Math.min(deadline_ms, 10000);
+    const answer = await profile.serial(() => profile.control.call('showRemote', { tab_id: args.tab_id || null, opened_by: args.opened_by || undefined, token, rel, focus: Boolean(args.focus), title: args.title || null }));
+    const viewId = answer && answer.view_id ? String(answer.view_id) : null;
+    const targetId = await viewTarget(profile, answer, (u) => u.startsWith(`herdr-file://${token}/`) || (viewId && u === VIEW_MARKER + viewId), deadlineAt);
+    profile.control.remember(targetId, viewId);
+    const state = await waitTracked(profile, targetId, deadlineAt);
+    await blockNetwork(state).catch((err) => log('debug', `show_remote: network block: ${err.message}`));
+    state.inflight++;
+    // the file comes through the link: the view may still be at its blank marker page
+    try { await state.page.waitForURL((u) => u.protocol === 'herdr-file:', { waitUntil: 'domcontentloaded', timeout: Math.max(1000, Math.min(5000, deadlineAt - Date.now())) }).catch(() => {}); }
+    finally { state.inflight--; }
+    return { result: { target: targetId, view_id: viewId, watching: false }, page: await pageInfo(state) };
+  },
+};
+
+/** The profile of a request, when it is a remote one. */
+function remoteProfile(name) {
+  const profile = profiles.get(name);
+  return profile && profile.remote ? profile : null;
+}
+/** Before every op of a remote profile: no path of this machine, and its page is still one
+ *  that may be driven. */
+function remoteCheck(profile, req) {
+  if (req.op === 'show' || req.op === 'watch') fail('host_refused', `${req.op} takes a path of this machine; not for remote machines`);
+  const state = req.target ? profile.pages.get(req.target) : null;
+  const refused = state && !state.closed ? remoteRefusal(req.op, state.page.url()) : null;
+  if (refused) fail('host_refused', refused);
+}
+/** Checks an op of a remote profile. An input op takes its place in its page's queue now (the
+ *  deadline counts from here) and answers through it; null: any other op, run as always. */
+function remoteRun(profile, req, call, deadline, ready) {
+  remoteCheck(profile, req);
+  const state = req.op === 'act' ? profile.pages.get(req.target) : null;
+  if (!state) return null;
+  const check = () => {
+    if (remoteProfile(req.profile) !== profile || profile.pages.get(req.target) !== state) fail('tab_closed', 'that browser tab went away while the act waited; nothing was done');
+    remoteCheck(profile, req); // once more: the page may have moved while this waited
+  };
+  return state.input.run(call, { deadlineAt: Date.now() + deadline, deadlineMs: deadline, ready, guard: () => guardDialog(state), check });
+}
+
 // The password guard around eval: every password field (input[type=password],
 // autocomplete current-/new-password; through open shadow roots and
 // same-origin frames) with its value and type, as an object in the isolated
@@ -1475,14 +1563,32 @@ function activityEnd(state, activity) {
 }
 
 async function handle(req) {
-  const op = ops[req.op];
+  const remote = remoteProfile(req.profile);
+  const op = ops[req.op] || (remote && remoteOps[req.op]);
   if (!op) return send({ id: req.id, ok: false, error: { code: 'unknown_op', message: `unknown op ${req.op}; run herdr browser setup` } });
   const deadline = Number(req.deadline_ms || 30000);
   const activity = req.activity && typeof req.activity === 'object' ? req.activity : null;
+  const call = (ms) => {
+    if (remote) remoteCheck(remote, req); // once more: the page may have moved while the overlay went up
+    return op({ profile: req.profile, target: req.target, args: req.args || {}, deadline_ms: ms, activity });
+  };
   let state = activity && PAGE_OPS.has(req.op) ? activityPage(req.profile, req.target) : null;
+  // Fork (remote browser): checked before the overlay touches the page; an act takes its place
+  // in the page's queue now and starts once its overlay is up
+  let refused = null;
+  let queued = null;
+  let begun = () => {};
+  if (remote) {
+    try {
+      queued = remoteRun(remote, req, call, deadline, new Promise((resolve) => { begun = resolve; }));
+      if (queued) queued.catch(() => {});
+    } catch (err) { refused = err; state = null; }
+  }
   if (state) await activityBegin(state, activity);
+  begun();
   try {
-    const out = await withTimeout(op({ profile: req.profile, target: req.target, args: req.args || {}, deadline_ms: deadline, activity }), deadline, 'browser_timeout', `${req.op} exceeded ${deadline} ms`);
+    if (refused) throw refused;
+    const out = await (queued || withTimeout(call(deadline), deadline, 'browser_timeout', `${req.op} exceeded ${deadline} ms`));
     if (activity && req.op === 'open' && out && out.result && out.result.target) {
       // The tab an agent just opened: frame up, grouped.
       state = activityPage(req.profile, out.result.target);

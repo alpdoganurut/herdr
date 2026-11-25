@@ -1184,6 +1184,95 @@ export class ControlPage {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Fork (remote browser): a companion driven for the agents of another machine
+// (`attach` with `remote: true`). Its tabs are web pages and shown files only,
+// each op checks the page's URL first, and the input ops of a page run one at
+// a time: two at once combine their keys (a held Meta with another op's key),
+// and a chord that throws leaves its modifier down.
+
+/** A page a remote machine's agents may drive: web pages, blank pages, shown
+ *  files. DevTools and the companion's own pages never are. */
+export function isRemotePageUrl(url) {
+  return typeof url === 'string' && /^(?:https?:|herdr-file:|about:blank(?:$|[?#]))/i.test(url);
+}
+const isErrorPageUrl = (url) => typeof url === 'string' && url.startsWith('chrome-error:');
+/** A page that is a tab there: one they may drive, or the error page of one that did not load. */
+export function isRemoteTabUrl(url) {
+  return isRemotePageUrl(url) || isErrorPageUrl(url);
+}
+/** The ops that work on an error page. */
+export const REMOTE_ERROR_PAGE_OPS = new Set(['navigate', 'history', 'close', 'tabs', 'select']);
+/** Why `op` may not run on a page at `url`; null when it may. Never names the URL itself. */
+export function remoteRefusal(op, url) {
+  if (isRemotePageUrl(url)) return null;
+  if (isErrorPageUrl(url)) {
+    if (REMOTE_ERROR_PAGE_OPS.has(op)) return null;
+    return `the page did not load (its error page is up), so only navigate, history, select and close work on this tab; ${op} did nothing`;
+  }
+  const scheme = /^[a-z][a-z0-9+.-]*:/i.exec(String(url || ''));
+  return `this tab left the pages a remote machine may use (it is at ${scheme ? `a ${scheme[0]} page` : 'no known address'}); ${op} did nothing`;
+}
+
+/** A shown file's token, and its percent-encoded path below the folder it serves: no empty
+ *  or dot segment (`%2e` is a dot to a URL), no encoded separator or NUL. The gate's rule
+ *  (rel_path in the link's ops.json). */
+export function isRemoteFile(token, rel) {
+  return typeof token === 'string' && /^[a-z][a-z0-9]{23}$/.test(token)
+    && typeof rel === 'string' && !/[\u0000-\u001f\u007f\\?#]|%2f|%5c|%00/i.test(rel)
+    && rel.split('/').every((part) => !/^\.{0,2}$/.test(part.replace(/%2e/gi, '.')));
+}
+
+export const MODIFIER_KEYS = ['Shift', 'Control', 'Alt', 'Meta'];
+/** Every modifier of a Playwright keyboard up (all asked at once: one that waits on a
+ *  blocked page does not keep the others held). */
+export async function releaseModifiers(keyboard) {
+  await Promise.all(MODIFIER_KEYS.map(async (key) => { try { await keyboard.up(key); } catch {} }));
+}
+
+/** A page's input ops, one at a time, first in first out. `run` takes the place
+ *  at once. The next op starts when the one before it really ended (its answer
+ *  may be out already: a deadline does not stop it) and `release` is through. */
+export class InputLane {
+  constructor({ release }) {
+    this.release = release;
+    this.tail = Promise.resolve();
+    this.size = 0;
+  }
+  /** `op(leftMs)` in turn. Past `deadlineAt` the answer is browser_timeout: an op
+   *  still waiting then never runs. Its turn also waits for `ready` (which never
+   *  rejects). `guard` (asked when it has to queue) and `check` (asked at its turn):
+   *  an error ends the wait with it, and the op never runs either. An op that never
+   *  runs sends the page nothing, the release neither. */
+  run(op, { deadlineAt, name = 'act', deadlineMs = 0, ready = null, guard = null, check = null }) {
+    return new Promise((resolve, reject) => {
+      let started = false;
+      let over = false;
+      const end = (settle, value) => {
+        if (over) return;
+        over = true;
+        clearTimeout(timer);
+        settle(value);
+      };
+      const expire = () => end(reject, Object.assign(new Error(started
+        ? `${name} exceeded ${deadlineMs} ms`
+        : `${name} was still waiting for its turn on this page after ${deadlineMs} ms; it did not run and nothing was done`), { herdr: true, code: 'browser_timeout' }));
+      const timer = setTimeout(expire, Math.max(0, deadlineAt - Date.now()));
+      if (this.size++ && guard) Promise.resolve().then(guard).catch((err) => { if (!started) end(reject, err); });
+      this.tail = this.tail.then(async () => {
+        await ready;
+        if (!over && Date.now() >= deadlineAt) expire();
+        if (over) return;
+        if (check) { try { check(); } catch (err) { end(reject, err); return; } }
+        started = true;
+        try { end(resolve, await op(deadlineAt - Date.now())); }
+        catch (err) { end(reject, err); }
+        finally { await this.release(); }
+      }).catch(() => {}).finally(() => { this.size--; });
+    });
+  }
+}
+
 /** Fork (companion dialogs): a page's alert / confirm / prompt in the
  *  companion. Electron has no prompt() and the companion shows all three in
  *  its own card, so no CDP Page.javascriptDialogOpening comes; the companion
