@@ -7,8 +7,13 @@
 // and takes this out
 #![allow(dead_code)]
 
+mod api_socket;
 pub(crate) mod classify;
+pub(crate) mod client;
+mod clients;
+mod files;
 mod forward;
 mod gate;
+pub(crate) mod helper;
 mod proxy;
 mod ssh;
