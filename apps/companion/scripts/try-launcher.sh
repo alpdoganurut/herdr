@@ -84,7 +84,9 @@ done
 # The browser helper herdr drives the companion through: this checkout's playwright-core (the pin).
 host_dir="$T/state/herdr/browser/host"
 mkdir -p "$host_dir"
-ln -s "$app/node_modules" "$host_dir/node_modules"
+# a copy (an APFS clone where it can), never a link: herdr's repair runs npm ci there
+cp -c -R "$app/node_modules" "$host_dir/node_modules" 2>/dev/null \
+  || { rm -rf "$host_dir/node_modules"; cp -R "$app/node_modules" "$host_dir/node_modules"; }
 printf '{"version":1,"node":"%s","playwright_core":"1.63.0","assets_sha256":"","installed_at":0}\n' "$node" > "$host_dir/runtime.json"
 
 cat > "$T/bin/companion-crash" <<'EOF'

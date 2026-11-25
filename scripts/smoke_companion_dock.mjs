@@ -61,7 +61,19 @@ const SOCKETS = ['herdr', 'herdr-dev'].map((d) => path.join(T, 'config', d, 'her
 for (const d of ['herdr', 'herdr-dev']) {
   const host = path.join(T, 'state', d, 'browser', 'host');
   fs.mkdirSync(host, { recursive: true });
-  if (!fs.existsSync(path.join(host, 'node_modules'))) fs.symlinkSync(path.join(APP, 'node_modules'), path.join(host, 'node_modules'));
+  // A copy (an APFS clone where it can), never a link: herdr's repair runs npm ci
+  // there, which would empty the link's target, this checkout's node_modules.
+  const modules = path.join(host, 'node_modules');
+  // a link an older run of this script left in a reused HERDR_SMOKE_TMP goes
+  if (fs.lstatSync(modules, { throwIfNoEntry: false })?.isSymbolicLink()) fs.unlinkSync(modules);
+  if (!fs.existsSync(modules)) {
+    try {
+      execFileSync('cp', ['-c', '-R', path.join(APP, 'node_modules'), modules], { stdio: 'ignore' });
+    } catch {
+      fs.rmSync(modules, { recursive: true, force: true });
+      fs.cpSync(path.join(APP, 'node_modules'), modules, { recursive: true, verbatimSymlinks: true });
+    }
+  }
   fs.writeFileSync(path.join(host, 'runtime.json'), JSON.stringify({ version: 1, node: process.execPath, playwright_core: '1.63.0', assets_sha256: '', installed_at: 0 }) + '\n');
 }
 

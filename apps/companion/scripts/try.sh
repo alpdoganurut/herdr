@@ -28,7 +28,9 @@ T=$(mktemp -d /tmp/herdr-companion-try.XXXXXX) || die "mktemp failed"
 H="$T/state/herdr/browser/host"
 mkdir -p "$T/config/herdr" "$H"
 printf 'onboarding = false\n\n[browser]\nenabled = true\nwindow = true\nhost = "auto"\n' > "$T/config/herdr/config.toml"
-ln -s "$app/node_modules" "$H/node_modules"
+# a copy (an APFS clone where it can), never a link: herdr's repair runs npm ci there
+cp -c -R "$app/node_modules" "$H/node_modules" 2>/dev/null \
+  || { rm -rf "$H/node_modules"; cp -R "$app/node_modules" "$H/node_modules"; }
 printf '{"version":1,"node":"%s","playwright_core":"1.63.0","assets_sha256":"","installed_at":0}\n' "$(command -v node)" > "$H/runtime.json"
 sock="$T/config/herdr/herdr.sock"
 

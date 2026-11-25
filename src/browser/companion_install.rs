@@ -562,6 +562,10 @@ fn install_electron(
 ) -> Result<(String, String), CompanionSetupError> {
     let failed = CompanionSetupError::Failed;
     let dir = electron_dir(home);
+    // every step below (the clone, keeping the binary aside, npm ci) removes
+    // or rewrites under dir/node_modules: never through a link out of herdr's home
+    setup::guard_npm_dir(&dir, &env.browser_home)
+        .map_err(|error| failed(format!("companion: {error}")))?;
     if let Some(source) = options.dist_override.as_deref() {
         if electron_installed(home).as_deref() == Some(ELECTRON_VERSION) {
             return Ok((String::new(), String::new()));
