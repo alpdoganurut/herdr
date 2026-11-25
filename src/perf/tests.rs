@@ -477,7 +477,8 @@ fn fork_smoke_stall_attr_nested_churn_keeps_the_outer_step_holding() {
         attribution.dominant.describe(),
         "api_request:workspace.list"
     );
-    assert_eq!(attribution.dominant_ms, 1_700);
+    // Counted from the first busy poll, not from detection.
+    assert_eq!(attribution.dominant_ms, 2_000);
     assert!(attribution.changes >= 4 * 17, "{attribution:?}");
 }
 
@@ -597,6 +598,7 @@ fn fork_smoke_stall_attr_the_end_line_names_step_cpu_and_pressure() {
                 last: StepRecord::default(),
                 changes: 3,
             },
+            paused: false,
         });
     });
     let text = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
@@ -629,71 +631,230 @@ fn fork_smoke_stall_attr_the_end_line_names_step_cpu_and_pressure() {
     assert!(stall.contains("step="), "{stall}");
 }
 
-/// Fork (stall attribution): the platform probes read real values here.
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+/// Fork (stall attribution): polls that land inside nested app events
+/// whose kind differs at every poll still name the step that holds them:
+/// the internal-event drain, or the API request they run in. Detection
+/// lands inside a nested event.
 #[test]
-fn fork_smoke_stall_attr_platform_probes_read_the_machine_and_the_thread() {
-    let pressure = crate::platform::machine_pressure();
-    assert!(pressure.load1_x100.is_some(), "{pressure:?}");
-    assert!(pressure.swap_total_mb.is_some(), "{pressure:?}");
-    #[cfg(target_os = "macos")]
-    assert!(pressure.memory_pressure.is_some(), "{pressure:?}");
+fn fork_smoke_stall_attr_polls_inside_changing_nested_events_name_their_outer_step() {
+    use super::step::{api_method_index, Step};
 
-    let clock = crate::platform::current_thread_cpu_clock().expect("a thread clock");
-    let before = crate::platform::thread_cpu_ns(clock).expect("cpu before");
-    let started = std::time::Instant::now();
-    let mut spin = 0u64;
-    while started.elapsed() < std::time::Duration::from_millis(50) {
-        spin = std::hint::black_box(spin.wrapping_add(1));
+    static HEARTBEAT: Heartbeat = Heartbeat::new("test_loop", 250);
+    let method = crate::api::schema::Method::WorkspaceList(Default::default());
+    for (outer, expected) in [
+        (None, "internal_events"),
+        (
+            Some(api_method_index(&method)),
+            "api_request:workspace.list",
+        ),
+    ] {
+        let heartbeats = [&HEARTBEAT];
+        let mut watchdog = Watchdog::new(&heartbeats);
+        HEARTBEAT.end();
+        HEARTBEAT.begin_at(1_000 * MS);
+        HEARTBEAT.step.set(Step::InternalEvents);
+        let api = outer.map(|index| HEARTBEAT.step.enter(Step::ApiRequest, index));
+        let mut events = Vec::new();
+        for (poll, at) in (1_000..=3_000).step_by(100).enumerate() {
+            let _event = HEARTBEAT.step.enter(Step::AppEvent, (poll % 5) as u16);
+            watchdog.check(at * MS, WALL0 + at * MS, |event| events.push(event));
+        }
+        drop(api);
+        HEARTBEAT.end();
+        watchdog.check(3_100 * MS, WALL0 + 3_100 * MS, |event| events.push(event));
+
+        let first = events.iter().find_map(|event| match event {
+            StallEvent::Stalled { step, .. } => Some(step.describe()),
+            _ => None,
+        });
+        assert!(
+            first
+                .as_deref()
+                .is_some_and(|step| step.starts_with("app_event:")),
+            "{first:?}"
+        );
+        let Some(StallEvent::Ended { attribution, .. }) = events.last().copied() else {
+            panic!("the stall ended: {events:?}");
+        };
+        assert_eq!(attribution.dominant.describe(), expected);
+        assert_eq!(attribution.dominant_ms, 2_000, "{attribution:?}");
     }
-    let after = crate::platform::thread_cpu_ns(clock).expect("cpu after");
-    assert!(after > before, "{before} -> {after}");
-    // Read from another thread, as the watchdog does.
-    let other = std::thread::spawn(move || crate::platform::thread_cpu_ns(clock))
-        .join()
-        .expect("reader thread");
-    assert!(other.is_some_and(|ns| ns >= after));
-    // Page-ins (swap or disk reads); 0 is a real answer when everything the
-    // test touched is in memory, so only the read itself is checked.
-    assert!(crate::platform::process_major_faults().is_some());
 }
 
-/// Manual (macOS): the stack sampler writes a call graph of this process
-/// naming this thread (`cargo nextest run --run-ignored only
-/// stall_attr_the_stack_sampler`).
-#[cfg(target_os = "macos")]
+/// Fork (stall attribution): a request held 2 s, then a short one in the
+/// same drain: the end names the long request, not the drain.
 #[test]
-#[ignore = "manual: runs /usr/bin/sample on the test process for about two seconds"]
-fn fork_smoke_stall_attr_the_stack_sampler_writes_a_call_graph() {
-    let path = std::env::temp_dir().join(format!("herdr-stall-sample-{}.txt", std::process::id()));
-    let mut child =
-        crate::platform::spawn_stack_sample(std::process::id(), 1, &path).expect("sample starts");
-    // A 100 ms poller (the watchdog's cadence) keeps running while the
-    // sampler suspends threads to sample them: its gaps stay well under the
-    // watchdog's pause guard, so a sample never drops the stall it samples.
-    let started = std::time::Instant::now();
-    let mut last = started;
-    let mut largest_gap = std::time::Duration::ZERO;
-    while child.try_wait().expect("try_wait").is_none() {
-        assert!(
-            started.elapsed() < std::time::Duration::from_secs(20),
-            "sample hangs"
-        );
-        std::thread::sleep(super::watchdog::POLL);
-        largest_gap = largest_gap.max(last.elapsed());
-        last = std::time::Instant::now();
+fn fork_smoke_stall_attr_a_long_inner_run_is_not_swallowed_by_its_outer_step() {
+    use super::step::Step;
+
+    static HEARTBEAT: Heartbeat = Heartbeat::new("test_loop", 250);
+    let heartbeats = [&HEARTBEAT];
+    let mut watchdog = Watchdog::new(&heartbeats);
+
+    HEARTBEAT.begin_at(1_000 * MS);
+    HEARTBEAT.step.set(Step::ApiRequests);
+    let x = HEARTBEAT.step.enter(Step::ApiRequest, 1);
+    let mut events = poll(&mut watchdog, 1_000, 3_000);
+    drop(x);
+    let y = HEARTBEAT.step.enter(Step::ApiRequest, 2);
+    events.extend(poll(&mut watchdog, 3_100, 3_100));
+    drop(y);
+    events.extend(poll(&mut watchdog, 3_200, 3_200));
+    HEARTBEAT.end();
+    events.extend(poll(&mut watchdog, 3_300, 3_300));
+
+    let Some(StallEvent::Ended { attribution, .. }) = events.last().copied() else {
+        panic!("the stall ended: {events:?}");
+    };
+    let x = crate::api::schema::Method::OPERATIONS[1].name;
+    assert_eq!(
+        attribution.dominant.describe(),
+        format!("api_request:{x} in api_requests")
+    );
+    assert_eq!(attribution.dominant_ms, 2_000);
+}
+
+/// Fork (stall attribution): the steps before the threshold count: a
+/// session save that held the loop for its first 200 ms is named although
+/// the loop had moved on when the stall was detected.
+#[test]
+fn fork_smoke_stall_attr_a_step_before_the_threshold_is_named() {
+    use super::step::{ScheduledTask, Step};
+
+    let heartbeat = Heartbeat::new("test_loop", 250);
+    let heartbeats = [&heartbeat];
+    let mut watchdog = Watchdog::new(&heartbeats);
+
+    heartbeat.begin_at(1_000 * MS);
+    heartbeat
+        .step
+        .set_detail(Step::Scheduled, ScheduledTask::SessionSave as u16);
+    let mut events = poll(&mut watchdog, 1_000, 1_200);
+    heartbeat.step.set(Step::RenderPrepare);
+    events.extend(poll(&mut watchdog, 1_300, 1_400));
+    heartbeat.end();
+    events.extend(poll(&mut watchdog, 1_500, 1_500));
+
+    let Some(StallEvent::Ended { attribution, .. }) = events.last().copied() else {
+        panic!("the stall ended: {events:?}");
+    };
+    assert_eq!(attribution.first.describe(), "render_prepare");
+    assert_eq!(attribution.dominant.describe(), "scheduled:session_save");
+    assert_eq!(attribution.dominant_ms, 200);
+    assert_eq!(attribution.changes, 1);
+}
+
+/// Fork (stall attribution): a stall closed at a clock jump says so, so
+/// its CPU window is left out.
+#[test]
+fn fork_smoke_stall_attr_a_stall_closed_at_a_jump_is_marked_paused() {
+    let heartbeat = Heartbeat::new("test_loop", 250);
+    let heartbeats = [&heartbeat];
+    let mut watchdog = Watchdog::new(&heartbeats);
+    heartbeat.begin_at(1_000 * MS);
+    let _ = poll(&mut watchdog, 1_000, 1_400);
+    let mut events = Vec::new();
+    watchdog.check(1_500 * MS, WALL0 + (3_600_000 + 1_500) * MS, |event| {
+        events.push(event)
+    });
+    assert!(
+        matches!(events.as_slice(), [StallEvent::Ended { paused: true, .. }]),
+        "{events:?}"
+    );
+    heartbeat.end();
+    heartbeat.begin_at(2_000 * MS);
+    let hour = 3_600_000;
+    let mut events = Vec::new();
+    for at in (2_000..=2_400).step_by(100) {
+        if at == 2_400 {
+            heartbeat.end();
+        }
+        watchdog.check(at * MS, WALL0 + (hour + at) * MS, |event| {
+            events.push(event)
+        });
     }
     assert!(
-        largest_gap < super::watchdog::WATCHDOG_GAP / 2,
-        "{largest_gap:?}"
+        matches!(events.last(), Some(StallEvent::Ended { paused: false, .. })),
+        "{events:?}"
     );
-    let text = std::fs::read_to_string(&path).expect("a sample file");
-    let _ = std::fs::remove_file(&path);
-    assert!(text.contains("Call graph:"), "{text}");
-    assert!(
-        text.contains("fork_smoke_stall_attr_the_stack_sampler"),
-        "{text}"
+}
+
+/// Fork (stall attribution): sample files beyond the cap go oldest first;
+/// other files stay.
+#[test]
+fn fork_smoke_stall_attr_old_samples_are_pruned_oldest_first() {
+    let dir = std::env::temp_dir().join(format!("herdr-prune-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    for ms in [
+        1_700_000_000_003u64,
+        1_700_000_000_001,
+        1_700_000_000_002,
+        1_700_000_000_004,
+    ] {
+        std::fs::write(dir.join(format!("stall-{ms:013}-server_loop.txt")), "x").expect("write");
+    }
+    std::fs::write(dir.join("notes.txt"), "keep").expect("write");
+    super::watchdog::prune_samples(&dir, 2);
+    let mut left: Vec<String> = std::fs::read_dir(&dir)
+        .expect("read dir")
+        .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+        .collect();
+    left.sort();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(
+        left,
+        vec![
+            "notes.txt".to_owned(),
+            "stall-1700000000003-server_loop.txt".to_owned(),
+            "stall-1700000000004-server_loop.txt".to_owned(),
+        ]
     );
+}
+
+/// Fork (stall attribution): a sampler that exits without its file, fails
+/// or runs past the timeout is a failed sample; a timed-out one is killed
+/// without waiting and collected later.
+#[cfg(unix)]
+#[test]
+fn fork_smoke_stall_attr_a_failed_or_hung_sampler_is_reported() {
+    use super::watchdog::{reap_sample_child, SampleOutcome, SAMPLE_TIMEOUT};
+    use std::process::Command;
+
+    let missing = std::env::temp_dir().join(format!("herdr-no-sample-{}", std::process::id()));
+    let wait = |child: &mut std::process::Child, killed: &mut bool, now_ns: u64| loop {
+        match reap_sample_child(child, &missing, 0, killed, now_ns) {
+            SampleOutcome::Running => std::thread::sleep(std::time::Duration::from_millis(10)),
+            outcome => return outcome,
+        }
+    };
+    let mut killed = false;
+    let mut ok = Command::new("true").spawn().expect("true");
+    assert_eq!(
+        wait(&mut ok, &mut killed, 0),
+        SampleOutcome::Failed("no file".to_owned())
+    );
+    let mut failing = Command::new("false").spawn().expect("false");
+    assert!(matches!(
+        wait(&mut failing, &mut killed, 0),
+        SampleOutcome::Failed(reason) if reason != "no file"
+    ));
+
+    let mut hung = Command::new("sleep").arg("30").spawn().expect("sleep");
+    assert_eq!(
+        reap_sample_child(&mut hung, &missing, 0, &mut killed, 0),
+        SampleOutcome::Running
+    );
+    let late = SAMPLE_TIMEOUT.as_nanos() as u64;
+    assert_eq!(
+        reap_sample_child(&mut hung, &missing, 0, &mut killed, late),
+        SampleOutcome::TimedOut
+    );
+    assert!(killed);
+    assert!(matches!(
+        wait(&mut hung, &mut killed, late),
+        SampleOutcome::Failed(_)
+    ));
 }
 
 /// Manual: what each hot-path touch costs (`cargo test --release --bin herdr

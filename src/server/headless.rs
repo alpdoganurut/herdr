@@ -3563,6 +3563,8 @@ impl HeadlessServer {
         changed |= self.app.handle_codex_session_probe(now);
         // Fork: agents' context use from their session files (off-thread reads).
         changed |= self.app.handle_agent_context_probe(now);
+        // fork (stall attribution)
+        crate::perf::server::scheduled(crate::perf::step::ScheduledTask::AgentHandoff);
         // Fork: handoff, then compact, runs (about once a second while one is on).
         changed |= self.app.handle_agent_handoff_tasks(now);
 
@@ -3576,14 +3578,21 @@ impl HeadlessServer {
             changed = true;
         }
 
-        crate::perf::server::scheduled(crate::perf::step::ScheduledTask::Notices); // fork (stall attribution)
+        crate::perf::server::scheduled(crate::perf::step::ScheduledTask::HostAppearance); // fork (stall attribution)
         changed |= self.app.release_host_appearance_if_ready(now);
+        crate::perf::server::scheduled(crate::perf::step::ScheduledTask::TabBarStatus); // fork (stall attribution)
         changed |= self.app.handle_tab_bar_status_tasks(now);
+        crate::perf::server::scheduled(crate::perf::step::ScheduledTask::News); // fork (stall attribution)
         changed |= self.app.handle_news_tasks(now);
+        crate::perf::server::scheduled(crate::perf::step::ScheduledTask::Coordinator); // fork (stall attribution)
         changed |= self.app.handle_coordinator_tasks(now);
+        crate::perf::server::scheduled(crate::perf::step::ScheduledTask::MessageQueue); // fork (stall attribution)
         changed |= self.app.handle_message_queue_tasks(now);
+        // fork (stall attribution)
+        crate::perf::server::scheduled(crate::perf::step::ScheduledTask::PageErrors);
         // Fork (companion browser): page errors to their agents, quietly.
         changed |= self.app.handle_browser_page_errors();
+        crate::perf::server::scheduled(crate::perf::step::ScheduledTask::Notices); // fork (stall attribution)
         self.flush_coordinator_notifications(now);
         self.flush_news_notifications(now);
         // fork (stall attribution)

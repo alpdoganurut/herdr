@@ -26,109 +26,87 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::events::AppEvent;
 use crate::server::client_transport::ServerEvent;
 
-/// A step of a watched loop.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub(crate) enum Step {
-    /// Never marked (a loop without step marks, or the start).
-    Unmarked = 0,
-    /// The top of an iteration: reaping detached processes, quit checks.
-    LoopTop,
-    /// Beginning shutdown (`initiate_shutdown`).
-    Shutdown,
-    /// The bounded internal (app) event drain.
-    InternalEvents,
-    /// Expiring due pane metadata.
-    MetadataExpiry,
-    /// The bounded API request drain.
-    ApiRequests,
-    /// Focus events and the session-save schedule.
-    FocusSync,
-    /// Accepting client connections.
-    ClientAccept,
-    /// The bounded server (client transport) event drain.
-    ServerEvents,
-    /// One scheduled task (detail: [`ScheduledTask`]).
-    Scheduled,
-    /// Pending and deferred alternate-screen reads.
-    AltScreenReads,
-    /// The default workspace for a newly attached shell client.
-    DefaultWorkspace,
-    /// Expiring native graphics.
-    NativeGraphics,
-    /// Config reload, immediate PTY sources, mouse and keyboard modes.
-    ClientSync,
-    /// The render decision, title sync and visibility check.
-    RenderPrepare,
-    /// A full render pass and its frame fanout.
-    FullRender,
-    /// A retained pane-surface pass and its fanout.
-    RetainedRender,
-    /// Computing the next wake deadline.
-    NextDeadline,
-    /// Right after the wait, before the event's handler marks itself.
-    Dispatch,
-    /// One app event (detail: its kind).
-    AppEvent,
-    /// One API request (detail: its method).
-    ApiRequest,
-    /// One server event (detail: its kind; client attach is `client_connected`).
-    ServerEvent,
+/// Defines a fieldless enum (variants numbered from 0 in order), the
+/// slice of all its variants, the slice of their names and `name()`, from
+/// one list, so the three never drift apart.
+macro_rules! named_enum {
+    (
+        $(#[$meta:meta])*
+        $vis:vis enum $name:ident: $repr:ident, $all:ident, $names:ident {
+            $($(#[$vmeta:meta])* $variant:ident => $text:literal,)*
+        }
+    ) => {
+        $(#[$meta])*
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        #[repr($repr)]
+        $vis enum $name {
+            $($(#[$vmeta])* $variant,)*
+        }
+
+        /// Every variant, in discriminant order.
+        $vis const $all: &[$name] = &[$($name::$variant,)*];
+        /// Each variant's name, in discriminant order.
+        $vis const $names: &[&str] = &[$($text,)*];
+
+        impl $name {
+            pub(crate) fn name(self) -> &'static str {
+                $names[self as usize]
+            }
+        }
+    };
 }
 
-const STEPS: [Step; 22] = [
-    Step::Unmarked,
-    Step::LoopTop,
-    Step::Shutdown,
-    Step::InternalEvents,
-    Step::MetadataExpiry,
-    Step::ApiRequests,
-    Step::FocusSync,
-    Step::ClientAccept,
-    Step::ServerEvents,
-    Step::Scheduled,
-    Step::AltScreenReads,
-    Step::DefaultWorkspace,
-    Step::NativeGraphics,
-    Step::ClientSync,
-    Step::RenderPrepare,
-    Step::FullRender,
-    Step::RetainedRender,
-    Step::NextDeadline,
-    Step::Dispatch,
-    Step::AppEvent,
-    Step::ApiRequest,
-    Step::ServerEvent,
-];
+named_enum! {
+    /// A step of a watched loop.
+    pub(crate) enum Step: u8, STEPS, STEP_NAMES {
+        /// Never marked (a loop without step marks, or the start). Must stay first (0).
+        Unmarked => "unmarked",
+        /// The top of an iteration: reaping detached processes, quit checks.
+        LoopTop => "loop_top",
+        /// Beginning shutdown (`initiate_shutdown`).
+        Shutdown => "shutdown",
+        /// The bounded internal (app) event drain.
+        InternalEvents => "internal_events",
+        /// Expiring due pane metadata.
+        MetadataExpiry => "metadata_expiry",
+        /// The bounded API request drain.
+        ApiRequests => "api_requests",
+        /// Focus events and the session-save schedule.
+        FocusSync => "focus_sync",
+        /// Accepting client connections.
+        ClientAccept => "client_accept",
+        /// The bounded server (client transport) event drain.
+        ServerEvents => "server_events",
+        /// One scheduled task (detail: [`ScheduledTask`]).
+        Scheduled => "scheduled",
+        /// Pending and deferred alternate-screen reads.
+        AltScreenReads => "alt_screen_reads",
+        /// The default workspace for a newly attached shell client.
+        DefaultWorkspace => "default_workspace",
+        /// Expiring native graphics.
+        NativeGraphics => "native_graphics",
+        /// Config reload, immediate PTY sources, mouse and keyboard modes.
+        ClientSync => "client_sync",
+        /// The render decision, title sync and visibility check.
+        RenderPrepare => "render_prepare",
+        /// A full render pass and its frame fanout.
+        FullRender => "full_render",
+        /// A retained pane-surface pass and its fanout.
+        RetainedRender => "retained_render",
+        /// Computing the next wake deadline.
+        NextDeadline => "next_deadline",
+        /// Right after the wait, before the event's handler marks itself.
+        Dispatch => "dispatch",
+        /// One app event (detail: its kind).
+        AppEvent => "app_event",
+        /// One API request (detail: its method).
+        ApiRequest => "api_request",
+        /// One server event (detail: its kind; client attach is `client_connected`).
+        ServerEvent => "server_event",
+    }
+}
 
 impl Step {
-    pub(crate) fn name(self) -> &'static str {
-        match self {
-            Step::Unmarked => "unmarked",
-            Step::LoopTop => "loop_top",
-            Step::Shutdown => "shutdown",
-            Step::InternalEvents => "internal_events",
-            Step::MetadataExpiry => "metadata_expiry",
-            Step::ApiRequests => "api_requests",
-            Step::FocusSync => "focus_sync",
-            Step::ClientAccept => "client_accept",
-            Step::ServerEvents => "server_events",
-            Step::Scheduled => "scheduled",
-            Step::AltScreenReads => "alt_screen_reads",
-            Step::DefaultWorkspace => "default_workspace",
-            Step::NativeGraphics => "native_graphics",
-            Step::ClientSync => "client_sync",
-            Step::RenderPrepare => "render_prepare",
-            Step::FullRender => "full_render",
-            Step::RetainedRender => "retained_render",
-            Step::NextDeadline => "next_deadline",
-            Step::Dispatch => "dispatch",
-            Step::AppEvent => "app_event",
-            Step::ApiRequest => "api_request",
-            Step::ServerEvent => "server_event",
-        }
-    }
-
     fn from_bits(bits: u64) -> Step {
         STEPS
             .get(usize::try_from(bits).unwrap_or(usize::MAX))
@@ -144,7 +122,7 @@ impl Step {
                 .map(|operation| operation.name),
             Step::AppEvent => APP_EVENT_KINDS.get(index).copied(),
             Step::ServerEvent => SERVER_EVENT_KINDS.get(index).copied(),
-            Step::Scheduled => SCHEDULED_TASKS.get(index).copied(),
+            Step::Scheduled => ALL_SCHEDULED_TASKS.get(index).map(|task| task.name()),
             _ => None,
         }
     }
@@ -226,40 +204,35 @@ kinds!(SERVER_EVENT_KINDS, server_event_kind, ServerEvent {
     QuitSignal => "quit_signal",
 });
 
-/// The scheduled tasks of the headless server's tick (`Step::Scheduled`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u16)]
-pub(crate) enum ScheduledTask {
-    Deadlines = 0,
-    AgentNotifications,
-    WorktreeValidation,
-    GitRefresh,
-    UpdateChecks,
-    SessionSave,
-    TranscriptBackup,
-    AgentProbes,
-    MetadataExpiry,
-    Notices,
-    AgentLifecycle,
-    Autosuspend,
-    AgentResumes,
+named_enum! {
+    /// The scheduled tasks of the headless server's tick (`Step::Scheduled`).
+    pub(crate) enum ScheduledTask: u16, ALL_SCHEDULED_TASKS, SCHEDULED_TASKS {
+        Deadlines => "deadlines",
+        AgentNotifications => "agent_notifications",
+        WorktreeValidation => "worktree_validation",
+        GitRefresh => "git_refresh",
+        UpdateChecks => "update_checks",
+        SessionSave => "session_save",
+        TranscriptBackup => "transcript_backup",
+        /// Codex session and agent context probes.
+        AgentProbes => "agent_probes",
+        MetadataExpiry => "metadata_expiry",
+        /// Coordinator and news notifications flushed to clients.
+        Notices => "notices",
+        AgentLifecycle => "agent_lifecycle",
+        Autosuspend => "autosuspend",
+        AgentResumes => "agent_resumes",
+        /// Agent handoff, then compact, runs.
+        AgentHandoff => "agent_handoff",
+        HostAppearance => "host_appearance",
+        TabBarStatus => "tab_bar_status",
+        News => "news",
+        Coordinator => "coordinator",
+        MessageQueue => "message_queue",
+        /// Companion browser page errors to their agents.
+        PageErrors => "page_errors",
+    }
 }
-
-pub(crate) const SCHEDULED_TASKS: &[&str] = &[
-    "deadlines",
-    "agent_notifications",
-    "worktree_validation",
-    "git_refresh",
-    "update_checks",
-    "session_save",
-    "transcript_backup",
-    "agent_probes",
-    "metadata_expiry",
-    "notices",
-    "agent_lifecycle",
-    "autosuspend",
-    "agent_resumes",
-];
 
 /// The index of an API method in `Method::OPERATIONS` (one scan of short
 /// static names per request; never per byte or per pane).

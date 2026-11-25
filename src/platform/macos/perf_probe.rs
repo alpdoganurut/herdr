@@ -106,3 +106,71 @@ pub(crate) fn spawn_stack_sample(pid: u32, seconds: u32, path: &Path) -> std::io
         .stderr(Stdio::null())
         .spawn()
 }
+
+#[cfg(test)]
+mod tests {
+    /// Fork (stall attribution): the platform probes read real values here.
+    #[test]
+    fn fork_smoke_stall_attr_platform_probes_read_the_machine_and_the_thread() {
+        let pressure = super::machine_pressure();
+        assert!(pressure.load1_x100.is_some(), "{pressure:?}");
+        assert!(pressure.swap_total_mb.is_some(), "{pressure:?}");
+        assert!(pressure.memory_pressure.is_some(), "{pressure:?}");
+
+        let clock = super::current_thread_cpu_clock().expect("a thread clock");
+        let before = super::thread_cpu_ns(clock).expect("cpu before");
+        let started = std::time::Instant::now();
+        let mut spin = 0u64;
+        while started.elapsed() < std::time::Duration::from_millis(50) {
+            spin = std::hint::black_box(spin.wrapping_add(1));
+        }
+        let after = super::thread_cpu_ns(clock).expect("cpu after");
+        assert!(after > before, "{before} -> {after}");
+        // Read from another thread, as the watchdog does.
+        let other = std::thread::spawn(move || super::thread_cpu_ns(clock))
+            .join()
+            .expect("reader thread");
+        assert!(other.is_some_and(|ns| ns >= after));
+        // Page-ins (swap or disk reads); 0 is a real answer when everything the
+        // test touched is in memory, so only the read itself is checked.
+        assert!(super::process_major_faults().is_some());
+    }
+
+    /// Manual (macOS): the stack sampler writes a call graph of this process
+    /// naming this thread (`cargo nextest run --run-ignored only
+    /// stall_attr_the_stack_sampler`).
+    #[test]
+    #[ignore = "manual: runs /usr/bin/sample on the test process for about two seconds"]
+    fn fork_smoke_stall_attr_the_stack_sampler_writes_a_call_graph() {
+        let path =
+            std::env::temp_dir().join(format!("herdr-stall-sample-{}.txt", std::process::id()));
+        let mut child =
+            super::spawn_stack_sample(std::process::id(), 1, &path).expect("sample starts");
+        // A 100 ms poller (the watchdog's cadence) keeps running while the
+        // sampler suspends threads to sample them: its gaps stay well under the
+        // watchdog's pause guard, so a sample never drops the stall it samples.
+        let started = std::time::Instant::now();
+        let mut last = started;
+        let mut largest_gap = std::time::Duration::ZERO;
+        while child.try_wait().expect("try_wait").is_none() {
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(20),
+                "sample hangs"
+            );
+            std::thread::sleep(crate::perf::watchdog::POLL);
+            largest_gap = largest_gap.max(last.elapsed());
+            last = std::time::Instant::now();
+        }
+        assert!(
+            largest_gap < crate::perf::watchdog::WATCHDOG_GAP / 2,
+            "{largest_gap:?}"
+        );
+        let text = std::fs::read_to_string(&path).expect("a sample file");
+        let _ = std::fs::remove_file(&path);
+        assert!(text.contains("Call graph:"), "{text}");
+        assert!(
+            text.contains("fork_smoke_stall_attr_the_stack_sampler"),
+            "{text}"
+        );
+    }
+}

@@ -66,3 +66,32 @@ pub(crate) fn process_major_faults() -> Option<u64> {
 pub(crate) fn spawn_stack_sample(_pid: u32, _seconds: u32, _path: &Path) -> std::io::Result<Child> {
     Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
 }
+
+#[cfg(test)]
+mod tests {
+    /// Fork (stall attribution): the platform probes read real values here.
+    #[test]
+    fn fork_smoke_stall_attr_platform_probes_read_the_machine_and_the_thread() {
+        let pressure = super::machine_pressure();
+        assert!(pressure.load1_x100.is_some(), "{pressure:?}");
+        assert!(pressure.swap_total_mb.is_some(), "{pressure:?}");
+
+        let clock = super::current_thread_cpu_clock().expect("a thread clock");
+        let before = super::thread_cpu_ns(clock).expect("cpu before");
+        let started = std::time::Instant::now();
+        let mut spin = 0u64;
+        while started.elapsed() < std::time::Duration::from_millis(50) {
+            spin = std::hint::black_box(spin.wrapping_add(1));
+        }
+        let after = super::thread_cpu_ns(clock).expect("cpu after");
+        assert!(after > before, "{before} -> {after}");
+        // Read from another thread, as the watchdog does.
+        let other = std::thread::spawn(move || super::thread_cpu_ns(clock))
+            .join()
+            .expect("reader thread");
+        assert!(other.is_some_and(|ns| ns >= after));
+        // Page-ins (swap or disk reads); 0 is a real answer when everything the
+        // test touched is in memory, so only the read itself is checked.
+        assert!(super::process_major_faults().is_some());
+    }
+}

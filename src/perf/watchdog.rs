@@ -66,6 +66,9 @@ pub(crate) enum StallEvent {
         stalled_ms: u64,
         busy_since_ns: u64,
         attribution: Attribution,
+        /// Closed at a clock jump or watchdog pause (the real end is
+        /// unknown, so CPU and fault deltas mean nothing).
+        paused: bool,
     },
 }
 
@@ -74,18 +77,126 @@ pub(crate) enum StallEvent {
 pub(crate) struct Attribution {
     /// The step at detection.
     pub(crate) first: StepRecord,
-    /// The step that held the loop over the longest run of polls. A run
-    /// continues while each poll sees its step as the current or the
-    /// interrupted (outer) step, so an API request that handles many nested
-    /// app events is one run. The full mark (with its nesting) when nothing
-    /// changed during the run, else the run's step alone.
+    /// The step that held the loop over the longest run of polls, counted
+    /// from the first busy poll (before the threshold too).
+    ///
+    /// Two runs are tracked side by side. The inner run is keyed on the
+    /// current step and continues while a poll sees it as the current or
+    /// the interrupted (outer) step, so an API request that handles many
+    /// nested app events is one run. The outer run is keyed on the
+    /// interrupted step (or the current one when nothing is nested), so a
+    /// drain or request whose nested items differ at every poll is one run
+    /// too; it is named only when no single inner run explains at least
+    /// half of it (a request held 2 s and a short one after it in the same
+    /// drain still name the first request). The full mark (with its
+    /// nesting) when nothing changed during the run, else the run's step
+    /// alone. Runs see only step and detail: consecutive invocations of the
+    /// same step and detail (two `pane.list` requests back to back) merge
+    /// into one run, and `step_changes` tells them apart from one long one.
     pub(crate) dominant: StepRecord,
     /// How long `dominant` held (at least; poll accuracy).
     pub(crate) dominant_ms: u64,
     /// The step at the last poll before the end.
     pub(crate) last: StepRecord,
-    /// Step changes between detection and the last poll.
+    /// Step changes between the first busy poll and the last.
     pub(crate) changes: u64,
+}
+
+/// A run of polls that saw one step.
+#[derive(Debug, Clone, Copy, Default)]
+struct Run {
+    key: u64,
+    since_ns: u64,
+    unchanged: bool,
+}
+
+impl Run {
+    fn start(key: u64, mono_ns: u64) -> Self {
+        Self {
+            key,
+            since_ns: mono_ns,
+            unchanged: true,
+        }
+    }
+
+    /// Whether `step` continues this run (its current or interrupted step).
+    fn holds(&self, step: StepRecord) -> bool {
+        step.current_mark().0 == self.key
+            || step.outer_mark().is_some_and(|outer| outer.0 == self.key)
+    }
+
+    fn held_ms(&self, mono_ns: u64) -> u64 {
+        mono_ns.saturating_sub(self.since_ns) / 1_000_000
+    }
+}
+
+/// The step attribution of one busy period, from its first busy poll.
+#[derive(Debug, Clone, Copy, Default)]
+struct Tracker {
+    /// The busy period this tracks (its busy-since mark); 0 for none.
+    busy_since: u64,
+    attribution: Attribution,
+    inner: Run,
+    outer: Run,
+    /// The longest inner run seen inside the current outer run.
+    outer_best_inner_ms: u64,
+}
+
+impl Tracker {
+    fn start(busy_since: u64, step: StepRecord, mono_ns: u64) -> Self {
+        Self {
+            busy_since,
+            attribution: Attribution {
+                first: step,
+                dominant: step,
+                dominant_ms: 0,
+                last: step,
+                changes: 0,
+            },
+            inner: Run::start(step.current_mark().0, mono_ns),
+            outer: Run::start(outer_key(step), mono_ns),
+            outer_best_inner_ms: 0,
+        }
+    }
+
+    /// One busy poll's step read.
+    fn observe(&mut self, step: StepRecord, mono_ns: u64) {
+        let attribution = &mut self.attribution;
+        let changed = step.counter() != attribution.last.counter();
+        if changed {
+            attribution.changes += changes_between(attribution.last, step);
+            attribution.last = step;
+        }
+        if self.inner.holds(step) {
+            self.inner.unchanged &= !changed;
+        } else {
+            self.inner = Run::start(step.current_mark().0, mono_ns);
+        }
+        if !self.outer.holds(step) {
+            self.outer = Run::start(outer_key(step), mono_ns);
+            self.outer_best_inner_ms = 0;
+        }
+        let inner_ms = self.inner.held_ms(mono_ns);
+        let outer_ms = self.outer.held_ms(mono_ns);
+        self.outer_best_inner_ms = self.outer_best_inner_ms.max(inner_ms.min(outer_ms));
+        if inner_ms > attribution.dominant_ms {
+            attribution.dominant = if self.inner.unchanged {
+                step
+            } else {
+                StepRecord(self.inner.key)
+            };
+            attribution.dominant_ms = inner_ms;
+        }
+        if outer_ms > attribution.dominant_ms && self.outer_best_inner_ms * 2 < outer_ms {
+            attribution.dominant = StepRecord(self.outer.key);
+            attribution.dominant_ms = outer_ms;
+        }
+    }
+}
+
+/// The outer run's key: the interrupted step, else the current one.
+fn outer_key(step: StepRecord) -> u64 {
+    step.outer_mark().unwrap_or(step.current_mark()).0
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -98,51 +209,17 @@ struct Watch {
     longest_ms: u64,
     /// Whether the reported period passed [`SAMPLE_AFTER`].
     long: bool,
-    attribution: Attribution,
-    /// The current run: its step, when the polls first saw it, and whether
-    /// the full mark stayed unchanged since.
-    run_key: u64,
-    run_since_ns: u64,
-    run_unchanged: bool,
+    tracker: Tracker,
 }
 
 impl Watch {
-    /// One poll's step read while the reported stall stays open.
-    fn observe(&mut self, step: StepRecord, mono_ns: u64) {
-        let attribution = &mut self.attribution;
-        let changed = step.counter() != attribution.last.counter();
-        if changed {
-            attribution.changes += changes_between(attribution.last, step);
-            attribution.last = step;
-        }
-        let in_run = step.current_mark().0 == self.run_key
-            || step
-                .outer_mark()
-                .is_some_and(|outer| outer.0 == self.run_key);
-        if !in_run {
-            self.run_key = step.current_mark().0;
-            self.run_since_ns = mono_ns;
-            self.run_unchanged = true;
-            return;
-        }
-        self.run_unchanged &= !changed;
-        let held_ms = mono_ns.saturating_sub(self.run_since_ns) / 1_000_000;
-        if held_ms > attribution.dominant_ms {
-            attribution.dominant = if self.run_unchanged {
-                step
-            } else {
-                StepRecord(self.run_key)
-            };
-            attribution.dominant_ms = held_ms;
-        }
-    }
-
-    fn ended(&self, loop_name: &'static str) -> StallEvent {
+    fn ended(&self, loop_name: &'static str, paused: bool) -> StallEvent {
         StallEvent::Ended {
             loop_name,
             stalled_ms: self.longest_ms,
             busy_since_ns: self.handled_since,
-            attribution: self.attribution,
+            attribution: self.tracker.attribution,
+            paused,
         }
     }
 }
@@ -179,7 +256,7 @@ impl<'a> Watchdog<'a> {
         for (heartbeat, watch) in self.heartbeats.iter().zip(self.watches.iter_mut()) {
             let busy_since = heartbeat.busy_since_ns();
             if watch.reported && busy_since != watch.handled_since {
-                report(watch.ended(heartbeat.name()));
+                report(watch.ended(heartbeat.name(), false));
                 watch.reported = false;
             }
             if busy_since == 0 || mono_ns < busy_since {
@@ -198,12 +275,12 @@ impl<'a> Watchdog<'a> {
                 if watch.reported && jumped {
                     // A reported stall still open across a jump: close it at
                     // the length seen before the pause, which never counts.
-                    report(watch.ended(heartbeat.name()));
+                    report(watch.ended(heartbeat.name(), true));
                     watch.reported = false;
                 } else if watch.reported {
                     watch.longest_ms = watch.longest_ms.max(busy_ms);
                     heartbeat.longest_stall_ms.record(watch.longest_ms);
-                    watch.observe(heartbeat.step.read(), mono_ns);
+                    watch.tracker.observe(heartbeat.step.read(), mono_ns);
                     if !watch.long && busy_ms >= duration_ms(SAMPLE_AFTER) {
                         watch.long = true;
                         report(StallEvent::Long {
@@ -215,23 +292,23 @@ impl<'a> Watchdog<'a> {
                 }
                 continue;
             }
+            // Busy and not yet reported: follow its steps from the first
+            // busy poll, so a step that held the loop before the threshold
+            // is named and counted (one relaxed load per poll, here only).
+            let step = heartbeat.step.read();
+            if watch.tracker.busy_since == busy_since {
+                watch.tracker.observe(step, mono_ns);
+            } else {
+                watch.tracker = Tracker::start(busy_since, step, mono_ns);
+            }
             if busy_ms >= heartbeat.threshold_ms() {
-                let step = heartbeat.step.read();
+                watch.tracker.attribution.first = step;
                 *watch = Watch {
                     handled_since: busy_since,
                     reported: true,
                     longest_ms: busy_ms,
                     long: false,
-                    attribution: Attribution {
-                        first: step,
-                        dominant: step,
-                        dominant_ms: 0,
-                        last: step,
-                        changes: 0,
-                    },
-                    run_key: step.current_mark().0,
-                    run_since_ns: mono_ns,
-                    run_unchanged: true,
+                    tracker: watch.tracker,
                 };
                 heartbeat.stalls.inc();
                 heartbeat.longest_stall_ms.record(busy_ms);
@@ -267,7 +344,8 @@ fn duration_ms(duration: Duration) -> u64 {
 struct OpenStall {
     loop_name: &'static str,
     busy_since_ns: u64,
-    detected_ms: u64,
+    /// When the CPU and fault baseline below was read.
+    baseline_ns: u64,
     pressure: crate::platform::MachinePressure,
     loop_cpu_ns: Option<u64>,
     major_faults: Option<u64>,
@@ -323,7 +401,7 @@ impl Reporter {
                 self.open.push(OpenStall {
                     loop_name,
                     busy_since_ns,
-                    detected_ms: stalled_ms,
+                    baseline_ns: super::now_ns(),
                     pressure,
                     loop_cpu_ns: self.loop_cpu_ns(),
                     major_faults: crate::platform::process_major_faults(),
@@ -357,6 +435,7 @@ impl Reporter {
                 stalled_ms,
                 busy_since_ns,
                 attribution,
+                paused,
             } => {
                 let open = self
                     .open
@@ -366,23 +445,27 @@ impl Reporter {
                     })
                     .map(|index| self.open.swap_remove(index));
                 let pressure = open.as_ref().map(|open| open.pressure).unwrap_or_default();
-                let loop_cpu_ms = open.as_ref().and_then(|open| {
+                // The CPU and fault window: from the baseline read at
+                // detection to this read, on the same clock. A stall closed
+                // at a pause has no meaningful window: left out.
+                let measured = open.as_ref().filter(|_| !paused);
+                let end_ns = super::now_ns();
+                let loop_cpu_ms = measured.and_then(|open| {
                     Some(self.loop_cpu_ns()?.saturating_sub(open.loop_cpu_ns?) / 1_000_000)
                 });
-                let major_faults = open.as_ref().and_then(|open| {
+                let major_faults = measured.and_then(|open| {
                     Some(
                         crate::platform::process_major_faults()?.saturating_sub(open.major_faults?),
                     )
                 });
-                // The CPU and fault window: detection to the end.
-                let window_ms = open
-                    .as_ref()
-                    .map(|open| stalled_ms.saturating_sub(open.detected_ms));
+                let window_ms =
+                    measured.map(|open| end_ns.saturating_sub(open.baseline_ns) / 1_000_000);
                 let sample = open.and_then(|open| open.sample);
                 tracing::info!(
                     event = "perf.stall_end",
                     loop_name,
                     stalled_ms,
+                    paused = paused.then_some(true),
                     step = step_text(attribution.dominant),
                     step_ms = attribution.dominant_ms,
                     first_step = step_text(attribution.first),
@@ -402,8 +485,8 @@ impl Reporter {
     }
 
     /// Reaps a finished sampler (each poll; never waits).
-    pub(crate) fn tick(&mut self) {
-        self.sampler.reap();
+    pub(crate) fn tick(&mut self, now_ns: u64) {
+        self.sampler.reap(now_ns);
     }
 }
 
@@ -421,7 +504,7 @@ fn load_value(load1_x100: u32) -> f64 {
 /// newest [`SAMPLE_KEEP`] files kept.
 #[derive(Default)]
 struct Sampler {
-    running: Option<std::process::Child>,
+    running: Option<RunningSample>,
     last_started_ns: Option<u64>,
     /// The OS has no sampler: stop trying.
     disabled: bool,
@@ -432,10 +515,33 @@ pub(crate) const SAMPLE_INTERVAL: Duration = Duration::from_secs(10 * 60);
 /// Stack sample files kept under `<data dir>/perf-samples`.
 pub(crate) const SAMPLE_KEEP: usize = 20;
 const SAMPLE_SECONDS: u32 = 1;
+/// A sampler still running this long is killed (sampling under heavy swap
+/// is slow, so this is generous).
+pub(crate) const SAMPLE_TIMEOUT: Duration = Duration::from_secs(90);
+
+/// A started stack sample and the file it should write.
+struct RunningSample {
+    child: std::process::Child,
+    path: PathBuf,
+    started_ns: u64,
+    killed: bool,
+}
+
+/// What a reap found.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum SampleOutcome {
+    Running,
+    /// Done and its file is there.
+    Written,
+    /// Ended without a file, with a failed status, or could not be waited on.
+    Failed(String),
+    /// Ran past [`SAMPLE_TIMEOUT`]; killed, collected by a later reap.
+    TimedOut,
+}
 
 impl Sampler {
     fn start(&mut self, loop_name: &str, now_ns: u64) -> Option<PathBuf> {
-        self.reap();
+        self.reap(now_ns);
         if self.disabled || self.running.is_some() || !sampling_enabled() {
             return None;
         }
@@ -459,7 +565,12 @@ impl Sampler {
         ));
         match crate::platform::spawn_stack_sample(std::process::id(), SAMPLE_SECONDS, &path) {
             Ok(child) => {
-                self.running = Some(child);
+                self.running = Some(RunningSample {
+                    child,
+                    path: path.clone(),
+                    started_ns: now_ns,
+                    killed: false,
+                });
                 self.last_started_ns = Some(now_ns);
                 Some(path)
             }
@@ -480,17 +591,73 @@ impl Sampler {
         }
     }
 
-    fn reap(&mut self) {
-        if let Some(child) = self.running.as_mut() {
-            if !matches!(child.try_wait(), Ok(None)) {
+    fn reap(&mut self, now_ns: u64) {
+        let Some(sample) = self.running.as_mut() else {
+            return;
+        };
+        match reap_sample(sample, now_ns) {
+            SampleOutcome::Running => {}
+            SampleOutcome::Written => self.running = None,
+            SampleOutcome::TimedOut => tracing::warn!(
+                event = "perf.stall_sample_failed",
+                stack_sample = %sample.path.display(),
+                "stack sampler ran too long; killed"
+            ),
+            SampleOutcome::Failed(reason) => {
+                // A sampler this watchdog killed already logged its timeout.
+                if !sample.killed {
+                    tracing::warn!(
+                        event = "perf.stall_sample_failed",
+                        stack_sample = %sample.path.display(),
+                        reason,
+                        "stack sample was not written"
+                    );
+                }
                 self.running = None;
             }
         }
     }
 }
 
+/// Checks a running sample once, without waiting; kills it past
+/// [`SAMPLE_TIMEOUT`].
+pub(super) fn reap_sample_child(
+    child: &mut std::process::Child,
+    path: &std::path::Path,
+    started_ns: u64,
+    killed: &mut bool,
+    now_ns: u64,
+) -> SampleOutcome {
+    match child.try_wait() {
+        Ok(Some(status)) if status.success() && path.is_file() => SampleOutcome::Written,
+        Ok(Some(status)) if status.success() => SampleOutcome::Failed("no file".to_owned()),
+        Ok(Some(status)) => SampleOutcome::Failed(status.to_string()),
+        Err(error) => SampleOutcome::Failed(error.to_string()),
+        Ok(None) => {
+            if !*killed && now_ns.saturating_sub(started_ns) >= duration_ns(SAMPLE_TIMEOUT) {
+                // Killing never waits; a later reap collects the child.
+                let _ = child.kill();
+                *killed = true;
+                SampleOutcome::TimedOut
+            } else {
+                SampleOutcome::Running
+            }
+        }
+    }
+}
+
+fn reap_sample(sample: &mut RunningSample, now_ns: u64) -> SampleOutcome {
+    reap_sample_child(
+        &mut sample.child,
+        &sample.path,
+        sample.started_ns,
+        &mut sample.killed,
+        now_ns,
+    )
+}
+
 /// Removes the oldest `stall-*.txt` files beyond `keep`.
-fn prune_samples(dir: &std::path::Path, keep: usize) {
+pub(super) fn prune_samples(dir: &std::path::Path, keep: usize) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -556,7 +723,7 @@ pub(crate) fn start(role: Role) {
             watchdog.check(super::now_ns(), super::wall_ns(), |event| {
                 reporter.report(event)
             });
-            reporter.tick();
+            reporter.tick(super::now_ns());
         }
     });
     if let Err(error) = spawned {

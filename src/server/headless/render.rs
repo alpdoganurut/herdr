@@ -462,8 +462,9 @@ impl HeadlessServer {
     }
 
     fn render_and_stream_with_graphics_limit(&mut self, graphics_frame_limit: usize) {
-        let _perf = crate::perf::server::FULL_RENDERS.start(); // fork (perf watch)
-                                                               // Fork (stall attribution): a stall names the render pass.
+        // fork (perf watch)
+        let _perf = crate::perf::server::FULL_RENDERS.start();
+        // Fork (stall attribution): a stall names the render pass.
         let _step = crate::perf::server::enter(
             crate::perf::step::Step::FullRender,
             crate::perf::step::NO_DETAIL,
