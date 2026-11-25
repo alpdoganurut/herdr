@@ -584,6 +584,10 @@ impl ClientShellState {
         if pending.kind.is_info_dock() {
             return self.handle_info_dock_endpoint_result(pending, result);
         }
+        // Fork: a cancelled background poll never raises a notice and is sent again.
+        if let Some(done) = self.retry_cancelled_poll(&pending.kind, &result) {
+            return done;
+        }
         if result.is_ok() {
             let timeout_key = ClientEndpointNoticeKey {
                 boot_id: boot_id.to_owned(),

@@ -1109,11 +1109,16 @@ fn federated_client_starts_without_local_and_survives_its_restart() {
                 if screen_text().contains(&format!("REMOTE_ALIVE_INPUT_{cycle}")) {
                     return true;
                 }
-                write!(
-                    input,
-                    "printf 'REMOTE_%s_INPUT_{cycle}\\n' \"$reconnect_survivor\"\r"
-                )
-                .unwrap();
+                // Fork: one write, after a ^C: input is dropped until the fence opens, and half
+                // a line would leave the shell in an open quote.
+                input
+                    .write_all(
+                        format!(
+                            "\x03printf 'REMOTE_%s_INPUT_{cycle}\\n' \"$reconnect_survivor\"\r"
+                        )
+                        .as_bytes(),
+                    )
+                    .unwrap();
                 false
             }),
             "remote reconnect {cycle} must restore visible input and preserve the shell"

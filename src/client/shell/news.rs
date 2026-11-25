@@ -302,20 +302,21 @@ impl ClientShellState {
     }
 
     /// `news.get`, remembered for `signature`; silently skipped on an
-    /// endpoint that does not advertise it or is offline.
+    /// endpoint that does not advertise it, and still due on an offline one.
     fn queue_news_get(
         &mut self,
         signature: NewsSnapshotSignature,
         now: std::time::Instant,
         outcome: &mut ClientShellInput,
     ) {
+        if !self.endpoint_is_online(&self.active_endpoint_id) {
+            return;
+        }
         self.news.refresh_due = false;
         self.news.pulled_for = Some(signature);
         self.news.last_pull = Some(now);
         let method = Method::NewsGet(EmptyParams::default());
-        if !self.supports_endpoint_method(&method)
-            || !self.endpoint_is_online(&self.active_endpoint_id)
-        {
+        if !self.supports_endpoint_method(&method) {
             return;
         }
         if self.push_endpoint_method_with_kind(method, PendingEndpointKind::NewsGet, outcome) {

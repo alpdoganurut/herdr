@@ -336,10 +336,16 @@ impl ClientShellState {
             return;
         }
         let advertised = self.teams_supported();
+        let online = self.endpoint_is_online(&self.active_endpoint_id);
         let Some(ClientShellOverlay::TeamInfo(overlay)) = self.overlay.as_mut() else {
             return;
         };
         if overlay.endpoint_id != self.active_endpoint_id {
+            return;
+        }
+        // A pull after the user's own (the one that opened the overlay) waits
+        // for an offline endpoint instead of raising "not ready".
+        if !online && overlay.last_pull.is_some() {
             return;
         }
         let Some(workspace_id) = overlay.pull_due(now, advertised) else {

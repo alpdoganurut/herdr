@@ -558,10 +558,14 @@ impl ClientCoordinatorState {
         if !(stale || self.refresh_due || periodic) || self.loading {
             return (repaint, None);
         }
+        // Still due once the endpoint is back.
+        if !online {
+            return (repaint, None);
+        }
         self.refresh_due = false;
         self.pulled_for = Some(self.signature(snapshot));
         self.last_pull = Some(now);
-        if !advertised || !online {
+        if !advertised {
             return (repaint, None);
         }
         self.loading = true;

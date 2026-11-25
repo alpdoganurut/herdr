@@ -326,6 +326,15 @@ impl ClientShellState {
             .and_then(|b| b.poll_at)
     }
 
+    /// A cancelled `browser.settings` pull: the section keeps what it shows
+    /// and pulls again shortly, as after `endpoint_busy`.
+    pub(super) fn retry_browser_settings(&mut self) {
+        if let Some(browser) = self.browser_settings_mut() {
+            browser.loading = false;
+            browser.poll_at = Some(std::time::Instant::now() + POLL_INTERVAL);
+        }
+    }
+
     /// A `browser.settings*` reply (or its failure) reaches the open section.
     pub(super) fn handle_browser_settings_endpoint_result(
         &mut self,

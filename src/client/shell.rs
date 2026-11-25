@@ -6,6 +6,8 @@ mod agent_sidebar;
 /// Fork (sidebar v2): agent state times (`endpoint.agent-times.v1`).
 mod agent_times;
 mod aggregate_navigation;
+/// Fork: the tick's cancelled polls.
+mod background_polls;
 mod machine_diagnostics;
 mod workspace_navigation;
 use workspace_navigation::{PendingWorkspaceHighlight, WorkspaceNavigationTarget};
