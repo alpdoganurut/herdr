@@ -7,6 +7,7 @@
 // and takes this out
 #![allow(dead_code)]
 
+pub(crate) mod classify;
 mod forward;
 mod gate;
 mod proxy;
