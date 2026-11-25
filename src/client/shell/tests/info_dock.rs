@@ -18,7 +18,7 @@ const NOTES: &str = "# calendar-fix\n\nGoal: daily reminders fire at the wrong l
 
 const KEY: &str = "claude-6f1c2a9e-4b7d-4e21-9c3a-8d05b2e7f413";
 
-fn notes_info(text: &str, revision: &str) -> NotesInfo {
+pub(super) fn notes_info(text: &str, revision: &str) -> NotesInfo {
     NotesInfo {
         key: KEY.into(),
         path: format!("/tmp/notes/{KEY}.md"),
@@ -73,7 +73,7 @@ fn state_with(config: Config) -> ClientShellState {
     state
 }
 
-fn dock_state() -> ClientShellState {
+pub(super) fn dock_state() -> ClientShellState {
     state_with(Config::default())
 }
 
@@ -134,7 +134,7 @@ fn busy() -> ClientShellEndpointError {
     }
 }
 
-fn error(code: &str) -> ClientShellEndpointError {
+pub(super) fn error(code: &str) -> ClientShellEndpointError {
     ClientShellEndpointError {
         code: Some(code.into()),
         message: code.into(),
@@ -207,7 +207,7 @@ fn pane_requests(outcome: &ClientShellInput) -> usize {
         .count()
 }
 
-fn editor_text(state: &ClientShellState) -> String {
+pub(super) fn editor_text(state: &ClientShellState) -> String {
     state
         .info_dock
         .as_deref()
@@ -1065,7 +1065,7 @@ fn clicking_text_edits_at_the_clicked_column() {
 
 // ---------------------------------------------------------------- saving
 
-fn start_dirty_edit(state: &mut ClientShellState) {
+pub(super) fn start_dirty_edit(state: &mut ClientShellState) {
     open_loaded(state);
     state.info_dock.as_deref_mut().expect("dock").focused = true;
     state.handle_raw_events(vec![key(KeyCode::Char('e')), key(KeyCode::Char('!'))]);
@@ -1076,7 +1076,7 @@ fn start_dirty_edit(state: &mut ClientShellState) {
         .is_some_and(|editor| editor.dirty));
 }
 
-fn sent_save(
+pub(super) fn sent_save(
     outcome: &ClientShellInput,
 ) -> Option<(String, crate::api::schema::notes::NotesSetParams)> {
     info_requests(outcome)

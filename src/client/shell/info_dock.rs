@@ -1693,16 +1693,20 @@ impl ClientShellState {
             // A reply for a request the dock already gave up on.
             None => return (false, Vec::new()),
         };
-        // A cancelled view pull is due again; the next tick sends it.
-        if matches!(request, InfoRequest::NotesGet)
-            && super::background_polls::is_cancelled(&result)
-        {
-            dock.data.next_poll = None;
-            return (false, Vec::new());
-        }
+        let cancelled = super::background_polls::is_cancelled(&result);
+        let pull = matches!(request, InfoRequest::NotesGet);
         match result {
             Err(error) => dock_reply_error(dock, request, error, now),
             Ok(result) => dock_reply(dock, request, result, now),
+        }
+        // A cancellation starts no other request. The pull itself is queued
+        // again (an open editor's conflict may wait for its text, and the
+        // poll skips an editor); the next tick that may send sends it.
+        if cancelled {
+            if pull {
+                dock.queue(InfoRequest::NotesGet, None);
+            }
+            return (!pull, Vec::new());
         }
         let mut outcome = ClientShellInput::default();
         self.pump_info_dock(now, &mut outcome);

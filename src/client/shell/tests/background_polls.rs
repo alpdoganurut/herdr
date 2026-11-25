@@ -2,11 +2,14 @@
 //! cancels them: no notice, asked again on the next tick that may send.
 
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use super::super::coordinator::CoordinatorRequestKind;
+use super::super::info_dock_model::InfoDockTarget;
 use super::super::teams::TeamRequest;
+use super::info_dock::{dock_state, editor_text, error, notes_info, sent_save, start_dirty_edit};
 use super::*;
+use crate::api::schema::notes::{NotesWriteInfo, NotesWriteOutcome};
 use crate::api::schema::{EmptyParams, Method, NewsGetInfo, ResponseResult, TabTarget};
 use crate::client::endpoint::{EndpointNegotiation, EndpointRegistry, EndpointTransport};
 use crate::client::endpoint_commands::EndpointCommands;
@@ -134,7 +137,26 @@ fn a_poll_waits_for_an_offline_endpoint_instead_of_counting_as_done() {
         );
     }
     state.set_endpoint_status(&ClientEndpointId::Local, ClientEndpointStatus::Online);
-    assert_eq!(methods(&tick(&mut state)), TICK_POLLS);
+    let polls = tick(&mut state);
+    assert_eq!(methods(&polls), TICK_POLLS);
+
+    // The same after a pull was answered: its next one falls due offline.
+    let (id, _) = requests(&polls)
+        .into_iter()
+        .find(|(_, method)| *method == "browser.get")
+        .expect("browser.get");
+    state.handle_endpoint_result(
+        "boot-1",
+        &id,
+        Ok(ResponseResult::BrowserGet {
+            browser: Default::default(),
+        }),
+    );
+    let due = state
+        .next_browser_deadline(Instant::now())
+        .expect("the next periodic pull");
+    state.set_endpoint_status(&ClientEndpointId::Local, ClientEndpointStatus::Reconnecting);
+    assert_eq!(state.next_browser_deadline(due), None);
 }
 
 #[test]
@@ -151,6 +173,24 @@ fn a_cancelled_team_pull_is_silent_sent_again_and_waits_while_offline() {
     state.set_endpoint_status(&ClientEndpointId::Local, ClientEndpointStatus::Reconnecting);
     assert!(tick(&mut state).actions.is_empty());
     assert_eq!(notice_title(&state), None);
+    state.set_endpoint_status(&ClientEndpointId::Local, ClientEndpointStatus::Online);
+    let mut outcome = ClientShellInput::default();
+    state.tick_teams(Instant::now(), &mut outcome);
+    assert_eq!(methods(&outcome), ["team.get"]);
+}
+
+#[test]
+fn a_team_overlay_opened_offline_pulls_once_the_endpoint_is_back() {
+    let mut state = state();
+    state.set_endpoint_status(&ClientEndpointId::Local, ClientEndpointStatus::Reconnecting);
+    state.open_team_overlay("ws_1".into());
+    for _ in 0..2 {
+        state.tick_teams(Instant::now(), &mut ClientShellInput::default());
+    }
+    state.set_endpoint_status(&ClientEndpointId::Local, ClientEndpointStatus::Online);
+    let mut outcome = ClientShellInput::default();
+    state.tick_teams(Instant::now(), &mut outcome);
+    assert_eq!(methods(&outcome), ["team.get"]);
 }
 
 #[test]
@@ -165,7 +205,32 @@ fn a_cancelled_browser_settings_pull_is_silent_and_polled_again() {
         .expect("the section pulls");
     assert!(!state.cancel_endpoint_request(&id));
     assert_eq!(notice_title(&state), None);
-    assert!(state.next_browser_settings_deadline().is_some());
+    let due = state
+        .next_browser_settings_deadline()
+        .expect("the section pulls again shortly");
+    let mut outcome = ClientShellInput::default();
+    state.tick_browser(due, &mut outcome);
+    let id = requests(&outcome)
+        .into_iter()
+        .find_map(|(id, method)| (method == "browser.settings").then_some(id))
+        .expect("pulled again");
+
+    // Cancelled by a lost connection: due once the endpoint is back.
+    assert!(!state.cancel_endpoint_request(&id));
+    let due = state
+        .next_browser_settings_deadline()
+        .expect("the section pulls again shortly");
+    state.set_endpoint_status(&ClientEndpointId::Local, ClientEndpointStatus::Reconnecting);
+    let later = due + Duration::from_secs(1);
+    let mut outcome = ClientShellInput::default();
+    state.tick_browser(later, &mut outcome);
+    assert_eq!(notice_title(&state), None);
+    assert_eq!(state.next_browser_settings_deadline(), None);
+    assert!(state.timer_delay(later) > Duration::ZERO);
+    state.set_endpoint_status(&ClientEndpointId::Local, ClientEndpointStatus::Online);
+    let mut outcome = ClientShellInput::default();
+    state.tick_browser(later, &mut outcome);
+    assert!(methods(&outcome).contains(&"browser.settings"));
 }
 
 #[test]
@@ -185,6 +250,103 @@ fn a_cancelled_info_dock_pull_is_silent_and_sent_again_on_the_next_tick() {
         assert!(!state.cancel_endpoint_request(id));
         assert_eq!(notice_title(&state), None);
     }
+}
+
+#[test]
+fn a_cancelled_notes_save_starts_no_request_and_leaves_the_dock_free() {
+    let mut state = dock_state();
+    start_dirty_edit(&mut state);
+    let outcome = state.handle_input_bytes(b"\x1b");
+    let (save, _) = sent_save(&outcome).expect("save on Esc");
+    // A task ticked from an old row asks for the notes behind the save.
+    let mut outcome = ClientShellInput::default();
+    state.info_dock_activate_for_test(
+        InfoDockTarget::Task {
+            line: 0,
+            revision: "sha256:old".into(),
+        },
+        &mut outcome,
+    );
+    assert!(outcome.actions.is_empty(), "the save holds the slot");
+
+    let (_, actions) =
+        state.handle_endpoint_result("boot-1", &save, Err(error("endpoint_cancelled")));
+    assert!(
+        actions.is_empty(),
+        "a cancellation starts no request: {actions:?}"
+    );
+    let editor = state
+        .info_dock
+        .as_deref()
+        .and_then(|dock| dock.editor.as_ref())
+        .expect("buffer kept");
+    assert!(editor.dirty && !editor.save_pending && editor.sent_text.is_none());
+
+    let mut outcome = ClientShellInput::default();
+    state.tick_info_dock(Instant::now(), &mut outcome);
+    let sent = requests(&outcome);
+    let [(pull, "notes.get")] = &sent[..] else {
+        panic!("the dock is stuck: {sent:?}");
+    };
+    state.handle_endpoint_result(
+        "boot-1",
+        pull,
+        Ok(ResponseResult::NotesGet {
+            notes: notes_info("notes", "sha256:4e9b1c07a2f3"),
+        }),
+    );
+    let mut outcome = ClientShellInput::default();
+    state.tick_info_dock(Instant::now() + Duration::from_secs(3), &mut outcome);
+    assert!(sent_save(&outcome).is_some(), "the save is sent again");
+}
+
+#[test]
+fn a_cancelled_conflict_text_pull_is_sent_again_while_the_editor_is_open() {
+    let mut state = dock_state();
+    start_dirty_edit(&mut state);
+    let outcome = state.handle_input_bytes(b"\x1b");
+    let (save, _) = sent_save(&outcome).expect("save on Esc");
+    let theirs = notes_info("their text", "sha256:theirs");
+    let mut without_text = theirs.clone();
+    without_text.text = None;
+    let (_, actions) = state.handle_endpoint_result(
+        "boot-1",
+        &save,
+        Ok(ResponseResult::NotesWrite {
+            write: NotesWriteInfo {
+                outcome: NotesWriteOutcome::Conflict,
+                notes: without_text,
+            },
+        }),
+    );
+    let mut outcome = ClientShellInput {
+        actions,
+        ..Default::default()
+    };
+    // Cancelled on every tick until the fence opens.
+    for _ in 0..3 {
+        let sent = requests(&outcome);
+        let [(pull, "notes.get")] = &sent[..] else {
+            panic!("expected one notes.get, got {sent:?}");
+        };
+        assert!(!state.cancel_endpoint_request(pull));
+        outcome = ClientShellInput::default();
+        state.tick_info_dock(Instant::now(), &mut outcome);
+    }
+    let sent = requests(&outcome);
+    let [(pull, "notes.get")] = &sent[..] else {
+        panic!("expected one notes.get, got {sent:?}");
+    };
+    state.handle_endpoint_result(
+        "boot-1",
+        pull,
+        Ok(ResponseResult::NotesGet { notes: theirs }),
+    );
+    state.info_dock_activate_for_test(
+        InfoDockTarget::ConflictReload,
+        &mut ClientShellInput::default(),
+    );
+    assert_eq!(editor_text(&state), "their text");
 }
 
 #[test]

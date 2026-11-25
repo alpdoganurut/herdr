@@ -310,6 +310,7 @@ impl ClientShellState {
         outcome: &mut ClientShellInput,
     ) {
         if !self.endpoint_is_online(&self.active_endpoint_id) {
+            self.news.refresh_due = true;
             return;
         }
         self.news.refresh_due = false;

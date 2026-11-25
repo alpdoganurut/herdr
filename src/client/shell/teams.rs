@@ -351,12 +351,17 @@ impl ClientShellState {
         let Some(workspace_id) = overlay.pull_due(now, advertised) else {
             return;
         };
-        if !self.push_team_request(TeamRequest::Get { workspace_id }, outcome) {
-            if let Some(ClientShellOverlay::TeamInfo(overlay)) = self.overlay.as_mut() {
+        let sent = self.push_team_request(TeamRequest::Get { workspace_id }, outcome);
+        if let Some(ClientShellOverlay::TeamInfo(overlay)) = self.overlay.as_mut() {
+            if sent {
+                // Loading is drawn only while there is no team to show.
+                outcome.repaint |= overlay.team.is_none();
+            } else {
                 overlay.loading = false;
+                // Still due once the endpoint is back.
+                overlay.refresh_due |= !online;
             }
         }
-        outcome.repaint = true;
     }
 
     /// A `team.*` reply. Errors already raised the generic notice; a
