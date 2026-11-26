@@ -113,8 +113,8 @@ pub(super) struct ClientShellLayout {
     /// strip, the pane area's top row (empty when not shown).
     pub view_strip: Rect,
     /// Fork (session header): the `tabs` layout's one-row header at the
-    /// bottom of the session area, the screen's last row (empty in the spaces layout, on mobile, or when the
-    /// area is too short).
+    /// bottom of the session area, the screen's last row (empty in the
+    /// spaces layout, on mobile, or when the area is too short).
     pub session_header: Rect,
 }
 

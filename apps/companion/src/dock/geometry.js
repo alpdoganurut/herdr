@@ -15,8 +15,8 @@
 //   pad_l = (F.w - E.w / s) / 2      (exact for symmetric x padding, balanced or not)
 //   titlebar = F.h - (E.h + pad_t + pad_b) / s
 //   origin = (F.x + pad_l, F.y + titlebar + pad_t)
-// An area that reaches the grid's right or bottom edge runs to the window's edge (no strip
-// of terminal padding beside the browser). Values are rounded to whole points (Electron's
+// An area that reaches the grid's top, right or bottom edge runs to that edge of the window
+// (no strip of terminal padding beside the browser; the top edge is the titlebar's bottom). Values are rounded to whole points (Electron's
 // window bounds are integer points): at most half a point off.
 
 'use strict';
@@ -115,7 +115,8 @@ function placementRect({ placement, frame, scale, config }) {
   let right = ox + (R.x + R.width) * cw;
   let bottom = oy + (R.y + R.height) * ch;
   // Reaching the grid's edge: run to the window's edge (over the padding and the space
-  // beyond whole cells).
+  // beyond whole cells); at the top, to the titlebar's bottom.
+  if (R.y <= 0) top = frame.y + titlebar;
   if (R.x + R.width >= grid.cols) right = frame.x + frame.w;
   if (R.y + R.height >= grid.rows) bottom = frame.y + frame.h;
   left = roundTo(left, 1);

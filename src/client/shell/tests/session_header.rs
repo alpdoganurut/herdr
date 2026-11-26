@@ -1,7 +1,7 @@
 //! The session header (fork, header design): the tabs layout's one row at
-//! the bottom of the session area (the screen's last row). Goldens of the row at several widths
-//! (`golden/session_header.txt`, rewritten by `HERDR_UPDATE_GOLDEN=1`), its
-//! facts' rules, its controls' hits and actions, and the one dock slot the
+//! the bottom of the session area (the screen's last row). Goldens of the
+//! row at several widths (`golden/session_header.txt`, rewritten by
+//! `HERDR_UPDATE_GOLDEN=1`), its facts' rules, its controls' hits and actions, and the one dock slot the
 //! notes and browser docks share.
 
 use std::collections::{HashMap, HashSet};
@@ -547,6 +547,22 @@ fn press(
 }
 
 #[test]
+fn a_short_terminal_drops_the_header_below_three_rows() {
+    let state = browser_state();
+    // two rows: no header, the panes keep both
+    let two = state.layout(COLS, 2);
+    assert!(two.session_header.is_empty());
+    assert_eq!((two.pane_surface.y, two.pane_surface.height), (0, 2));
+    // three rows: the header on the last, the panes on rows 0 and 1
+    let three = state.layout(COLS, 3);
+    assert_eq!(
+        three.session_header,
+        Rect::new(three.sidebar.right(), 2, COLS - three.sidebar.right(), 1)
+    );
+    assert_eq!((three.pane_surface.y, three.pane_surface.height), (0, 2));
+}
+
+#[test]
 fn fork_smoke_the_header_sits_at_the_bottom_and_its_controls_switch_views_and_docks() {
     let mut state = browser_state();
     let layout = state.layout(COLS, ROWS);
@@ -591,7 +607,15 @@ fn fork_smoke_the_header_sits_at_the_bottom_and_its_controls_switch_views_and_do
     let outcome = press(&mut state, |hits| hits.browser_dock);
     assert!(outcome.resize);
     assert!(state.browser_dock_open_for("tab_1"));
-    assert!(!state.layout(COLS, ROWS).browser_band.is_empty());
+    let band = state.layout(COLS, ROWS).browser_band;
+    assert!(!band.is_empty());
+    // the band and the companion's Side placement end above the header
+    assert_eq!(band.bottom(), header.y);
+    let spec = super::browser_dock::sent_placement(&mut state, std::time::Instant::now())
+        .expect("sent")
+        .expect("a placement");
+    assert_eq!(spec.kind, crate::api::schema::BrowserPlacementKind::Side);
+    assert_eq!(spec.area.y + spec.area.height, header.y);
     // ≡ swaps it for the notes dock
     press(&mut state, |hits| hits.notes_dock);
     assert!(state.info_dock_open_for_focused_tab());

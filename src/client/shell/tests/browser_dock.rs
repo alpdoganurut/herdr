@@ -118,7 +118,7 @@ fn click(column: u16, row: u16) -> Vec<RawInputEvent> {
 }
 
 /// The placement message this client would send now, decoded.
-fn sent_placement(
+pub(super) fn sent_placement(
     state: &mut ClientShellState,
     at: std::time::Instant,
 ) -> Option<Option<crate::api::schema::BrowserPlacementSpec>> {
@@ -353,19 +353,20 @@ fn fork_smoke_browser_view_covers_the_pane_area_without_resizing_the_panes() {
         .expect("sent")
         .expect("spec");
     assert_eq!(spec.kind, BrowserPlacementKind::Full);
-    // from the pane surface's left edge to the window's right edge, below the strip
+    // from the pane surface's left edge to the window's right edge, above the
+    // session header
     assert_eq!(spec.area.x, layout.pane_surface.x);
     assert_eq!(spec.area.x + spec.area.width, COLS);
     assert_eq!(spec.area.y, layout.pane_surface.y);
     assert_eq!(spec.area.height, layout.pane_surface.height);
-    // the panes are not drawn and take no clicks; the strip says Browser
+    // the panes are not drawn and take no clicks; the header shows the view tabs
     let frame = recompose(&mut state).expect("frame");
     assert!(state.hits.panes.is_empty());
     assert!(frame.cursor.is_none());
-    let strip = row_text(&frame, layout.session_header.y);
+    let header_row = row_text(&frame, layout.session_header.y);
     assert!(
-        strip.contains("Terminal") && strip.contains("Browser"),
-        "{strip}"
+        header_row.contains("Terminal") && header_row.contains("Browser"),
+        "{header_row}"
     );
     assert!(!row_text(&frame, layout.pane_surface.y).contains("LIVE"));
     // back to the terminal: the panes are there again

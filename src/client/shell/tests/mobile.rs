@@ -22,10 +22,15 @@ fn navigate_update_status_uses_released_desktop_and_mobile_placement() {
             .collect::<String>()
     };
     // Fork (session header): the tabs layout's mode bar is the pane area's
-    // last row, directly above the header (the screen's last row).
-    let mode_row = state.layout(106, 30).pane_surface.bottom() - 1;
+    // last row (28), directly above the header on the screen's last (29).
+    let mode_row = 28;
     assert!(row_text(&bottom, mode_row).contains("update ready"));
     assert!(!row_text(&bottom, mode_row - 1).contains("update ready"));
+    let header_row = row_text(&bottom, 29);
+    assert!(
+        header_row.trim_end().ends_with('≡') && !header_row.contains("update ready"),
+        "{header_row}"
+    );
     assert!(state.hits.tabs.is_empty());
     assert!(state.hits.new_tab.is_empty());
     assert!(state.hits.tab_scroll_left.is_empty());

@@ -41,6 +41,16 @@ test('defaults on Retina: the band sits on its cells and runs to the window edge
   assert.deepEqual(r.rect, { x: 630, y: 247, width: 1068 - 630, height: 852 - 247 });
 });
 
+test('an area on the grid\'s top row runs to the titlebar; one above the bottom row stops on its cells', () => {
+  // herdr's tabs layout: the band starts on row 0 and ends above the session header (row 35)
+  const g = ghostty({ cols: 120, rows: 36, extraW: 8, extraH: 16 });
+  const area = { x: 66, y: 0, width: 54, height: 35 };
+  const r = placementRect({ placement: { ...g.placement, area }, frame: g.frame, scale: 2, config: null });
+  assert.equal(r.ok, true, r.reason);
+  // top: 200 + titlebar 28 (over the 2 pt padding); bottom: 200 + 28 + 2 + 35 rows of 17 pt
+  assert.deepEqual(r.rect, { x: 630, y: 228, width: 438, height: 597 });
+});
+
 test('padding 10/6: the configured padding moves the origin', () => {
   const g = ghostty({ cols: 120, rows: 37, padX: [10, 10], padY: [6, 6], extraH: 22 });
   const r = placementRect({ placement: band(g, 60, 2), frame: g.frame, scale: 2, config: { paddingX: [10, 10], paddingY: [6, 6] } });

@@ -11,9 +11,9 @@
 //!
 //! The text is rebuilt once a second in the tick; compose only copies it into
 //! the bottom-right corner (fork, session header: above the `tabs` layout's
-//! header row, the screen's last, so it never covers `◨` or `≡`). Surface patches landing under the readout fall
-//! back to a full compose (see [`perf_readout_blocks_patch`]) so it is not
-//! overwritten.
+//! header row, the screen's last, so it never covers `◨` or `≡`). Surface
+//! patches landing under the readout fall back to a full compose (see
+//! [`perf_readout_blocks_patch`]) so it is not overwritten.
 
 use std::time::{Duration, Instant};
 
