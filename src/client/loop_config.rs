@@ -18,4 +18,6 @@ pub(super) struct ClientLoopConfig {
     pub(super) remote_image_paste_key:
         Option<(crossterm::event::KeyCode, crossterm::event::KeyModifiers)>,
     pub(super) shell_config: Option<shell::ClientShellConfig>,
+    /// Fork (remote browser): `[browser] remote_machines` at the start.
+    pub(super) browser_remote_machines: bool,
 }

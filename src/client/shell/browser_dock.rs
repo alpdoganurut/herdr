@@ -543,10 +543,15 @@ impl ClientShellState {
             .and_then(|snapshot| snapshot.focused_tab_id.as_deref())
     }
 
-    /// Docking works here: the local endpoint, a server that takes
-    /// placements.
+    /// Docking works here: the local endpoint of a client on this machine
+    /// (never `herdr --remote`) whose server takes placements, or a saved
+    /// machine whose browser helper is attached (fork, remote browser: one
+    /// map lookup).
     pub(crate) fn browser_dock_available(&self) -> bool {
-        self.active_endpoint_id.is_local()
+        if !self.active_endpoint_id.is_local() {
+            return self.browser_link_active().is_some();
+        }
+        !self.browser_link.remote_client
             && self.supports_endpoint_method(&Method::BrowserPlacementSet(
                 BrowserPlacementSetParams::default(),
             ))
@@ -674,11 +679,16 @@ impl ClientShellState {
     // ------------------------------------------------------------ toggles
 
     /// Why docking does not work here, for a notice.
-    fn browser_dock_unavailable_reason(&self) -> &'static str {
-        if !self.active_endpoint_id.is_local() {
-            "The browser docks only for the herdr running on this machine."
+    fn browser_dock_unavailable_reason(&self) -> String {
+        if self.browser_link.remote_client {
+            super::browser_link::REMOTE_CLIENT_REASON.to_owned()
+        } else if !self.active_endpoint_id.is_local() {
+            self.browser_link
+                .notice(&self.active_endpoint_id)
+                .unwrap_or(super::browser_link::NOT_LINKED_REASON)
+                .to_owned()
         } else {
-            "This herdr server cannot dock the browser yet; update and restart it."
+            "This herdr server cannot dock the browser yet; update and restart it.".to_owned()
         }
     }
 
@@ -686,6 +696,10 @@ impl ClientShellState {
     /// `browser.get` without the companion, which its config keeps off.
     /// `None` before the first answer, or while the companion is there.
     fn browser_companion_off_reason(&self) -> Option<&'static str> {
+        // a machine's helper runs its companion whatever that server says
+        if self.browser_link_active().is_some() {
+            return None;
+        }
         let info = self.browser.info.as_ref()?;
         if info.companion_app.is_some() {
             return None;
@@ -1291,6 +1305,15 @@ impl ClientShellState {
     /// installed`, `… failed`), `None` while it runs or starts: the view
     /// strip's notice, and no page count on the strip or the header.
     pub(crate) fn browser_companion_stopped(&self) -> Option<&'static str> {
+        // Fork (remote browser): a saved machine's link, while it is down
+        // or another Mac has the machine's browser.
+        if let Some(linked) = self.browser_link_active() {
+            match linked.link.as_str() {
+                "connecting" | "reconnecting" => return Some("link reconnecting"),
+                "in_use" => return Some("browser on another Mac"),
+                _ => {}
+            }
+        }
         self.browser_companion()
             .and_then(|companion| match companion.state.as_str() {
                 "stopped" => Some("companion stopped"),
@@ -1317,9 +1340,13 @@ impl ClientShellState {
         })
     }
 
-    /// The companion's report on this client's placement.
+    /// The companion's report on this client's placement (a saved
+    /// machine's: its helper's).
     fn browser_placement_status(&self) -> Option<&crate::api::schema::BrowserPlacementStatus> {
         let id = &self.browser_dock.placement_id;
+        if let Some(linked) = self.browser_link_active() {
+            return linked.reports.iter().find(|status| &status.id == id);
+        }
         self.browser
             .info
             .as_ref()?
@@ -1345,6 +1372,9 @@ impl ClientShellState {
         };
         let title = |text: String| (text, PlaceholderTone::Title);
         let body = |text: &str| (text.to_owned(), PlaceholderTone::Body);
+        if let Some(placeholder) = self.browser_link_placeholder(now) {
+            return placeholder;
+        }
         match companion.state.as_str() {
             "not_installed" => Placeholder::say(vec![
                 title("The companion is not installed".into()),
@@ -1453,6 +1483,53 @@ impl ClientShellState {
         }
     }
 
+    /// Fork (remote browser): what a saved machine's area says while its
+    /// browser cannot come: another Mac has it, or the link is down while
+    /// no companion runs here (a running one keeps its pages and covers
+    /// the area).
+    fn browser_link_placeholder(&self, now: Instant) -> Option<Placeholder> {
+        let linked = self.browser_link_active()?;
+        let machine = self.endpoint_label(&self.active_endpoint_id);
+        let title = |text: String| (text, PlaceholderTone::Title);
+        let note = |text: &Option<String>| {
+            text.as_deref().map(|text| {
+                (
+                    text.lines().next().unwrap_or(text).to_owned(),
+                    PlaceholderTone::Dim,
+                )
+            })
+        };
+        match linked.link.as_str() {
+            "in_use" => {
+                let mut lines = vec![title(format!("The browser of {machine} is on another Mac"))];
+                lines.extend(note(&linked.text).or_else(|| {
+                    linked
+                        .owner
+                        .as_ref()
+                        .map(|owner| (format!("it runs on {owner}"), PlaceholderTone::Dim))
+                }));
+                Some(Placeholder::say(lines))
+            }
+            "off" | "failed" => {
+                let mut lines = vec![title(format!("{machine} takes no browser from this Mac"))];
+                lines.extend(note(&linked.text));
+                Some(Placeholder::say(lines))
+            }
+            "connecting" | "reconnecting"
+                if !super::browser::browser_companion::companion_up(&linked.companion.state) =>
+            {
+                let frame = (now.duration_since(self.browser_dock_epoch()).as_millis()
+                    / SPIN_EVERY.as_millis()) as usize
+                    % SPINNER.len();
+                Some(Placeholder {
+                    spinner: Some(SPINNER[frame]),
+                    ..Placeholder::say(vec![title(format!("{machine}: reconnecting"))])
+                })
+            }
+            _ => None,
+        }
+    }
+
     /// The instant spinner frames count from (any fixed point works).
     fn browser_dock_epoch(&self) -> Instant {
         static EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
@@ -1462,12 +1539,15 @@ impl ClientShellState {
     /// Whether the placeholder animates (the next frame is due).
     fn browser_placeholder_spins(&self) -> bool {
         (self.browser_dock_open_for_focused_tab() || self.browser_view_open_for_focused_tab())
-            && self.browser_companion().is_some_and(|companion| {
+            && (self.browser_link_active().is_some_and(|linked| {
+                matches!(linked.link.as_str(), "connecting" | "reconnecting")
+                    && !super::browser::browser_companion::companion_up(&linked.companion.state)
+            }) || self.browser_companion().is_some_and(|companion| {
                 matches!(
                     companion.state.as_str(),
                     "starting" | "reconnecting" | "crashed" | "stopping"
                 )
-            })
+            }))
     }
 
     // ------------------------------------------------------------ placement
@@ -1598,6 +1678,18 @@ impl ClientShellState {
         &mut self,
         now: Instant,
     ) -> Option<crate::protocol::ClientMessage> {
+        // Fork (remote browser): the machine left hides its browser first
+        // (this placement waits a gap for it); a saved machine's placement
+        // goes to its helper, never its server.
+        if self.browser_link.leave(&self.active_endpoint_id) {
+            self.browser_dock.sent_at = Some(now);
+            self.browser_dock.pending = true;
+            return None;
+        }
+        if self.browser_link_active().is_some() {
+            self.take_browser_link_placement(now);
+            return None;
+        }
         // Nothing docked and nothing left to clear: nothing to do (this runs
         // after every input event), nothing waits for the gap either.
         let in_use = self.browser_dock_in_use();
@@ -1663,6 +1755,57 @@ impl ClientShellState {
         self.browser_dock.sent_at = Some(now);
         self.browser_dock.pending = false;
         Some(crate::protocol::ClientMessage::ClientShellEndpointRequest { boot_id, request })
+    }
+
+    /// Fork (remote browser): the next placement waits a gap (a machine
+    /// left hides its browser first).
+    #[cfg_attr(not(unix), allow(dead_code))] // the unix client loop's
+    pub(super) fn browser_dock_wait_for_link(&mut self) {
+        self.browser_dock.sent_at = Some(Instant::now());
+        self.browser_dock.pending = true;
+    }
+
+    /// Fork (remote browser): the placement of a saved machine whose helper
+    /// is attached, queued for it when it changed (the same 33 ms gap; the
+    /// helper's board takes this client's pids from its socket).
+    fn take_browser_link_placement(&mut self, now: Instant) {
+        let endpoint = self.active_endpoint_id.clone();
+        let in_use = self.browser_dock_in_use();
+        let told = self.browser_link.told(&endpoint);
+        if !in_use && told.is_none_or(|told| told.spec.is_none()) {
+            self.browser_dock.pending = false;
+            return;
+        }
+        if in_use && self.browser_dock.terminal_extent.is_none() {
+            self.browser_dock.terminal_extent = Some(self.browser_dock.read_terminal_extent());
+        }
+        let placement = super::browser_link::LinkPlacement {
+            spec: self.browser_placement_spec(),
+            active: true,
+            focused: self.outer_focused == Some(true),
+        };
+        let told = self.browser_link.told(&endpoint);
+        if told == Some(&placement) {
+            self.browser_dock.pending = false;
+            return;
+        }
+        if self
+            .browser_dock
+            .sent_at
+            .is_some_and(|at| now.duration_since(at) < PLACEMENT_GAP)
+        {
+            self.browser_dock.pending = true;
+            return;
+        }
+        let fresh = told.is_none_or(|told| told.spec.is_none());
+        if placement.spec.is_none() {
+            self.browser_dock.first_sent_at = None;
+        } else if fresh {
+            self.browser_dock.first_sent_at = Some(now);
+        }
+        self.browser_link.place(&endpoint, placement);
+        self.browser_dock.sent_at = Some(now);
+        self.browser_dock.pending = false;
     }
 
     /// When the tick loop must wake for the dock: a placement waiting for

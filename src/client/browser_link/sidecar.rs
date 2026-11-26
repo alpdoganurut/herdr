@@ -292,17 +292,20 @@ impl Sidecar {
     }
 
     /// It is attached to the companion now.
+    #[cfg(test)]
     pub(crate) fn attached(&self) -> bool {
         let state = self.inner.lock();
         state.attached && state.link.is_some()
     }
 
     /// The running sidecar's pid.
+    #[cfg(test)]
     pub(crate) fn pid(&self) -> Option<u32> {
         self.inner.lock().link.as_ref().map(|link| link.pid)
     }
 
     /// One supervisor pass at `now`: the ping, and a re-attach that is due.
+    #[cfg(test)]
     pub(crate) fn tick(&self, now: Instant) {
         self.inner.tick(now);
     }

@@ -211,16 +211,34 @@ impl B {
     fn open(&mut self, epoch: u64) -> Value {
         let request: Value = serde_json::from_slice(&self.line().unwrap()).unwrap();
         assert_eq!(request["method"], "browser.link_open");
-        let answer = json!({"id": request["id"], "result": {"type": "browser_link_opened", "link": {
-            "link_id": "K1", "epoch": epoch, "boot_id": BOOT, "link_protocol": 1,
-            "features": [], "ping_ms": 3000, "ttl_ms": 15000}}});
-        self.write(&format!("{answer}\n"));
+        let answer = crate::api::schema::SuccessResponse {
+            id: request["id"].as_str().unwrap().to_owned(),
+            result: crate::api::schema::ResponseResult::BrowserLinkOpened {
+                link: BrowserLinkInfo {
+                    link_id: "K1".into(),
+                    epoch,
+                    boot_id: BOOT.into(),
+                    link_protocol: 1,
+                    features: Vec::new(),
+                    ping_ms: 3000,
+                    ttl_ms: 15000,
+                },
+            },
+        };
+        self.write(&format!("{}\n", serde_json::to_string(&answer).unwrap()));
         request["params"].clone()
     }
 
     fn refuse(&mut self, code: &str, message: &str) {
         let request: Value = serde_json::from_slice(&self.line().unwrap()).unwrap();
-        let answer = json!({"id": request["id"], "error": {"code": code, "message": message}});
+        let answer = crate::api::schema::ErrorResponse {
+            id: request["id"].as_str().unwrap().to_owned(),
+            error: crate::api::schema::ErrorBody {
+                code: code.into(),
+                message: message.into(),
+            },
+        };
+        let answer = serde_json::to_string(&answer).unwrap();
         self.write(&format!("{answer}\n"));
     }
 
@@ -767,7 +785,7 @@ fn the_sidecar_going_answers_its_ops_before_host_down() {
 
 #[test]
 fn blobs_go_in_a_window_and_the_answer_after_them() {
-    use super::super::files::{BLOB_CHUNK, BLOB_WINDOW};
+    use crate::browser::link_proto::{BLOB_WINDOW, CHUNK_BYTES};
 
     let (rig, mut b, _) = Rig::linked();
     b.op(5, "screenshot", json!({}));
@@ -782,9 +800,9 @@ fn blobs_go_in_a_window_and_the_answer_after_them() {
     loop {
         match b.frame_within(Duration::from_millis(300)) {
             Some(HelperFrame::Blob(chunk)) => {
-                assert!(chunk.data.len() <= BLOB_CHUNK);
+                assert!(chunk.data.len() <= CHUNK_BYTES);
                 open.push(chunk);
-                assert!(open.len() <= BLOB_WINDOW);
+                assert!(open.len() as u64 <= BLOB_WINDOW);
             }
             Some(HelperFrame::Re(re)) => {
                 assert!(open.is_empty(), "the answer came before its last ack");
@@ -795,7 +813,7 @@ fn blobs_go_in_a_window_and_the_answer_after_them() {
             Some(other) => panic!("{other:?}"),
             None => {
                 // nothing more until an ack: the window is full or all is out
-                let full_window = open.len() == BLOB_WINDOW;
+                let full_window = open.len() as u64 == BLOB_WINDOW;
                 let all_out = open.iter().any(|c| c.name == BlobName::Inline && c.last);
                 assert!(full_window || all_out, "stalled with {} open", open.len());
                 let chunk = open.remove(0);
@@ -817,7 +835,7 @@ fn blobs_go_in_a_window_and_the_answer_after_them() {
 
 #[test]
 fn file_pulls_go_four_at_a_time() {
-    use super::super::files::FILE_WINDOW;
+    use crate::browser::link_proto::FILE_WINDOW;
 
     let (rig, mut b, _) = Rig::linked();
     let pulls: Vec<_> = (0..6u64)

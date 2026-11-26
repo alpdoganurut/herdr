@@ -199,6 +199,7 @@ impl Clients {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn count(&self) -> usize {
         lock(&self.shared.conns).len()
     }

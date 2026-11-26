@@ -597,6 +597,16 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # A page an agent shows with page_api (`herdr browser show --page-api`) may message that agent
 # with window.herdr.send (page content, never the user's words). false turns page messages off.
 # page_api = true
+# On a saved machine: its agents may use the browser of the Mac connected to it: "auto" (while
+# one is, else this machine's own companion), "only" (never this machine's own) or "off".
+# link = "auto"
+# On your Mac: serve the browser of the saved machines this client is connected to (one helper
+# and one companion per machine, started when an agent there first opens a page).
+# remote_machines = true
+# On your Mac: how a saved machine's browser reaches the web: "split" (public sites from this
+# Mac; the machine's localhost and private networks through the machine) or "remote" (all of it
+# through the machine). A machine's helper reads it when it starts.
+# egress = "split"
 
 [coordinator]
 # Run the coordinator agent (a Claude session that watches your agents) in a
@@ -835,6 +845,13 @@ fn main() -> io::Result<()> {
     // Subcommands and flags (no TUI, no logging needed)
     if args.get(1).map(|s| s.as_str()) == Some("remote-client-bridge") {
         return remote::run_remote_client_bridge(&args[2..]);
+    }
+
+    // Fork (remote browser): a saved machine's browser helper, started by
+    // the client (`client/browser_link`).
+    #[cfg(unix)]
+    if args.get(1).map(|s| s.as_str()) == Some("browser-link") {
+        return client::run_browser_link(&args[2..]);
     }
 
     if args.get(1).map(|s| s.as_str()) == Some("server") {

@@ -1490,6 +1490,9 @@ pub(crate) struct ClientShellState {
     /// Fork (companion launcher): the browser dock and Browser view
     /// (`browser_dock.rs`).
     pub(super) browser_dock: super::browser_dock::ClientBrowserDockState,
+    /// Fork (remote browser): the saved machines' browser helpers
+    /// (`browser_link.rs`).
+    pub(super) browser_link: super::browser_link::ClientBrowserLinkState,
     /// Fork (session header): the hovered header control.
     pub(super) header_hover: Option<super::session_header::HeaderTarget>,
     /// Tabs with a scheduled reminder, keyed like `idle_reminders`.
@@ -1772,6 +1775,9 @@ impl ClientShellState {
             browser_dock: super::browser_dock::ClientBrowserDockState::new(
                 browser_dock_percent,
                 browser_dock_default,
+            ),
+            browser_link: super::browser_link::ClientBrowserLinkState::new(
+                super::super::handshake::is_remote_client_process(),
             ),
             header_hover: None,
             reminder_epochs: HashMap::new(),

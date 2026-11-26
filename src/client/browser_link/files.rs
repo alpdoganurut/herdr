@@ -14,18 +14,8 @@ use serde_json::Value;
 
 use crate::browser::link_proto::{
     is_file_token, BlobAck, BlobChunk, BlobName, FileReply, FileRequest, LinkReply, BLOB_MAX_BYTES,
-    FILE_MAX_BYTES,
+    BLOB_WINDOW, CHUNK_BYTES, FILE_MAX_BYTES, FILE_PULLS, FILE_WINDOW,
 };
-
-/// The bytes of one `blob` chunk (amendment A5.3; `link_proto` of this branch
-/// still says 256 KiB, the server lane's says 64).
-pub(crate) const BLOB_CHUNK: usize = 64 * 1024;
-/// Unacknowledged chunks on the link, all ops together.
-pub(crate) const BLOB_WINDOW: usize = 4;
-/// Unanswered `file` requests on the link.
-pub(crate) const FILE_WINDOW: usize = 4;
-/// The companion's pulls the helper holds, on the link or waiting for it.
-pub(crate) const FILE_HELD: usize = 16;
 
 /// A picture of an op's answer, decoded.
 pub(crate) type Picture = (BlobName, Vec<u8>);
@@ -76,7 +66,7 @@ impl BlobJob {
             return None;
         }
         let (name, data) = self.pictures.get(self.picture)?;
-        let end = (self.offset + BLOB_CHUNK).min(data.len());
+        let end = (self.offset + CHUNK_BYTES).min(data.len());
         let chunk = BlobChunk {
             op: self.op,
             name: *name,
@@ -126,7 +116,7 @@ impl Blobs {
 
     /// The next chunk the window lets out, oldest op first.
     pub(crate) fn next_chunk(&mut self) -> Option<BlobChunk> {
-        if self.unacked.len() >= BLOB_WINDOW {
+        if self.unacked.len() as u64 >= BLOB_WINDOW {
             return None;
         }
         let chunk = self.jobs.iter_mut().find_map(BlobJob::next_chunk)?;
@@ -159,6 +149,7 @@ impl Blobs {
     }
 
     /// Whether an op's answer still waits here.
+    #[cfg(test)]
     pub(crate) fn holds(&self, op: u64) -> bool {
         self.jobs.iter().any(|job| job.op == op)
     }
@@ -175,6 +166,7 @@ impl Blobs {
         self.unacked.clear();
     }
 
+    #[cfg(test)]
     pub(crate) fn in_flight(&self) -> usize {
         self.unacked.len()
     }
@@ -215,7 +207,7 @@ impl Pull {
     }
 }
 
-/// The companion's pulls: at most [`FILE_HELD`] held, [`FILE_WINDOW`] of them
+/// The companion's pulls: at most [`FILE_PULLS`] held, [`FILE_WINDOW`] of them
 /// on the link. Ids keep rising across links, so an old link's answer never
 /// matches a new pull.
 #[derive(Default)]
@@ -230,7 +222,7 @@ pub(crate) struct FilePulls {
 impl FilePulls {
     /// A ticket for the pull, or `None` when as many are held as may be.
     pub(crate) fn ask(&mut self, pull: Pull) -> Option<u64> {
-        if self.held() >= FILE_HELD {
+        if self.held() >= FILE_PULLS {
             return None;
         }
         self.next_ticket += 1;
@@ -275,6 +267,7 @@ impl FilePulls {
         self.waiting.len() + self.on_link.len()
     }
 
+    #[cfg(test)]
     pub(crate) fn on_link(&self) -> usize {
         self.on_link.len()
     }
@@ -329,7 +322,7 @@ mod tests {
     #[test]
     fn blobs_keep_the_window_and_answer_after_the_last_ack() {
         let mut blobs = Blobs::default();
-        let full = vec![7u8; BLOB_CHUNK * 5 + 10];
+        let full = vec![7u8; CHUNK_BYTES * 5 + 10];
         let inline = vec![1u8; 20];
         assert!(blobs
             .push(
@@ -342,8 +335,8 @@ mod tests {
         while let Some(chunk) = blobs.next_chunk() {
             sent.push(chunk);
         }
-        assert_eq!(sent.len(), BLOB_WINDOW);
-        assert!(sent.iter().all(|c| c.data.len() == BLOB_CHUNK && !c.last));
+        assert_eq!(sent.len() as u64, BLOB_WINDOW);
+        assert!(sent.iter().all(|c| c.data.len() == CHUNK_BYTES && !c.last));
         assert_eq!(
             sent.iter().map(|c| c.seq).collect::<Vec<_>>(),
             vec![0, 1, 2, 3]
@@ -352,7 +345,7 @@ mod tests {
         let mut due = Vec::new();
         let mut queue: VecDeque<BlobChunk> = sent.into();
         while let Some(chunk) = queue.pop_front() {
-            assert!(blobs.in_flight() <= BLOB_WINDOW);
+            assert!(blobs.in_flight() as u64 <= BLOB_WINDOW);
             got.push((chunk.name, chunk.seq, chunk.data.len(), chunk.last));
             due.extend(blobs.ack(&ack(&chunk)).unwrap());
             if let Some(next) = blobs.next_chunk() {
@@ -384,9 +377,9 @@ mod tests {
     #[test]
     fn a_forgotten_op_frees_its_window() {
         let mut blobs = Blobs::default();
-        blobs.push(reply(1), vec![(BlobName::Full, vec![0; BLOB_CHUNK * 8])]);
+        blobs.push(reply(1), vec![(BlobName::Full, vec![0; CHUNK_BYTES * 8])]);
         while blobs.next_chunk().is_some() {}
-        assert_eq!(blobs.in_flight(), BLOB_WINDOW);
+        assert_eq!(blobs.in_flight() as u64, BLOB_WINDOW);
         assert!(blobs.holds(1));
         blobs.forget(1);
         assert_eq!(blobs.in_flight(), 0);
@@ -401,7 +394,7 @@ mod tests {
             offset,
         };
         let mut pulls = FilePulls::default();
-        let tickets: Vec<u64> = (0..FILE_HELD as u64)
+        let tickets: Vec<u64> = (0..FILE_PULLS as u64)
             .map(|i| pulls.ask(pull(i)).unwrap())
             .collect();
         assert!(pulls.ask(pull(99)).is_none());
@@ -422,7 +415,7 @@ mod tests {
         assert_eq!(pulls.answered(&answer(frames[0].id)), None);
         assert_eq!(pulls.next_frame().map(|f| f.offset), Some(4));
         assert_eq!(pulls.on_link(), FILE_WINDOW);
-        assert_eq!(pulls.drain().len(), FILE_HELD - 1);
+        assert_eq!(pulls.drain().len(), FILE_PULLS - 1);
         assert_eq!(pulls.held(), 0);
         // ids keep rising after a drain
         pulls.ask(pull(0));

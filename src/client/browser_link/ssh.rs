@@ -18,10 +18,13 @@ use std::time::{Duration, Instant};
 
 use sha2::{Digest as _, Sha256};
 
-use crate::remote::{SavedSshLink, SavedSshLinkChild, SavedSshLinkEnd, SavedSshLinkProcess};
+use crate::remote::{SavedSshLink, SavedSshLinkChild};
+#[cfg(test)]
+use crate::remote::{SavedSshLinkEnd, SavedSshLinkProcess};
 
 /// The link child must have started its bridge by then.
 const LINK_START_TIMEOUT: Duration = Duration::from_secs(20);
+#[cfg(test)]
 const LINK_END_TIMEOUT: Duration = Duration::from_secs(1);
 /// One control command; a live master answers within milliseconds.
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(3);
@@ -106,6 +109,7 @@ pub(crate) fn open_link(link: &SavedSshLink) -> io::Result<SavedSshLinkChild> {
 
 /// Ends a link child by the end of its input, or after a second by its own
 /// process handle; the shared connection goes on.
+#[cfg(test)]
 pub(crate) fn end_link(
     writer: Box<dyn io::Write + Send>,
     process: SavedSshLinkProcess,
@@ -369,6 +373,7 @@ impl BrowserMaster {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn control_path(&self) -> &Path {
         &self.control
     }
@@ -407,6 +412,7 @@ impl BrowserMaster {
     }
 
     /// The master that runs now, or `None`; never starts one.
+    #[cfg(test)]
     pub(crate) fn running(&self) -> Option<MasterInfo> {
         let mut state = self.state();
         let running = state.running.as_mut()?;

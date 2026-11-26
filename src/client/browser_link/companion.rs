@@ -44,6 +44,7 @@ pub(crate) const REMOTE_APP_MIN: &str = "0.2.13";
 /// What an `ensure` waits for the registration: under the remote side's
 /// 45 s, with the 8.4 s a companion waits for a proxy that is down and the
 /// sidecar's attach in it.
+#[cfg(test)]
 pub(crate) const ENSURE_WAIT: Duration = Duration::from_secs(40);
 /// A registration not renewed this long is gone (the companion renews it
 /// every few seconds).
@@ -81,11 +82,6 @@ impl MachineHome {
 
     pub(crate) fn dir(&self) -> &Path {
         &self.dir
-    }
-
-    /// The helper's flock.
-    pub(crate) fn lock_path(&self) -> PathBuf {
-        self.dir.join("lock")
     }
 
     pub(crate) fn profile_dir(&self) -> PathBuf {
@@ -358,11 +354,13 @@ impl Companion {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn home(&self) -> &MachineHome {
         &self.inner.home
     }
 
     /// The proxy's port and secret, once bound.
+    #[cfg(test)]
     pub(crate) fn grant(&self) -> Option<ProxyGrant> {
         self.inner.lock().grant.clone()
     }
@@ -457,6 +455,12 @@ impl Companion {
         self.inner.notify();
     }
 
+    /// Whether an installed companion app can run for a remote machine
+    /// (the helper's `ready` on its link).
+    pub(crate) fn install_check(&self) -> Result<(), EnsureError> {
+        installed(&self.inner.options.companion_home).map(|_| ())
+    }
+
     /// The companion as the clients show it.
     pub(crate) fn info(&self) -> BrowserCompanionAppInfo {
         self.inner.info()
@@ -464,16 +468,19 @@ impl Companion {
 
     /// One driver pass at `now` (crash restarts, the register deadline, the
     /// lease rule, adopted pids); the driver thread runs it.
+    #[cfg(test)]
     pub(crate) fn tick(&self, now: Instant) {
         self.inner.tick(now);
     }
 
     /// The process of `generation` ended with `exit` (its waiter).
+    #[cfg(test)]
     pub(crate) fn process_exited(&self, generation: u64, exit: ExitInfo) {
         self.inner.process_exited(generation, exit);
     }
 
     /// The current launch: its generation and token.
+    #[cfg(test)]
     pub(crate) fn current(&self) -> (u64, Option<String>) {
         let state = self.inner.lock();
         (state.core.generation, state.core.token.clone())

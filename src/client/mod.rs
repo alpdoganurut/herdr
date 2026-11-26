@@ -57,6 +57,8 @@ use state::ClientState;
 use state::RetiredDirectGraphicsMatch;
 use transport::*;
 
+#[cfg(unix)]
+pub use browser_link::run as run_browser_link;
 #[cfg(test)]
 pub(crate) use shell::{ClientShellConfig, ClientShellState};
 pub use startup::{run_client, run_terminal_attach};
@@ -231,6 +233,7 @@ fn run_client_with_mode(
         endpoint_keybindings,
         remote_image_paste_key,
         shell_config,
+        browser_remote_machines: loaded_config.config.browser.remote_machines,
     };
 
     crate::logging::startup("client");
@@ -500,6 +503,17 @@ async fn run_client_loop(
         shell: config.shell_config.map(shell::ClientShellState::new),
     };
     let mut federated = endpoint_catalog.has_enabled_ssh();
+    // Fork (remote browser): the saved machines' browser helpers
+    // (`browser_link/links.rs`).
+    #[cfg(unix)]
+    let mut browser_links = browser_link::links::ShellLinks::new(
+        config.browser_remote_machines
+            && browser_link::links::STARTS_HELPERS
+            && state.shell.is_some()
+            && !is_remote_client,
+    );
+    #[cfg(not(unix))]
+    let _ = config.browser_remote_machines;
     if let Some(shell) = state.shell.as_mut() {
         shell.set_host_reports_key_releases(config.host_escape_disambiguation_active);
         shell.set_host_erase_byte(crate::platform::terminal_erase_byte());
@@ -788,6 +802,9 @@ async fn run_client_loop(
             for endpoint_id in shell.take_machine_retries() {
                 supervisors.retry_now(&endpoint_id, now);
             }
+            // Fork (remote browser): what the shell asks of the helpers.
+            #[cfg(unix)]
+            browser_links.deliver(shell);
         }
         if let Some(shell) = state.shell.as_ref() {
             supervisors.spawn_due(
@@ -2574,6 +2591,14 @@ async fn run_client_loop(
                         shell.tick_machines(now, &mut outcome);
                         // Fork (companion launcher): the dock's placeholder and placement.
                         shell.tick_browser_dock(now, &mut outcome);
+                        // Fork (remote browser): the helpers' news.
+                        #[cfg(unix)]
+                        browser_links.poll(
+                            shell,
+                            &endpoint_catalog.ssh,
+                            &write_stream,
+                            &mut outcome,
+                        );
                         outcome.repaint |= notification_repaint
                             | shell.tick_copy_feedback(now)
                             | shell.tick_workspace_highlight(now)

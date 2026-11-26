@@ -37,7 +37,12 @@ mod browser;
 // Fork (companion launcher): the browser dock and Browser view.
 mod browser_dock;
 mod browser_dock_render;
+mod browser_link;
 pub(crate) use browser_dock::PLACEMENT_REQUEST_PREFIX as BROWSER_PLACEMENT_REQUEST_PREFIX;
+#[cfg(all(test, unix))]
+pub(crate) use browser_link::LinkPlacement;
+#[cfg(unix)]
+pub(crate) use browser_link::{LinkIntent, LinkedBrowser};
 mod browser_overlay;
 mod global_menu;
 mod graphics;

@@ -269,8 +269,13 @@ fn shorten_home(path: &str, home: Option<&str>) -> String {
 }
 
 impl ClientShellState {
-    /// The companion's facts from the last `browser.get` (a server that runs it).
+    /// The companion's facts from the last `browser.get` (a server that
+    /// runs it), or, for a saved machine whose browser helper is attached,
+    /// the helper's (fork, remote browser).
     pub(crate) fn browser_companion(&self) -> Option<&BrowserCompanionAppInfo> {
+        if let Some(linked) = self.browser_link_active() {
+            return Some(&linked.companion);
+        }
         self.browser.info.as_ref()?.companion_app.as_ref()
     }
 
@@ -281,6 +286,13 @@ impl ClientShellState {
         action: BrowserCompanionAction,
         outcome: &mut ClientShellInput,
     ) {
+        // Fork (remote browser): a saved machine's companion is its helper's.
+        if self.browser_link_active().is_some() {
+            let endpoint = self.active_endpoint_id.clone();
+            self.browser_link.ask(&endpoint, action);
+            outcome.repaint = true;
+            return;
+        }
         let method = Method::BrowserCompanion(BrowserCompanionParams {
             action,
             caller: None,

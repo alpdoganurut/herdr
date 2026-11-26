@@ -154,6 +154,13 @@ pub struct BrowserConfig {
     /// machines it is connected to (the client starts a helper per machine).
     /// Default: true.
     pub remote_machines: bool,
+    /// Fork (remote browser), this Mac's side: how a saved machine's
+    /// browser reaches the web: `split` (public sites from this Mac,
+    /// everything else, such as the machine's localhost and private
+    /// networks, through the machine) or `remote` (everything through the
+    /// machine). Anything else is a diagnostic and reads as `split`. A
+    /// machine's helper reads it when it starts. Default: `split`.
+    pub egress: String,
     /// Not a key: the effective `[agents] wrap` (`Config::agents_wrap`),
     /// filled in by the config loaders so the browser hub, which only
     /// receives this section, reports and applies the resolved value.
@@ -211,6 +218,30 @@ impl BrowserLinkMode {
             Self::Auto => "auto",
             Self::Only => "only",
             Self::Off => "off",
+        }
+    }
+}
+
+/// `[browser] egress` (fork, remote browser).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrowserEgress {
+    Split,
+    Remote,
+}
+
+impl BrowserEgress {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            "split" | "" => Some(Self::Split),
+            "remote" => Some(Self::Remote),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Split => "split",
+            Self::Remote => "remote",
         }
     }
 }
@@ -276,6 +307,7 @@ impl Default for BrowserConfig {
             page_api: true,
             link: BrowserLinkMode::Auto.as_str().into(),
             remote_machines: true,
+            egress: BrowserEgress::Split.as_str().into(),
             effective_wrap: false,
         }
     }
@@ -454,6 +486,12 @@ impl BrowserConfig {
                 self.link
             ));
         }
+        if BrowserEgress::parse(&self.egress).is_none() {
+            diagnostics.push(format!(
+                "browser.egress = {:?} is not split or remote; using split",
+                self.egress
+            ));
+        }
         // Fork (companion launcher): the window is off.
         if !self.window && BrowserHostMode::parse(&self.host) == Some(BrowserHostMode::Window) {
             diagnostics.push(
@@ -499,6 +537,12 @@ impl BrowserConfig {
     /// `[browser] link = "only"`.
     pub fn link_only(&self) -> bool {
         self.link_mode() == BrowserLinkMode::Only
+    }
+
+    /// `[browser] egress = "remote"`: a saved machine's browser reaches
+    /// every site through that machine.
+    pub fn egress_remote(&self) -> bool {
+        BrowserEgress::parse(&self.egress) == Some(BrowserEgress::Remote)
     }
 
     /// `[browser] page_errors = "agent"` (anything but `off`).
@@ -773,6 +817,25 @@ mod tests {
         assert_eq!(
             config.diagnostics(),
             ["browser.link = \"never\" is not auto, only or off; using auto"]
+        );
+    }
+
+    /// Fork (remote browser): a saved machine's browser is split by
+    /// default; `remote` sends everything through the machine; anything
+    /// else reads as split with a diagnostic.
+    #[test]
+    fn egress_is_split_by_default_and_remote_on_request() {
+        let config = BrowserConfig::default();
+        assert_eq!(config.egress, "split");
+        assert!(!config.egress_remote());
+        let config: BrowserConfig = toml::from_str("egress = \"remote\"\n").unwrap();
+        assert!(config.egress_remote());
+        assert!(config.diagnostics().is_empty());
+        let config: BrowserConfig = toml::from_str("egress = \"direct\"\n").unwrap();
+        assert!(!config.egress_remote());
+        assert_eq!(
+            config.diagnostics(),
+            ["browser.egress = \"direct\" is not split or remote; using split"]
         );
     }
 

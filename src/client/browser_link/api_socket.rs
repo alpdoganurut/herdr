@@ -78,10 +78,6 @@ impl ApiSocket {
             accept: Some(accept),
         })
     }
-
-    pub(crate) fn path(&self) -> &Path {
-        &self.path
-    }
 }
 
 impl Drop for ApiSocket {

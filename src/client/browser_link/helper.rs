@@ -33,8 +33,10 @@ use super::api_socket::{event_line, Answer, ApiHandler, ApiSocket};
 use super::clients::{
     ClientHandler, Clients, CompanionAction, HelperMessage, LinkView, MachineFacts,
 };
+use super::companion::{CompanionHooks, ProxyBinder};
 use super::files::{file_answer, take_pictures, Blobs, FilePulls, Pull};
 use super::gate::{Gate, GatedOp, HelperOp, Policy, Verdict};
+use super::sidecar::SidecarHooks;
 use crate::api::schema::{
     BrowserCompanionAction, BrowserCompanionAppInfo, BrowserHostKind, BrowserHostLeaseInfo,
     BrowserHostRegisterParams, BrowserPlacementAction,
@@ -86,14 +88,12 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 // ---------------------------------------------------------------------------
 // What the helper is built from
 
-/// The machine's companion as the helper drives it: the method names of
-/// C5's `companion::Companion`, so its impl is one line each (`instance`,
-/// `readiness` and `focus` are not in C5 yet). The helper never calls one of
-/// these under its own lock, so the companion may call [`CompanionHooks`]
-/// under its own.
+/// The machine's companion as the helper drives it (`super::parts` makes
+/// it from `companion::Companion` and the sidecar). The helper never calls
+/// one of these under its own lock, so the companion may call
+/// [`CompanionHooks`] under its own.
 pub(crate) trait CompanionControl: Send + Sync {
-    /// The helper's start: adopt the recorded companion or clear it
-    /// (C5's `recover`, its `Recovered` dropped).
+    /// The helper's start: adopt the recorded companion or clear it.
     fn recover(&self);
     /// The launch the link is opened for: the running or adopted
     /// companion's instance, else one kept until the next launch.
@@ -101,8 +101,7 @@ pub(crate) trait CompanionControl: Send + Sync {
     /// `ready` and `detail` of `browser.link_open`.
     fn readiness(&self) -> (BrowserLinkReady, Option<String>);
     /// Starts it unless it runs and waits for its registration, at most
-    /// `wait`. `Err`: the `ensure_re` error (C5's
-    /// `EnsureError::link_error(<this Mac's label>)`).
+    /// `wait`. `Err`: the `ensure_re` error, in this Mac's name.
     fn ensure(&self, wait: Duration) -> Result<(), LinkError>;
     /// The companion's `browser.host_register`: only the current launch
     /// token; the sidecar attaches to it (`remote: true`, profile
@@ -117,7 +116,7 @@ pub(crate) trait CompanionControl: Send + Sync {
     /// Stops it; blocking.
     fn stop(&self);
     fn restart(&self) -> Result<(), String>;
-    /// Raises it for the user (`raise{user:true}`; not in C5 yet).
+    /// Raises it for the user (`raise{user:true}`), or starts it.
     fn focus(&self) -> Result<(), String>;
     /// "Forget <machine>'s logins": stop, wait for the exit, then remove
     /// its profile and nothing else.
@@ -128,7 +127,7 @@ pub(crate) trait CompanionControl: Send + Sync {
     fn info(&self) -> BrowserCompanionAppInfo;
 }
 
-/// The machine's sidecar (C5's `sidecar::Sidecar`): `host.mjs` attached to
+/// The machine's sidecar (`sidecar::Sidecar`): `host.mjs` attached to
 /// the companion as profile `companion` with `remote: true`.
 pub(crate) trait SidecarOps: Send + Sync {
     /// One gated op, on the caller's thread until it is answered (its
@@ -137,36 +136,6 @@ pub(crate) trait SidecarOps: Send + Sync {
     fn op(&self, op: &GatedOp) -> Result<HostReply, BrowserError>;
     /// Ends the sidecar (the helper quits).
     fn shutdown(&self);
-}
-
-/// What the sidecar tells the helper (the same as C5's
-/// `sidecar::SidecarHooks`; the integrator keeps one).
-pub(crate) trait SidecarHooks: Send + Sync {
-    /// A sidecar event line, as it came (`ev{event}`).
-    fn event(&self, event: Value);
-    /// It attached again by itself; its answer (the tabs, for `host_up`).
-    fn attached(&self, answer: &Value);
-    /// The attached sidecar went away (`host_down`).
-    fn lost(&self, reason: &str);
-}
-
-/// What the companion tells the helper (the same as C5's
-/// `companion::CompanionHooks`).
-pub(crate) trait CompanionHooks: Send + Sync {
-    /// What [`CompanionControl::info`] says changed (the clients hear it on
-    /// the next tick).
-    fn changed(&self);
-    /// The process went away; `reason` for the remote machine's log.
-    fn exited(&self, reason: &str);
-}
-
-/// The browser's proxy, bound by the companion's launcher with the port and
-/// secret of `proxy.json`, fixed for the companion's life (the same as C5's
-/// `companion::ProxyBinder`).
-pub(crate) trait ProxyBinder: Send + Sync {
-    /// Listens on 127.0.0.1:`port` (0: a free one) with `secret`; the port
-    /// it listens on. A later call replaces the listener.
-    fn bind(&self, port: u16, secret: &str) -> io::Result<u16>;
 }
 
 /// One connection to B's API socket, ready for a request line.
@@ -1905,20 +1874,27 @@ fn tabs_of(answer: &Value) -> Vec<HostTab> {
         .unwrap_or_default()
 }
 
-/// The answer line of `browser.link_open`.
+/// The answer line of `browser.link_open`: `BrowserLinkOpened`, or the
+/// server's error.
 fn parse_answer(line: &[u8]) -> Result<BrowserLinkInfo, LinkError> {
-    let value: Value = serde_json::from_slice(line)
-        .map_err(|err| LinkError::new(code::INVALID_REQUEST, format!("no answer: {err}")))?;
-    if let Some(error) = value.get("error") {
-        let field = |name: &str| error.get(name).and_then(Value::as_str).unwrap_or_default();
-        return Err(LinkError::new(field("code"), field("message")));
+    use crate::api::schema::{ErrorResponse, ResponseResult, SuccessResponse};
+    if let Ok(error) = serde_json::from_slice::<ErrorResponse>(line) {
+        return Err(LinkError::new(&error.error.code, error.error.message));
     }
-    value
-        .get("result")
-        .and_then(|result| result.get("link"))
-        .cloned()
-        .and_then(|link| serde_json::from_value(link).ok())
-        .ok_or_else(|| LinkError::new(code::INVALID_REQUEST, "the answer has no link"))
+    match serde_json::from_slice::<SuccessResponse>(line) {
+        Ok(SuccessResponse {
+            result: ResponseResult::BrowserLinkOpened { link },
+            ..
+        }) => Ok(link),
+        Ok(_) => Err(LinkError::new(
+            code::INVALID_REQUEST,
+            "the answer has no link",
+        )),
+        Err(err) => Err(LinkError::new(
+            code::INVALID_REQUEST,
+            format!("no answer: {err}"),
+        )),
+    }
 }
 
 impl ApiHandler for Weakly {
@@ -2058,7 +2034,9 @@ impl ClientHandler for Weakly {
 
 /// Holds the machine home's `lock` (flock) for the helper's life: one helper
 /// per machine and session.
-pub(crate) struct HomeLock(std::fs::File);
+pub(crate) struct HomeLock {
+    _file: std::fs::File,
+}
 
 /// `Ok(None)`: another helper holds it.
 pub(crate) fn lock_home(home: &Path) -> io::Result<Option<HomeLock>> {
@@ -2071,7 +2049,7 @@ pub(crate) fn lock_home(home: &Path) -> io::Result<Option<HomeLock>> {
     // SAFETY: a valid descriptor of a file this function owns.
     let locked = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0;
     if locked {
-        return Ok(Some(HomeLock(file)));
+        return Ok(Some(HomeLock { _file: file }));
     }
     let err = io::Error::last_os_error();
     if err.kind() == io::ErrorKind::WouldBlock {
@@ -2199,15 +2177,16 @@ impl ProxyBinder for HelperProxy {
     }
 }
 
-/// What the companion and the sidecar (C5) are made from: the machine's
+/// What the companion and the sidecar are made from: the machine's
 /// facts, the proxy the launcher binds and the hooks into the helper.
 pub(crate) struct MachineParts<'a> {
     pub(crate) key: &'a str,
-    /// `<browser home>/companion-app/machines/<key>`, 0700, locked.
-    pub(crate) home: &'a Path,
     /// The companion's `--socket`.
     pub(crate) api_socket: &'a Path,
+    /// The machine's name.
     pub(crate) label: &'a str,
+    /// This Mac's name, for the remote side's texts.
+    pub(crate) mac: &'a str,
     pub(crate) proxy: Arc<dyn ProxyBinder>,
     pub(crate) hooks: Arc<Hooks>,
 }
@@ -2252,27 +2231,29 @@ pub(crate) fn main(machine: &str, parts: PartsFactory) -> io::Result<()> {
         })
         .collect();
     let forwards = Arc::new(Forwards::new(&dir, &home, &key, masters)?);
+    let browser = crate::config::Config::load().config.browser;
     let proxy = Arc::new(HelperProxy {
         label: profile.label.clone(),
         instance: crate::browser::session::random_hex(16),
-        remote_only: false,
+        remote_only: browser.egress_remote(),
         dial: Arc::clone(&forwards) as Arc<dyn super::forward::Dial>,
         proxy: Mutex::new(None),
     });
     let api_socket = dir.join(format!("{key}.api"));
     let hooks = Arc::new(Hooks::default());
+    let mac = crate::platform::hostname()
+        .and_then(|name| name.split('.').next().map(str::to_owned))
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "the user's Mac".into());
     let (companion, sidecar) = parts(&MachineParts {
         key: &key,
-        home: &home,
         api_socket: &api_socket,
         label: &profile.label,
+        mac: &mac,
         proxy: Arc::clone(&proxy) as Arc<dyn ProxyBinder>,
         hooks: Arc::clone(&hooks),
     })?;
-    let config = Arc::new(Mutex::new((
-        Instant::now(),
-        Policy::from(&crate::config::Config::load().config.browser),
-    )));
+    let config = Arc::new(Mutex::new((Instant::now(), Policy::from(&browser))));
     let policy = move || {
         let mut cached = lock(&config);
         if cached.0.elapsed() >= Duration::from_secs(5) {
@@ -2288,10 +2269,7 @@ pub(crate) fn main(machine: &str, parts: PartsFactory) -> io::Result<()> {
         move |up: bool| forwards.set_link(up)
     };
     let helper = Helper::new(Deps {
-        label: crate::platform::hostname()
-            .and_then(|name| name.split('.').next().map(str::to_owned))
-            .filter(|name| !name.is_empty())
-            .unwrap_or_else(|| "the user's Mac".into()),
+        label: mac,
         machine: profile.label.clone(),
         host_id: host_id(&crate::config::state_dir())?,
         herdr: env!("CARGO_PKG_VERSION").into(),

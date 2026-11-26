@@ -1315,3 +1315,268 @@ fn a_view_cycle_on_a_client_that_cannot_dock_is_ignored_quietly() {
     assert_eq!(browser_state(&state), (false, false));
     assert!(state.visible_endpoint_notice.is_none(), "no notice");
 }
+
+// ---------------------------------------------------------------------------
+// Fork (remote browser): a saved machine's browser helper
+
+fn machine() -> crate::client::endpoint::ClientEndpointId {
+    crate::client::endpoint::ClientEndpointId::Ssh(
+        crate::client::endpoint::ProfileId::parse("0123456789abcdef0123456789abcdef")
+            .expect("profile id"),
+    )
+}
+
+fn helper_says(link: &str, companion: &str) -> super::super::browser_link::LinkedBrowser {
+    super::super::browser_link::LinkedBrowser {
+        link: link.into(),
+        companion: BrowserCompanionAppInfo {
+            state: companion.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+/// The dock state showing a saved machine whose helper is attached; the
+/// machine's own server says it runs no companion.
+fn linked_state() -> ClientShellState {
+    let mut state = dock_state();
+    state.active_endpoint_id = machine();
+    state.browser.info = Some(BrowserGetInfo {
+        seq: 1,
+        enabled: true,
+        companion_app: None,
+        ..Default::default()
+    });
+    state
+        .browser_link
+        .set(&machine(), Some(helper_says("linked", "running")), None);
+    recompose(&mut state);
+    state
+}
+
+fn link_placements(state: &mut ClientShellState) -> Vec<(String, Option<String>, bool)> {
+    state
+        .take_browser_link_intents()
+        .into_iter()
+        .filter_map(|intent| match intent {
+            super::super::browser_link::LinkIntent::Placement {
+                endpoint,
+                placement,
+            } => Some((
+                endpoint.storage_key(),
+                placement.spec.map(|spec| spec.tab_id),
+                placement.active,
+            )),
+            super::super::browser_link::LinkIntent::Companion { .. } => None,
+        })
+        .collect()
+}
+
+/// A saved machine docks only while its helper is attached; without it the
+/// notice says why, and nothing is published anywhere.
+#[test]
+fn a_machine_without_its_helper_offers_no_dock_and_says_why() {
+    let mut state = dock_state();
+    state.active_endpoint_id = machine();
+    assert!(!state.browser_dock_available());
+    let outcome = toggle_dock(&mut state);
+    assert!(!outcome.resize);
+    assert!(state.layout(COLS, ROWS).browser_band.is_empty());
+    let notice = state.visible_endpoint_notice.as_ref().expect("a notice");
+    assert_eq!(
+        notice.body,
+        super::super::browser_link::NOT_LINKED_REASON,
+        "{}",
+        notice.body
+    );
+    assert!(state
+        .take_browser_placement_request(std::time::Instant::now())
+        .is_none());
+    assert!(state.take_browser_link_intents().is_empty());
+    // the helper attaches: offered; it goes: gone again
+    state.browser_link.set(
+        &machine(),
+        Some(helper_says("reconnecting", "stopped")),
+        None,
+    );
+    assert!(state.browser_dock_available() && state.browser_dock_offered());
+    state
+        .browser_link
+        .set(&machine(), None, Some("helper gone".into()));
+    assert!(!state.browser_dock_available());
+}
+
+/// `herdr --remote` (its endpoint is Local) offers no dock, no strip and
+/// no placement; the notice names the way that works.
+#[test]
+fn fork_smoke_over_herdr_remote_there_is_no_dock_and_the_reason_is_said() {
+    let mut state = dock_state_with(&spaces_config());
+    state.browser_link.remote_client = true;
+    recompose(&mut state);
+    assert!(state.active_endpoint_id.is_local());
+    assert!(!state.browser_dock_available() && !state.browser_dock_offered());
+    let outcome = toggle_dock(&mut state);
+    assert!(!outcome.resize);
+    assert!(state.layout(COLS, ROWS).browser_band.is_empty());
+    assert!(!state.browser_view_strip_for_focused_tab(), "no strip");
+    let notice = state.visible_endpoint_notice.as_ref().expect("a notice");
+    assert_eq!(
+        notice.body,
+        "The browser is not available over herdr --remote; add the machine (herdr machine add)."
+    );
+    toggle_view(&mut state);
+    assert!(!state.browser_view_open_for("tab_1"));
+    assert!(state
+        .take_browser_placement_request(std::time::Instant::now())
+        .is_none());
+}
+
+/// A linked machine docks through its helper: the companion, its report
+/// on the placement and the user's companion actions are the helper's;
+/// the machine's server gets no placement (it never learns this Mac's
+/// pids).
+#[test]
+fn fork_smoke_a_linked_machine_docks_through_its_helper_never_its_server() {
+    let mut state = linked_state();
+    assert!(
+        state.browser_dock_offered(),
+        "the server's own companion is off"
+    );
+    let outcome = toggle_dock(&mut state);
+    assert!(outcome.resize, "the band narrows the panes");
+    assert!(!state.layout(COLS, ROWS).browser_band.is_empty());
+    let now = std::time::Instant::now();
+    assert!(
+        state.take_browser_placement_request(now).is_none(),
+        "nothing for the machine's server"
+    );
+    assert_eq!(
+        link_placements(&mut state),
+        [(machine().storage_key(), Some("tab_1".into()), true)]
+    );
+    // unchanged: nothing more
+    assert!(state
+        .take_browser_placement_request(now + std::time::Duration::from_secs(1))
+        .is_none());
+    assert!(link_placements(&mut state).is_empty());
+    // the helper's report on this placement drives the placeholder
+    let mut said = helper_says("linked", "running");
+    said.reports = vec![BrowserPlacementStatus {
+        id: state.browser_dock.placement_id.clone(),
+        state: "unbound".into(),
+        ..Default::default()
+    }];
+    state.browser_link.set(&machine(), Some(said), None);
+    assert_eq!(
+        state.browser_placeholder(now).click,
+        Some(super::super::browser_dock::BrowserDockTarget::Nudge)
+    );
+    // the user's restart goes to the helper
+    let mut outcome = ClientShellInput::default();
+    state.request_browser_companion(
+        crate::api::schema::BrowserCompanionAction::Restart,
+        &mut outcome,
+    );
+    assert!(outcome.requests.is_empty());
+    assert_eq!(
+        state.take_browser_link_intents(),
+        [super::super::browser_link::LinkIntent::Companion {
+            endpoint: machine(),
+            action: crate::api::schema::BrowserCompanionAction::Restart,
+        }]
+    );
+}
+
+/// On a machine switch the machine left hides its browser (`active:
+/// false`) before the endpoint shown publishes its own placement.
+#[test]
+fn a_machine_switch_hides_the_machine_left_before_the_next_is_placed() {
+    let mut state = dock_state();
+    toggle_dock(&mut state);
+    let t0 = std::time::Instant::now();
+    assert!(sent_placement(&mut state, t0).is_some(), "Local's own");
+    // to the machine, docked there too
+    state.active_endpoint_id = machine();
+    state
+        .browser_link
+        .set(&machine(), Some(helper_says("linked", "running")), None);
+    toggle_dock(&mut state);
+    let t1 = t0 + std::time::Duration::from_secs(1);
+    assert!(state.take_browser_placement_request(t1).is_none());
+    assert_eq!(
+        link_placements(&mut state),
+        [(machine().storage_key(), Some("tab_1".into()), true)]
+    );
+    // back to Local, whose placement changed meanwhile (a narrower band)
+    state.active_endpoint_id = crate::client::endpoint::ClientEndpointId::Local;
+    state.browser_dock.percent = 30;
+    recompose(&mut state);
+    let t2 = t1 + std::time::Duration::from_secs(1);
+    assert!(
+        state.take_browser_placement_request(t2).is_none(),
+        "Local waits a gap behind the hide"
+    );
+    assert_eq!(
+        link_placements(&mut state),
+        [(machine().storage_key(), Some("tab_1".into()), false)],
+        "the machine left hides, its area kept"
+    );
+    assert!(state.next_browser_dock_deadline(t2).is_some());
+    let spec = sent_placement(&mut state, t2 + std::time::Duration::from_millis(40))
+        .expect("Local's placement after the gap")
+        .expect("spec");
+    assert!(spec.shown);
+    assert!(link_placements(&mut state).is_empty(), "hidden once");
+}
+
+/// The helper attaching or going changes the band: the outcome resizes;
+/// while its link is down and no companion runs, the area says so, and
+/// another Mac holding the machine's browser is named.
+#[test]
+fn the_helper_coming_and_going_resizes_and_the_link_state_is_shown() {
+    let mut state = linked_state();
+    toggle_dock(&mut state);
+    let mut outcome = ClientShellInput::default();
+    state.receive_browser_link(&machine(), None, None, Vec::new(), Vec::new(), &mut outcome);
+    assert!(outcome.repaint && outcome.resize, "the band goes");
+    recompose(&mut state);
+    assert!(state.layout(COLS, ROWS).browser_band.is_empty());
+    let mut outcome = ClientShellInput::default();
+    state.receive_browser_link(
+        &machine(),
+        Some(helper_says("reconnecting", "stopped")),
+        None,
+        Vec::new(),
+        Vec::new(),
+        &mut outcome,
+    );
+    assert!(outcome.repaint && outcome.resize, "the band comes back");
+    recompose(&mut state);
+    let now = std::time::Instant::now();
+    let label = state.endpoint_label(&machine()).to_owned();
+    let placeholder = state.browser_placeholder(now);
+    assert_eq!(placeholder.lines[0].0, format!("{label}: reconnecting"));
+    assert!(placeholder.spinner.is_some());
+    assert_eq!(state.browser_companion_stopped(), Some("link reconnecting"));
+    let mut said = helper_says("in_use", "stopped");
+    said.text = Some("the browser of this machine is on another Mac (since 14:02)".into());
+    state.browser_link.set(&machine(), Some(said), None);
+    let placeholder = state.browser_placeholder(now);
+    assert_eq!(
+        placeholder.lines[0].0,
+        format!("The browser of {label} is on another Mac")
+    );
+    assert!(placeholder.lines[1].0.contains("since 14:02"));
+    // an other endpoint's news repaints nothing here
+    let mut outcome = ClientShellInput::default();
+    state.receive_browser_link(
+        &crate::client::endpoint::ClientEndpointId::Local,
+        None,
+        None,
+        Vec::new(),
+        Vec::new(),
+        &mut outcome,
+    );
+    assert!(!outcome.repaint && !outcome.resize);
+}
