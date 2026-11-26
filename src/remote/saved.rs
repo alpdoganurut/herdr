@@ -337,8 +337,6 @@ impl SavedSshLink {
 }
 
 #[cfg(unix)]
-// the helper that reads the link lands after this; X1 takes this out
-#[allow(dead_code)]
 pub(crate) struct SavedSshLinkChild {
     pub(crate) reader: Box<dyn io::BufRead + Send>,
     /// Dropping it is the remote bridge's end of input: it exits.

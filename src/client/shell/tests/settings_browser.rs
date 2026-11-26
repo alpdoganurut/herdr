@@ -1090,6 +1090,73 @@ fn forgetting_a_machines_logins_needs_a_second_enter() {
     );
 }
 
+/// An armed "forget logins" belongs to the machine it was armed on: once
+/// another machine is shown, the next ↵ only arms it for that one.
+#[cfg(target_os = "macos")]
+#[test]
+fn an_armed_forget_never_forgets_another_machines_logins() {
+    use crate::client::shell::settings_browser::ROWS;
+    let mut state = tabs_state();
+    state.browser.info = Some(crate::api::schema::BrowserGetInfo {
+        seq: 1,
+        enabled: true,
+        window_off: true,
+        ..Default::default()
+    });
+    linked_machine(&mut state, "running");
+    open_section_with_record(&mut state);
+    let labels = |state: &ClientShellState| match &state.overlay {
+        Some(ClientShellOverlay::Settings(settings)) => settings
+            .browser
+            .actions
+            .iter()
+            .map(|row| row.label.clone())
+            .collect::<Vec<_>>(),
+        _ => panic!("settings"),
+    };
+    let forget = labels(&state)
+        .iter()
+        .position(|row| row.starts_with("forget "))
+        .expect("the forget row");
+    let mut outcome = ClientShellInput::default();
+    state.apply_browser_choice(ROWS + forget, &mut outcome);
+    assert!(labels(&state)[forget].starts_with("↵ again to forget"));
+    // another linked machine is shown now
+    let other = ClientEndpointId::Ssh(
+        crate::client::endpoint::ProfileId::parse("fedcba9876543210fedcba9876543210")
+            .expect("profile id"),
+    );
+    state.active_endpoint_id = other.clone();
+    state.browser_link.set(
+        &other,
+        Some(super::super::browser_link::LinkedBrowser {
+            link: "linked".into(),
+            companion: crate::api::schema::BrowserCompanionAppInfo {
+                state: "running".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }),
+        None,
+    );
+    state.sync_browser_settings_live();
+    assert!(
+        labels(&state)[forget].starts_with("forget "),
+        "{:?}",
+        labels(&state)
+    );
+    state.apply_browser_choice(ROWS + forget, &mut outcome);
+    assert!(
+        state.take_browser_link_intents().is_empty(),
+        "armed for the shown machine only"
+    );
+    state.apply_browser_choice(ROWS + forget, &mut outcome);
+    assert_eq!(
+        state.take_browser_link_intents(),
+        [super::super::browser_link::LinkIntent::ForgetLogins { endpoint: other }]
+    );
+}
+
 /// This Mac's settings are written to this Mac's config, whichever machine
 /// is shown, and the shell follows them at once.
 #[cfg(target_os = "macos")]

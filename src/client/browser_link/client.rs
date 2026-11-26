@@ -21,6 +21,10 @@ use crate::api::schema::BrowserPlacementSpec;
 use crate::server::headless::placement_action::PlacementActionPayload;
 use crate::server::headless::view_cycle::ViewCyclePayload;
 
+/// A helper.log larger than this is kept as helper.log.1 when a helper
+/// starts, and the helper writes a fresh one.
+const HELPER_LOG_CAP: u64 = 5 * 1024 * 1024;
+
 /// The text while the helper runs another herdr+ version.
 pub(crate) const OTHER_VERSION: &str =
     "the browser link runs another herdr+ version; it ends 30 s after the last older client quits";
@@ -405,10 +409,7 @@ fn read_helper(stream: UnixStream, shared: &Shared, bye: &mpsc::Sender<Option<&'
 /// on a thread of its own.
 pub(crate) fn spawn_helper(machine_id: &str, log: &Path) -> io::Result<()> {
     let exe = std::env::current_exe()?;
-    let log = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log)?;
+    let log = open_helper_log(log)?;
     let mut command = Command::new(exe);
     command
         .arg("browser-link")
@@ -425,6 +426,23 @@ pub(crate) fn spawn_helper(machine_id: &str, log: &Path) -> io::Result<()> {
             let _ = child.wait();
         })?;
     Ok(())
+}
+
+/// Opens the helper's log for appending; one over [`HELPER_LOG_CAP`] is
+/// first kept as `<log>.1` (replacing the older one). A log that cannot be
+/// moved is appended to as it is: the helper starts regardless.
+fn open_helper_log(log: &Path) -> io::Result<std::fs::File> {
+    if std::fs::metadata(log).is_ok_and(|meta| meta.len() > HELPER_LOG_CAP) {
+        let mut older = log.as_os_str().to_owned();
+        older.push(".1");
+        if let Err(error) = std::fs::rename(log, &older) {
+            tracing::debug!(%error, "the browser link's helper log was not moved aside");
+        }
+    }
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log)
 }
 
 #[cfg(test)]
@@ -452,6 +470,31 @@ mod tests {
         fn gone(&self, _: u64) {
             lock(&self.0).push("gone".into());
         }
+    }
+
+    /// A helper.log over the cap becomes helper.log.1 (one generation, the
+    /// older one replaced) and the helper writes a fresh one; under the cap
+    /// it is appended to.
+    #[test]
+    fn a_helper_log_over_its_cap_is_kept_as_one_older_generation() {
+        let dir = super::super::api_socket::tests::short_dir();
+        let log = dir.path().join("helper.log");
+        let older = dir.path().join("helper.log.1");
+        std::fs::write(&older, b"oldest").unwrap();
+        std::fs::write(&log, b"small\n").unwrap();
+        writeln!(open_helper_log(&log).unwrap(), "more").unwrap();
+        assert_eq!(std::fs::read(&log).unwrap(), b"small\nmore\n");
+        assert_eq!(std::fs::read(&older).unwrap(), b"oldest");
+        std::fs::File::options()
+            .write(true)
+            .open(&log)
+            .unwrap()
+            .set_len(HELPER_LOG_CAP + 1)
+            .unwrap();
+        writeln!(open_helper_log(&log).unwrap(), "fresh").unwrap();
+        assert_eq!(std::fs::metadata(&log).unwrap().len(), 6);
+        assert_eq!(std::fs::read(&log).unwrap(), b"fresh\n");
+        assert_eq!(std::fs::metadata(&older).unwrap().len(), HELPER_LOG_CAP + 1);
     }
 
     fn wait_for(what: impl Fn() -> bool) {

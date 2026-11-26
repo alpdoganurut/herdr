@@ -31,9 +31,16 @@ function flag(argv, name) {
   return eq ? eq.slice(name.length + 1) : null;
 }
 
-// `<home>/proxy.json`: {port, secret, label?}. Throws when it is missing or not usable.
+// `<home>/proxy.json`: {port, secret, label?}. Throws when it is missing or not usable. A parse
+// error is never passed on: its message can quote the file, secret included.
 function readProxyFile(home) {
-  const doc = JSON.parse(fs.readFileSync(path.join(home, 'proxy.json'), 'utf8'));
+  const text = fs.readFileSync(path.join(home, 'proxy.json'), 'utf8');
+  let doc;
+  try {
+    doc = JSON.parse(text);
+  } catch {
+    throw new Error('proxy.json: not valid JSON');
+  }
   const port = doc && doc.port;
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('proxy.json: no port');
   if (typeof doc.secret !== 'string' || !/^[\x21-\x7e]{1,256}$/.test(doc.secret)) throw new Error('proxy.json: no secret');

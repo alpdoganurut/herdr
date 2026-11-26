@@ -335,6 +335,7 @@ pub(crate) fn default_route_interface(v6: bool) -> io::Result<Option<String>> {
 }
 
 #[cfg(any(target_os = "linux", test))]
+// Off Linux these parsers compile only for their tests, so nothing else calls them.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod linux {
     const UP: u32 = 1;

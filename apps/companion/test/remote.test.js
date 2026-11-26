@@ -122,6 +122,15 @@ test('--remote needs an absolute home, a socket and a profile on the command lin
   assert.equal(parseRemote(argvOf(home({ port: PORT, secret: 'x', label: 'dev\u001b[1mhost1\n' }))).config.label, 'dev[1mhost1');
 });
 
+test('a broken proxy.json is named, never quoted: its text can hold the secret', () => {
+  for (const text of ['{"port":41234,"secret":leaky7}', 'secret: leaky7', 'leaky7', '{"port": 41234, "secret": "leaky7" oops}']) {
+    const got = parseRemote(argvOf(home(text)));
+    assert.ok(got.error && !got.config, text);
+    assert.match(got.error, /proxy\.json: not valid JSON$/, text);
+    assert.equal(got.error.includes('leaky7'), false, text);
+  }
+});
+
 test('the switches: no EXCLUDE, the port in the MAP, no loopback bypass, no secret', () => {
   const { app, dir } = rig();
   assert.deepEqual(app.switches, proxySwitches(PORT));

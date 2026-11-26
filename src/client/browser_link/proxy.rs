@@ -147,6 +147,7 @@ impl Drop for Proxy {
 }
 
 fn accept_loop(listener: &TcpListener, shared: &Arc<Shared>) {
+    let mut refusing = false;
     loop {
         let mut fds = [
             poll_fd(listener.as_raw_fd(), libc::POLLIN),
@@ -165,9 +166,15 @@ fn accept_loop(listener: &TcpListener, shared: &Arc<Shared>) {
             }
         };
         let open = Open::new(shared);
-        if shared.open.load(Ordering::Acquire) > CONNECTIONS {
-            tracing::warn!("too many connections to the browser's proxy");
-            continue;
+        match over_limit(shared.open.load(Ordering::Acquire), &mut refusing) {
+            Limit::Serve => {}
+            Limit::Refuse => continue,
+            Limit::RefuseFirst => {
+                tracing::warn!(
+                    "too many connections to the browser's proxy; further refusals are not logged until one is served"
+                );
+                continue;
+            }
         }
         let started = std::thread::Builder::new()
             .name("browser-proxy-conn".into())
@@ -185,6 +192,27 @@ fn accept_loop(listener: &TcpListener, shared: &Arc<Shared>) {
         if let Err(error) = started {
             tracing::warn!(%error, "no thread for a connection to the browser's proxy");
         }
+    }
+}
+
+/// What the proxy does with the connection it just counted.
+#[derive(Debug, PartialEq, Eq)]
+enum Limit {
+    Serve,
+    Refuse,
+    RefuseFirst,
+}
+
+/// Over [`CONNECTIONS`] a connection is refused; only the first refusal
+/// since one was last served is logged (`refusing` remembers it).
+fn over_limit(open: usize, refusing: &mut bool) -> Limit {
+    if open <= CONNECTIONS {
+        *refusing = false;
+        Limit::Serve
+    } else if std::mem::replace(refusing, true) {
+        Limit::Refuse
+    } else {
+        Limit::RefuseFirst
     }
 }
 
@@ -1276,6 +1304,25 @@ mod tests {
     use std::sync::Mutex;
 
     const SECRET: &str = "s3cret~";
+
+    /// Over the limit only the first refusal is logged; once a connection is
+    /// served again, the next crossing is logged again.
+    #[test]
+    fn the_connection_limit_is_logged_once_per_crossing() {
+        let mut refusing = false;
+        assert_eq!(over_limit(CONNECTIONS, &mut refusing), Limit::Serve);
+        assert_eq!(
+            over_limit(CONNECTIONS + 1, &mut refusing),
+            Limit::RefuseFirst
+        );
+        assert_eq!(over_limit(CONNECTIONS + 1, &mut refusing), Limit::Refuse);
+        assert_eq!(over_limit(CONNECTIONS + 7, &mut refusing), Limit::Refuse);
+        assert_eq!(over_limit(CONNECTIONS, &mut refusing), Limit::Serve);
+        assert_eq!(
+            over_limit(CONNECTIONS + 1, &mut refusing),
+            Limit::RefuseFirst
+        );
+    }
 
     type Handler = Arc<dyn Fn(&Destination, UnixStream) + Send + Sync>;
 

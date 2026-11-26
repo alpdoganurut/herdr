@@ -69,9 +69,10 @@ pub(super) struct ClientBrowserSettings {
     /// row) and the actions its menu had, from the shell's `browser.get`.
     pub(super) live: Option<super::browser::BrowserRow>,
     pub(super) actions: Vec<LiveAction>,
-    /// Fork (remote browser): "Forget <machine>'s logins" was chosen once;
-    /// only a second ↵ (or click) on it forgets them.
-    pub(super) forget_armed: bool,
+    /// Fork (remote browser): "Forget <machine>'s logins" was chosen once
+    /// on this endpoint; only a second ↵ (or click) on it while the same
+    /// endpoint is shown forgets them.
+    pub(super) forget_armed: Option<ClientEndpointId>,
 }
 
 /// Fork (session header): one of the rows after `ROWS`, the Browser row
@@ -316,7 +317,7 @@ impl ClientShellState {
             .as_ref()
             .is_some_and(|info| !info.window_off);
         let mut actions = live_actions(live.as_ref(), local, window);
-        let forget_armed = self.browser_settings().is_some_and(|b| b.forget_armed);
+        let forget_armed = self.browser_forget_armed();
         // only while a saved machine is shown: Local's own browser is not
         // what they set
         if !self.active_endpoint_id.is_local() {
@@ -619,10 +620,17 @@ impl ClientShellState {
         outcome.repaint = true;
     }
 
+    /// Forget was armed on the endpoint shown now.
+    fn browser_forget_armed(&self) -> bool {
+        self.browser_settings()
+            .and_then(|b| b.forget_armed.as_ref())
+            .is_some_and(|armed| *armed == self.active_endpoint_id)
+    }
+
     fn disarm_browser_forget(&mut self) {
         let armed = self
             .browser_settings_mut()
-            .is_some_and(|browser| std::mem::take(&mut browser.forget_armed));
+            .is_some_and(|browser| browser.forget_armed.take().is_some());
         if armed {
             self.sync_browser_settings_live();
         }
@@ -666,10 +674,10 @@ impl ClientShellState {
                 }
             }
             LiveDo::Forget => {
-                let armed = self.browser_settings().is_some_and(|b| b.forget_armed);
-                if !armed {
+                if !self.browser_forget_armed() {
+                    let endpoint = self.active_endpoint_id.clone();
                     if let Some(browser) = self.browser_settings_mut() {
-                        browser.forget_armed = true;
+                        browser.forget_armed = Some(endpoint);
                     }
                     return;
                 }
