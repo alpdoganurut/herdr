@@ -20,11 +20,11 @@ use interprocess::local_socket::traits::Stream as _;
 use interprocess::TryClone as _;
 
 use super::link_proto::{
-    bye, code, text, ApiReply, ApiRequest, BlobAck, BlobChunk, BlobName, BrowserLinkInfo,
-    BrowserLinkOpenParams, BrowserLinkReady, Bye, Ensure, EnsureReply, FileReply, FileRequest,
-    FrameError, HelperFrame, HostUp, LineBuffer, LinkError, LinkOp, LinkReply, ServerFrame,
-    WriteLane, BLOB_MAX_BYTES, FILE_PULLS, FILE_WINDOW, LINK_FEATURES, LINK_PROTOCOL,
-    OPS_IN_FLIGHT, PING_MS, QUEUE_BYTES, READ_POLL_MS, TTL_MS,
+    bye, code, text, BlobAck, BlobChunk, BlobName, BrowserLinkInfo, BrowserLinkOpenParams,
+    BrowserLinkReady, Bye, Ensure, EnsureReply, FileReply, FileRequest, FrameError, HelperFrame,
+    HostUp, LineBuffer, LinkError, LinkOp, LinkReply, ServerFrame, WriteLane, BLOB_MAX_BYTES,
+    FILE_PULLS, FILE_WINDOW, LINK_FEATURES, LINK_PROTOCOL, OPS_IN_FLIGHT, PING_MS, QUEUE_BYTES,
+    READ_POLL_MS, TTL_MS,
 };
 use super::session::random_hex;
 use super::{unix_now, BrowserError};
@@ -241,6 +241,10 @@ pub struct Link {
     pub host_id: String,
     /// The Mac's name, for texts.
     pub label: String,
+    /// The helper's herdr version.
+    pub herdr: String,
+    /// When it opened, Unix seconds.
+    pub opened_unix: u64,
     /// Whether the Mac can run a browser, and why not.
     pub ready: BrowserLinkReady,
     pub detail: String,
@@ -319,6 +323,11 @@ impl Link {
                 tracing::warn!(event = "browser.link.encode", epoch = self.epoch, %err, "an answer is no frame; dropped")
             }
         }
+    }
+
+    /// One event of the server's stream, as the Mac subscribed to it.
+    pub fn send_event(&self, event: serde_json::Value) -> Result<(), CallError> {
+        self.send(&ServerFrame::Event { event })
     }
 
     /// [`Self::answer`] for a line made by hand.
@@ -594,8 +603,16 @@ pub struct OpenFacts {
 struct SlotState {
     epoch: u64,
     live: Option<Arc<Link>>,
-    /// The Mac of the last link that ended, and when.
-    last: Option<(String, u64)>,
+    /// The last link that ended.
+    last: Option<LastLink>,
+}
+
+/// The Mac of the last link that ended, and when.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LastLink {
+    pub label: String,
+    pub herdr: String,
+    pub closed_unix: u64,
 }
 
 /// The server's one link.
@@ -688,6 +705,8 @@ impl LinkSlot {
             } else {
                 label
             },
+            herdr: clip_text(&params.herdr),
+            opened_unix: unix_now(),
             ready: params.ready,
             detail: clip_text(params.detail.as_deref().unwrap_or_default()),
             since: facts.now.clone(),
@@ -716,7 +735,11 @@ impl LinkSlot {
             .is_some_and(|live| live.epoch == link.epoch)
         {
             state.live = None;
-            state.last = Some((link.label.clone(), unix_now()));
+            state.last = Some(LastLink {
+                label: link.label.clone(),
+                herdr: link.herdr.clone(),
+                closed_unix: unix_now(),
+            });
         }
     }
 
@@ -739,7 +762,7 @@ impl LinkSlot {
     }
 
     /// The last Mac and when its link ended, while there is none.
-    pub fn last(&self) -> Option<(String, u64)> {
+    pub fn last(&self) -> Option<LastLink> {
         lock(&self.state).last.clone()
     }
 }
@@ -790,19 +813,27 @@ pub trait LinkHandler: Send + Sync {
     fn file(&self, _link: &Arc<Link>, request: &FileRequest) -> FileReply {
         no_file(request.id)
     }
-    fn api(&self, link: &Arc<Link>, request: ApiRequest) {
-        link.answer(&ServerFrame::ApiRe(ApiReply {
-            id: request.id,
-            ok: false,
-            result: serde_json::Value::Null,
-            error: Some(LinkError::new(
-                code::INVALID_REQUEST,
-                format!(
-                    "{} is not available over the browser link",
-                    clip_text(&request.method)
-                ),
-            )),
-        }));
+    /// An allowlisted call's parameters as this server runs it (its own
+    /// lease id in); an error answers the call.
+    fn api_params(
+        &self,
+        _link: &Arc<Link>,
+        _method: &str,
+        _params: serde_json::Value,
+    ) -> Result<serde_json::Value, LinkError> {
+        Err(LinkError::new(
+            "lease_unknown",
+            "no browser is up over this link",
+        ))
+    }
+    /// A call's result as the Mac gets it.
+    fn api_result(
+        &self,
+        _link: &Arc<Link>,
+        _method: &str,
+        result: serde_json::Value,
+    ) -> serde_json::Value {
+        result
     }
     /// The link is over; the slot is free again.
     fn closed(&self, _link: &Arc<Link>, _end: &LinkEnd) {}
@@ -892,6 +923,8 @@ struct LinkReader {
     blobs: Blobs,
     /// The thread that reads shown files, once one was asked for.
     files: Option<SyncSender<FileRequest>>,
+    /// The companion's calls.
+    api: super::link_api::ApiRelay,
 }
 
 impl LinkReader {
@@ -903,6 +936,7 @@ impl LinkReader {
             lines: LineBuffer::default(),
             blobs: Blobs::default(),
             files: None,
+            api: super::link_api::ApiRelay::new(None),
         }
     }
 
@@ -1011,7 +1045,7 @@ impl LinkReader {
                 }
             }
             HelperFrame::File(request) => return self.file(request),
-            HelperFrame::Api(request) => self.handler.api(link, request),
+            HelperFrame::Api(request) => self.api.call(link, &self.handler, request),
             HelperFrame::Bye(bye) => return Some(LinkEnd::Bye(bye)),
             HelperFrame::Unknown => {}
         }
@@ -1114,6 +1148,7 @@ pub fn serve(
     stream: LocalStream,
     request_id: &str,
     params: &BrowserLinkOpenParams,
+    lane: super::link_api::ApiLane,
     stopping: impl Fn() -> bool,
 ) -> io::Result<&'static str> {
     let hub = super::hub();
@@ -1123,7 +1158,7 @@ pub fn serve(
         params,
         hub.link_slot(),
         hub.link_open(params, open_facts()),
-        Arc::new(hub.clone()),
+        (Arc::new(hub.clone()), Arc::new(lane)),
         stopping,
     )
 }
@@ -1134,7 +1169,7 @@ fn serve_with(
     params: &BrowserLinkOpenParams,
     slot: &LinkSlot,
     opened: Result<Arc<Link>, BrowserError>,
-    handler: Arc<dyn LinkHandler>,
+    (handler, lane): (Arc<dyn LinkHandler>, Arc<super::link_api::ApiLane>),
     stopping: impl Fn() -> bool,
 ) -> io::Result<&'static str> {
     let link = match opened {
@@ -1152,7 +1187,7 @@ fn serve_with(
         slot,
         link: Arc::clone(&link),
     };
-    let (end, writer) = match run_link(&mut stream, request_id, &live, &handler, stopping) {
+    let (end, writer) = match run_link(&mut stream, request_id, &live, &handler, lane, stopping) {
         Ok((end, writer)) => (end, Some(writer)),
         Err(err) => (LinkEnd::Lost(err.to_string()), None),
     };
@@ -1187,6 +1222,7 @@ fn run_link(
     request_id: &str,
     live: &LiveLink<'_>,
     handler: &Arc<dyn LinkHandler>,
+    lane: Arc<super::link_api::ApiLane>,
     stopping: impl Fn() -> bool,
 ) -> io::Result<(LinkEnd, std::thread::JoinHandle<()>)> {
     let link = &live.link;
@@ -1209,6 +1245,7 @@ fn run_link(
         })?
     };
     let mut reader = LinkReader::new(Arc::clone(link), Arc::clone(handler), Instant::now());
+    reader.api = super::link_api::ApiRelay::new(Some(lane));
     Ok((reader.run(stream, Instant::now, stopping), writer))
 }
 

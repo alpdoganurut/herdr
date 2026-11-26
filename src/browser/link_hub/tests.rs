@@ -961,3 +961,132 @@ fn a_picture_cut_off_leaves_nothing() {
     assert_eq!(pending.join().unwrap().unwrap_err().code, "host_link_lost");
     assert_eq!(files_in(&site.0), ["app.js", "index.html"]);
 }
+
+// ---- the companion's calls (SV4)
+
+#[test]
+fn a_call_over_the_link_carries_its_own_lease_and_no_path_of_the_mac() {
+    let (hub, _shared, mac) = linked("link-api");
+    let lease = mac.state.lock().unwrap().leases[0].clone();
+    let params = hub
+        .api_params(
+            &mac.link,
+            "browser.host_state",
+            json!({ "lease_id": "L-forged" }),
+        )
+        .unwrap();
+    assert_eq!(params["lease_id"], lease);
+    assert_eq!(
+        hub.api_params(&mac.link, "browser.host_state", json!(null))
+            .unwrap()["lease_id"],
+        lease
+    );
+    assert_eq!(
+        hub.api_params(&mac.link, "browser.host_state", json!([1]))
+            .unwrap_err()
+            .code,
+        "invalid_request"
+    );
+    // a page of a shown file is its file here again; what the Mac says of
+    // paths, page API and openers is dropped
+    let site = site("api");
+    let page = site.0.join("index.html");
+    show(&hub, &page, json!({}));
+    let token = mac.state.lock().unwrap().ops.last().unwrap().args["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let synced = hub
+        .api_params(
+            &mac.link,
+            "browser.host_sync",
+            json!({ "seq": 1, "groups": [{ "tab_id": "w1:t1", "entries": [
+                { "kind": "html_view", "url": format!("herdr-file://{token}/index.html"),
+                  "file": "/etc/passwd", "page_api": true, "opener": "o", "serve": token },
+                { "kind": "html_view", "url": format!("herdr-file://{}/x.html", "q".repeat(24)),
+                  "file": "/etc/passwd" },
+                { "kind": "web", "url": "https://a.test/", "file": "/etc/passwd" },
+            ] }] }),
+        )
+        .unwrap();
+    let entries = &synced["groups"][0]["entries"];
+    assert_eq!(entries[0]["file"], page.display().to_string());
+    assert_eq!(entries[0]["url"], format!("file://{}", page.display()));
+    for absent in ["page_api", "opener", "serve"] {
+        assert!(entries[0].get(absent).is_none(), "{absent}");
+    }
+    assert_eq!(entries[1]["url"], "about:blank");
+    assert!(entries[1].get("file").is_none());
+    assert_eq!(entries[2]["url"], "https://a.test/");
+    assert!(entries[2].get("file").is_none());
+    // and the other way: the Mac gets the page, never the path
+    let state = hub.api_result(
+        &mac.link,
+        "browser.host_state",
+        json!({ "type": "browser_host_state", "state": { "tabs": [{ "tab_id": "w1:t1", "entries": [
+            { "kind": "html_view", "url": format!("file://{}", page.display()),
+              "file": page.display().to_string(), "page_api": true, "opener": "o" },
+            { "kind": "html_view", "url": "file:///gone.html", "file": "/gone/gone.html" },
+            { "kind": "web", "url": "https://a.test/" },
+        ] }] } }),
+    );
+    let entries = &state["state"]["tabs"][0]["entries"];
+    assert_eq!(
+        entries[0]["url"],
+        format!("herdr-file://{token}/index.html")
+    );
+    assert_eq!(entries[0]["serve"], token, "the same token as its url");
+    for absent in ["file", "page_api", "opener"] {
+        assert!(entries[0].get(absent).is_none(), "{absent}");
+    }
+    assert_eq!(entries[1]["url"], "about:blank");
+    assert!(entries[1].get("file").is_none() && entries[1].get("serve").is_none());
+    assert_eq!(entries[2]["url"], "https://a.test/");
+    // a send of such a page names the file
+    let sent = hub
+        .api_params(
+            &mac.link,
+            "browser.send_page",
+            json!({ "tab_id": "w1:t1", "url": format!("herdr-file://{token}/index.html") }),
+        )
+        .unwrap();
+    assert_eq!(sent["url"], format!("file://{}", page.display()));
+}
+
+#[test]
+fn without_its_browser_a_link_has_no_lease_to_lend() {
+    let (hub, _shared, mac) = linked("link-api-down");
+    mac.say(&HelperFrame::HostDown {
+        reason: "gone".into(),
+    });
+    assert_eq!(
+        hub.api_params(&mac.link, "browser.host_state", json!({}))
+            .unwrap_err()
+            .code,
+        "lease_unknown"
+    );
+}
+
+#[test]
+fn browser_get_names_the_mac_linked_reconnecting_and_gone() {
+    let (hub, _shared, mac) = linked("link-status");
+    let status = hub.get(None).link.expect("linked");
+    assert_eq!(
+        (status.state.as_str(), status.label.as_str()),
+        ("linked", "mbp")
+    );
+    assert_eq!(status.since_unix, mac.link.opened_unix);
+    mac.close(LinkEnd::Lost("test".into()));
+    let status = hub.get(None).link.expect("reconnecting");
+    assert_eq!(status.state, "reconnecting");
+    hub.expire_host_lease_for_test();
+    hub.supervise();
+    let status = hub.get(None).link.expect("gone");
+    assert_eq!(
+        (status.state.as_str(), status.label.as_str()),
+        ("gone", "mbp")
+    );
+    // a server that never had one says nothing
+    let (fresh, _home, _shared) = companion_hub("link-status-none", false);
+    assert_eq!(fresh.get(None).link, None);
+}

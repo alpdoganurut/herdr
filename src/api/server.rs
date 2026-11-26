@@ -544,7 +544,11 @@ fn serve_connection(
                 !running.load(Ordering::Relaxed)
                     || server_stop.is_some_and(ServerStop::is_requested)
             };
-            let result = crate::browser::link::serve(stream, &request_id, &params, stopping);
+            let lane = crate::browser::link_api::ApiLane {
+                api_tx: api_tx.clone(),
+                event_hub: event_hub.clone(),
+            };
+            let result = crate::browser::link::serve(stream, &request_id, &params, lane, stopping);
             match &result {
                 Ok(outcome) => {
                     crate::logging::api_request_completed(&request_id, method, outcome, changes_ui)

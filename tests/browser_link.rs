@@ -447,3 +447,131 @@ fn a_server_that_stops_says_goodbye() {
         );
     }
 }
+
+/// The companion's calls over the link: only its few methods, always with
+/// the link's own lease, and its events as frames.
+#[test]
+fn the_companions_calls_run_here_with_the_links_own_lease() {
+    let server = Server::start("");
+    let (mut link, _) = server.link(mac("mac-a", "mbp"));
+    let mut next = 0;
+    let mut call = |link: &mut Conn, method: &str, params: Value| {
+        next += 1;
+        link.send(&json!({ "t": "api", "id": next, "method": method, "params": params }));
+        loop {
+            let frame = link.read();
+            if frame["t"] == "api_re" && frame["id"] == next {
+                return frame;
+            }
+        }
+    };
+    // no browser up there yet: no lease
+    let early = call(&mut link, "browser.host_state", json!({}));
+    assert_eq!(early["error"]["code"], "lease_unknown", "{early}");
+    link.send(&json!({ "t": "host_up", "instance": "i1", "version": "0.2.13", "tabs": [] }));
+    let ok = link.read();
+    assert_eq!(ok["t"], "host_ok", "{ok}");
+    // never relayed
+    for method in [
+        "browser.page_message",
+        "pane.list",
+        "browser.host_register",
+        "server.stop",
+    ] {
+        let refused = call(&mut link, method, json!({}));
+        assert_eq!(refused["ok"], false, "{method}");
+        assert_eq!(
+            refused["error"]["message"],
+            format!("{method} is not available over the browser link")
+        );
+    }
+    // a lease the Mac makes up is replaced by the link's
+    let state = call(
+        &mut link,
+        "browser.host_state",
+        json!({ "lease_id": "L-forged" }),
+    );
+    assert_eq!(state["ok"], true, "{state}");
+    assert_eq!(state["result"]["type"], "browser_host_state");
+    let report = call(
+        &mut link,
+        "browser.host_report",
+        json!({ "lease_id": "x", "events": [] }),
+    );
+    assert_eq!(
+        report["result"]["type"], "browser_host_reported",
+        "{report}"
+    );
+    // its events, and the rest of its methods
+    let subscribed = call(
+        &mut link,
+        "events.subscribe",
+        json!({ "subscriptions": [{ "type": "tab.created" }] }),
+    );
+    assert_eq!(
+        subscribed["result"]["type"], "subscription_started",
+        "{subscribed}"
+    );
+    let not_its = call(
+        &mut link,
+        "events.subscribe",
+        json!({ "subscriptions": [{ "type": "pane.output_matched" }] }),
+    );
+    assert_eq!(not_its["error"]["code"], "invalid_request");
+    let dir = server.base.join("home");
+    let created = server.request(
+        "workspace.create",
+        json!({ "cwd": dir.display().to_string(), "focus": true }),
+    );
+    let workspace = created["result"]["workspace"]["workspace_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    server.request(
+        "tab.create",
+        json!({ "workspace_id": workspace, "focus": false }),
+    );
+    let event = loop {
+        let frame = link.read();
+        if frame["t"] == "event" {
+            break frame;
+        }
+    };
+    assert_eq!(event["event"]["event"], "tab_created", "{event}");
+    let tab_id = event["event"]["data"]["tab_id"]
+        .as_str()
+        .or_else(|| event["event"]["data"]["tab"]["tab_id"].as_str())
+        .unwrap_or_else(|| panic!("{event}"))
+        .to_string();
+    let focused = call(&mut link, "tab.focus", json!({ "tab_id": tab_id }));
+    assert_eq!(focused["ok"], true, "{focused}");
+    // a path the Mac names is never this machine's
+    let synced = call(
+        &mut link,
+        "browser.host_sync",
+        json!({ "seq": 1, "groups": [{ "tab_id": tab_id, "entries": [{
+            "view_id": "v1", "target": "T1", "kind": "html_view",
+            "url": format!("herdr-file://{}/x.html", "q".repeat(24)),
+            "file": "/etc/passwd", "page_api": true, "opener": "o"
+        }] }] }),
+    );
+    assert_eq!(synced["ok"], true, "{synced}");
+    let state = call(
+        &mut link,
+        "browser.host_state",
+        json!({ "tab_ids": [tab_id] }),
+    );
+    let entry = &state["result"]["state"]["tabs"][0]["entries"][0];
+    assert_eq!(entry["url"], "about:blank", "{state}");
+    for absent in ["file", "page_api", "opener", "serve"] {
+        assert!(entry.get(absent).is_none(), "{absent}: {state}");
+    }
+    // what browser.get says about it
+    let info = server.request("browser.get", json!({}));
+    let linked = &info["result"]["browser"]["link"];
+    assert_eq!(
+        (&linked["state"], &linked["label"]),
+        (&json!("linked"), &json!("mbp")),
+        "{info}"
+    );
+}
