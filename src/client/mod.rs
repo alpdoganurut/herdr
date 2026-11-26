@@ -803,7 +803,13 @@ async fn run_client_loop(
             #[cfg(unix)]
             browser_links.deliver(shell);
         }
-        if let Some(shell) = state.shell.as_ref() {
+        // Fork (dock sync): the layout's surface size, once per pass (the
+        // supervisors' connects and the reconcile below both take it).
+        let surface_size = state
+            .shell
+            .as_ref()
+            .map(|shell| shell.surface_size(state.reported_size.0, state.reported_size.1));
+        if let Some(surface_size) = surface_size {
             supervisors.spawn_due(
                 now,
                 endpoint::EndpointConnectOptions {
@@ -813,7 +819,7 @@ async fn run_client_loop(
                     cell_height_px: state.reported_cell_size.1,
                     pixel_geometry_exact: state.pixel_geometry_exact,
                     pixel_mouse: state.pixel_mouse_available(),
-                    surface_size: shell.surface_size(state.reported_size.0, state.reported_size.1),
+                    surface_size,
                     endpoint_keybindings: config.endpoint_keybindings,
                     mouse_capture: state.shell_mouse_capture_preference,
                 },
@@ -826,8 +832,9 @@ async fn run_client_loop(
             &mut state,
             &mut write_stream,
             &mut pending_activation,
+            surface_size,
             std::time::Instant::now(),
-        )?;
+        );
         let timer_delay = state
             .shell
             .as_ref()

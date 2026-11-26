@@ -60,7 +60,6 @@ pub(super) fn route_server_message(
 }
 
 /// `ServerMessage::PaneSurface`.
-#[allow(clippy::too_many_arguments)] // the loop's state, one reference each
 pub(super) fn receive_pane_surface(
     state: &mut ClientState,
     endpoints: &mut endpoint::EndpointRegistry,
@@ -99,7 +98,6 @@ pub(super) fn receive_pane_surface(
 
 /// A decoded endpoint snapshot (`EndpointControl` snapshot): installed, the
 /// activation that waited for it completed, the connection marked ready.
-#[allow(clippy::too_many_arguments)] // the loop's state, one reference each
 pub(super) fn receive_shell_snapshot(
     state: &mut ClientState,
     endpoints: &mut endpoint::EndpointRegistry,
@@ -209,7 +207,6 @@ pub(super) enum ResponseChunk {
 /// The response chunks the loop handles before the command lane: an
 /// activation's acknowledgements, a released surface lease's and a browser
 /// placement's answers.
-#[allow(clippy::too_many_arguments)] // the loop's state, one reference each
 pub(super) fn receive_lifecycle_response(
     state: &mut ClientState,
     endpoints: &mut endpoint::EndpointRegistry,
@@ -274,8 +271,18 @@ pub(super) fn receive_lifecycle_response(
     // sync): a refused one is sent again (`browser_dock.rs`).
     if request_id.starts_with(shell::BROWSER_PLACEMENT_REQUEST_PREFIX) {
         if let Some(shell) = state.shell.as_mut() {
-            let accepted =
-                final_chunk && endpoint_commands::parse_response(request_id, data).is_ok();
+            let answer = endpoint_commands::parse_response(request_id, data);
+            if let Err(error) = &answer {
+                // at most one a second (`REFUSED_RETRY`)
+                debug!(
+                    endpoint = ?endpoint_id,
+                    request_id,
+                    code = error.code.as_deref().unwrap_or("none"),
+                    message = %error.message,
+                    "browser placement refused; sending it again"
+                );
+            }
+            let accepted = final_chunk && answer.is_ok();
             shell.receive_browser_placement_answer(request_id, accepted, now);
         }
         return Ok(ResponseChunk::Handled(None));
@@ -386,7 +393,6 @@ pub(super) fn receive_command_response(
 /// The shell's part of `ClientLoopEvent::Resize`: the new size, the
 /// invalidated surface and the size report (to a pending activation's
 /// endpoint while one runs).
-#[allow(clippy::too_many_arguments)] // the loop's state, one reference each
 pub(super) fn apply_terminal_resize(
     state: &mut ClientState,
     endpoints: &mut endpoint::EndpointRegistry,
@@ -450,25 +456,28 @@ pub(super) fn apply_terminal_resize(
 /// `browser.get` answer adding the view strip, a dock toggled before the
 /// first frame, an activation that sized the target by the layout it left),
 /// and a browser placement held back for a frame is placed once one is
-/// presented. Per pass: one `layout()` and a compare of plain data; a
-/// `ClientShellResize` only when they differ.
+/// presented. `surface_size` is the layout's pane surface for the
+/// terminal's reported size, computed once per loop pass (`None` without a
+/// shell): a compare of plain data, a `ClientShellResize` only when they
+/// differ.
 pub(super) fn reconcile_after_event(
     state: &mut ClientState,
     endpoints: &mut endpoint::EndpointRegistry,
     pending: &mut Option<endpoint::PendingEndpointActivation>,
+    surface_size: Option<crate::protocol::ClientSurfaceSize>,
     now: std::time::Instant,
-) -> Result<(), ClientError> {
-    reconcile_surface_size(state, endpoints, pending);
+) {
+    reconcile_surface_size(state, endpoints, pending, surface_size);
     send_browser_placement_recheck(state, endpoints, pending, now);
-    Ok(())
 }
 
 fn reconcile_surface_size(
     state: &mut ClientState,
     endpoints: &mut endpoint::EndpointRegistry,
     pending: &mut Option<endpoint::PendingEndpointActivation>,
+    surface_size: Option<crate::protocol::ClientSurfaceSize>,
 ) {
-    let Some(shell) = state.shell.as_ref() else {
+    let (Some(shell), Some(surface_size)) = (state.shell.as_ref(), surface_size) else {
         return;
     };
     let active = endpoints.active_id();
@@ -482,14 +491,13 @@ fn reconcile_surface_size(
     if !ready || !shell.endpoint_is_active(active) || !shell.endpoint_is_online(active) {
         return;
     }
-    let want = client_shell_resize_message(
-        shell,
-        state.reported_size.0,
-        state.reported_size.1,
-        state.reported_cell_size.0,
-        state.reported_cell_size.1,
-        state.pixel_mouse_available(),
-    );
+    // `client_shell_resize_message` for the size computed this pass
+    let want = ClientMessage::ClientShellResize {
+        cell_width_px: state.reported_cell_size.0,
+        cell_height_px: state.reported_cell_size.1,
+        surface_size,
+        pixel_mouse: state.pixel_mouse_available(),
+    };
     if let Some(activation) = pending.as_mut() {
         if *activation.surface_resize() == want {
             return;

@@ -13,18 +13,23 @@
 //! What it checks is what was drawn: every frame that reached the (sink)
 //! terminal records its band, Browser view area, pane rect, surface size and
 //! tab (`DrawnDock`). After every settle (all queues drained, the dock's
-//! gap and a tick passed):
+//! gap and a tick passed; a settle closes an open modal first, so the hide
+//! under a modal is `browser_dock.rs`'s
+//! `a_modal_over_the_band_unshows_the_placement`):
 //! - I1: the board shows the placement exactly when the drawn frame has a
-//!   band (or a Browser view) and no modal is open;
+//!   band (or a Browser view);
 //! - I2: the shown area is the drawn band right of its divider (or the
 //!   drawn Browser view's area);
 //! - I3: the shown tab's PTY size equals the drawn pane rect and the drawn
 //!   surface frame;
 //! - I4: the board's tab, the server's focused tab and the drawn tab agree.
 //!
-//! At every step where the server has read all the client sent and a frame
-//! with panes is on screen, the board's shown placement is checked against
-//! that frame:
+//! At every step where Local's server has read all the client sent (a step
+//! with Local's inbox not empty is skipped: the board may not hold the
+//! client's latest yet) and a frame with panes is on screen, the board's
+//! shown placement is checked against that frame (`Failures::steps_read`
+//! counts the steps past that gate, `steps_compared` those with a shown
+//! placement compared; both are reported and must be above zero):
 //! - I5a (window over text): the frame has no band (or Browser view) for
 //!   it, shows another tab, or the window's area overlaps the pane rect;
 //!   asserted 0 like the settled checks;
@@ -39,6 +44,10 @@
 //! after a terminal resize until the next surface) counts in neither: the
 //! terminal shows no pane text then. The companion's own hiding while the
 //! terminal window moves is not modelled.
+//!
+//! Scripted runs below add what the random steps never do: an activation
+//! the machine refuses (the rollback to Local,
+//! `a_refused_machine_activation_rolls_back_and_the_dock_shows_again`).
 //!
 //! The harness reimplements, as glue: the loop's dispatch of the three
 //! server messages it fakes (pane surface, response chunk, endpoint
@@ -159,10 +168,17 @@ struct FakeServer {
     pages: HashMap<String, u32>,
     /// Every size the client reported, in order.
     resizes: Vec<(u16, u16)>,
+    /// Refuse `surface.set(true)` (an activation of this endpoint fails).
+    refuse_activation: bool,
+    /// How often the client's surface turned active (from inactive).
+    surface_returns: u32,
 }
 
 impl FakeServer {
     fn new(endpoint: ClientEndpointId, generation: u64, boot: &str, tabs: &[&str]) -> Self {
+        // the client's hello says it places again after a return
+        let board = PlacementBoard::new();
+        board.set_placement_reconfirm(1, true);
         Self {
             endpoint,
             generation,
@@ -181,9 +197,11 @@ impl FakeServer {
             surface_active: false,
             sent_focus: None,
             force_snapshot: true,
-            board: PlacementBoard::new(),
+            board,
             pages: HashMap::new(),
             resizes: Vec::new(),
+            refuse_activation: false,
+            surface_returns: 0,
         }
     }
 
@@ -393,6 +411,13 @@ impl FakeServer {
     fn request(&mut self, boot_id: &str, request: Request) {
         match request.method {
             Method::ClientShellSurfaceSet(params) => {
+                if params.active && self.refuse_activation {
+                    self.respond(boot_id, &request.id, Err("surface_refused"));
+                    return;
+                }
+                if params.active && !self.surface_active {
+                    self.surface_returns += 1;
+                }
                 if params.active {
                     self.rev += 1;
                     self.force_snapshot = true;
@@ -511,6 +536,10 @@ struct Failures {
     i4: u32,
     i5a: u32,
     i5b: u32,
+    /// Steps `check_step` did not skip for Local's inbox.
+    steps_read: u32,
+    /// Of those, steps with a shown placement compared to a drawn frame.
+    steps_compared: u32,
     first: Vec<String>,
 }
 
@@ -628,6 +657,16 @@ impl Harness {
         harness
     }
 
+    /// The layout's surface size for the terminal's reported size (the
+    /// loop computes it once per pass, `run_client_loop`).
+    fn surface_size(&self) -> Option<crate::protocol::ClientSurfaceSize> {
+        let (cols, rows) = self.state.reported_size;
+        self.state
+            .shell
+            .as_ref()
+            .map(|shell| shell.surface_size(cols, rows))
+    }
+
     fn shell(&mut self) -> &mut ClientShellState {
         self.state.shell.as_mut().expect("shell")
     }
@@ -728,10 +767,25 @@ impl Harness {
         .expect("activation begins");
     }
 
-    /// What the loop does between events: an immediate event first, then
-    /// its checks before it waits (`reconcile_after_event`).
+    /// What the loop does between events (`run_client_loop`'s top): its
+    /// checks before it waits (`reconcile_after_event`), then an immediate
+    /// event if one is scheduled, and the checks again before the next.
     fn after_event(&mut self) {
-        for _ in 0..8 {
+        let now = self.now;
+        // at most 8 immediate events in a row (each ends with the checks)
+        for pass in 0..=8 {
+            // the loop's pass computes the layout's size once
+            let surface_size = self.surface_size();
+            crate::client::loop_arms::reconcile_after_event(
+                &mut self.state,
+                &mut self.endpoints,
+                &mut self.pending,
+                surface_size,
+                now,
+            );
+            if pass == 8 {
+                break;
+            }
             let Some(event) = self.scheduled.take() else {
                 break;
             };
@@ -744,14 +798,6 @@ impl Harness {
                 self.begin(endpoint_id, target, force);
             }
         }
-        let now = self.now;
-        crate::client::loop_arms::reconcile_after_event(
-            &mut self.state,
-            &mut self.endpoints,
-            &mut self.pending,
-            now,
-        )
-        .expect("reconcile");
         let delay = self
             .state
             .shell
@@ -1056,6 +1102,7 @@ impl Harness {
         };
         server.board.remove(server.client_id);
         server.client_id += 1;
+        server.board.set_placement_reconfirm(server.client_id, true);
         server.generation += 1;
         server.surface_active = false;
         server.terminal = None;
@@ -1118,6 +1165,7 @@ impl Harness {
         if self.local.inbox_len() > 0 {
             return;
         }
+        self.failures.steps_read += 1;
         let Some(placement) = self.local.shown_placement() else {
             return;
         };
@@ -1129,6 +1177,7 @@ impl Harness {
         else {
             return;
         };
+        self.failures.steps_compared += 1;
         let area = Rect::new(
             placement.area.x,
             placement.area.y,
@@ -1191,11 +1240,6 @@ impl Harness {
             .shell
             .as_ref()
             .and_then(|shell| shell.browser_dock.drawn.clone());
-        let modal = self
-            .state
-            .shell
-            .as_ref()
-            .is_some_and(|shell| shell.overlay.is_some());
         let shown = self.local.shown_placement();
         let local_active = self.endpoints.active_id().is_local();
         let Some(drawn) = drawn.filter(|_| self.pending.is_none()) else {
@@ -1210,8 +1254,7 @@ impl Harness {
         };
         let pty = server.pty[&server.focused];
         let focused = server.focused.clone();
-        let wants_window =
-            local_active && !modal && (!drawn.band.is_empty() || !drawn.full.is_empty());
+        let wants_window = local_active && (!drawn.band.is_empty() || !drawn.full.is_empty());
         if shown.is_some() != wants_window {
             self.failures.i1 += 1;
             self.failures.note(format!(
@@ -1337,6 +1380,8 @@ fn stress(seeds: std::ops::Range<u64>, steps: u32) -> Vec<(Scenario, Failures)> 
         total.i4 += f.i4;
         total.i5a += f.i5a;
         total.i5b += f.i5b;
+        total.steps_read += f.steps_read;
+        total.steps_compared += f.steps_compared;
         for note in &f.first {
             if total.first.len() < 4 {
                 total.first.push(format!("seed {seed}: {note}"));
@@ -1347,11 +1392,12 @@ fn stress(seeds: std::ops::Range<u64>, steps: u32) -> Vec<(Scenario, Failures)> 
 }
 
 fn report(totals: &[(Scenario, Failures)]) -> String {
-    let mut text =
-        String::from("scenario                    unsettled  I1  I2  I3  I4  I5a  I5b(steps)\n");
+    let mut text = String::from(
+        "scenario                    unsettled  I1  I2  I3  I4  I5a  I5b(steps)  read compared\n",
+    );
     for (scenario, f) in totals {
         text.push_str(&format!(
-            "{:<27} {:>9} {:>3} {:>3} {:>3} {:>3} {:>4} {:>4}\n",
+            "{:<27} {:>9} {:>3} {:>3} {:>3} {:>3} {:>4} {:>4} {:>11} {:>8}\n",
             format!("{scenario:?}"),
             f.unsettled,
             f.i1,
@@ -1359,7 +1405,9 @@ fn report(totals: &[(Scenario, Failures)]) -> String {
             f.i3,
             f.i4,
             f.i5a,
-            f.i5b
+            f.i5b,
+            f.steps_read,
+            f.steps_compared
         ));
         for note in &f.first {
             text.push_str(&format!("    {note}\n"));
@@ -1371,14 +1419,25 @@ fn report(totals: &[(Scenario, Failures)]) -> String {
 /// 200 fixed seeds (25 per scenario, 12 or 13 in each sidebar layout), 60
 /// steps each:
 /// after every settle the board, the drawn frame and the PTY agree, and at
-/// no step does the board show the window over text (I5a; I5b is reported).
+/// no step checked does the board show the window over text (I5a; I5b is
+/// reported). A step is checked only once Local's server read all the
+/// client sent (`check_step` skips the others); the report counts the
+/// steps checked and those that compared a shown placement, both above
+/// zero.
 #[test]
 fn fork_smoke_the_dock_stays_in_sync_under_fast_switching() {
     let totals = stress(0..200, 60);
     let text = report(&totals);
     eprintln!("{text}");
+    assert_stress_clean(&totals, &text);
+}
+
+fn assert_stress_clean(totals: &[(Scenario, Failures)], text: &str) {
     let failed: u32 = totals.iter().map(|(_, f)| f.total_settled() + f.i5a).sum();
     assert_eq!(failed, 0, "\n{text}");
+    let read: u32 = totals.iter().map(|(_, f)| f.steps_read).sum();
+    let compared: u32 = totals.iter().map(|(_, f)| f.steps_compared).sum();
+    assert!(read > 0 && compared > 0, "no step checked\n{text}");
 }
 
 /// Scripted runs (no random steps): one interleaving each, checked like a
@@ -1540,6 +1599,38 @@ fn a_return_to_local_shows_the_window_only_once_the_client_places_it() {
     assert_settled_clean(&mut harness, "back on Local");
 }
 
+/// F3 (map R2) after a rollback: the machine refuses its activation, the
+/// client goes back to Local with its placement unchanged, and Local (whose
+/// surface turned inactive and active again, holding the placement unshown)
+/// shows it again: every activation's end places it again, a rollback too.
+#[test]
+fn a_refused_machine_activation_rolls_back_and_the_dock_shows_again() {
+    for seed in [0, 1] {
+        let mut harness = scripted(seed);
+        let before = harness.local.shown_placement().expect("shown before");
+        let returns = harness.local.surface_returns;
+        harness.machine.refuse_activation = true;
+        let machine = harness.machine_id.clone();
+        harness.activate(machine, None, false);
+        harness.settle();
+        assert!(harness.pending.is_none(), "rolled back");
+        assert!(harness.endpoints.active_id().is_local());
+        assert!(
+            harness.local.surface_returns > returns,
+            "Local's surface went inactive and came back"
+        );
+        let after = harness
+            .local
+            .shown_placement()
+            .expect("shown again on Local");
+        assert_eq!(
+            (after.tab_id.as_str(), after.area),
+            (before.tab_id.as_str(), before.area)
+        );
+        assert_settled_clean(&mut harness, "after the rollback");
+    }
+}
+
 /// F5 (map R3): a switch into the docked tab shows the window only over a
 /// frame of that tab drawn with room for it, never over the tab left (its
 /// text under the window) while the new tab's surface is on its way.
@@ -1630,13 +1721,12 @@ fn dock_sync_seed_sweep() {
     let totals = stress(start..end, 60);
     let text = report(&totals);
     eprintln!("{text}");
-    let failed: u32 = totals.iter().map(|(_, f)| f.total_settled() + f.i5a).sum();
-    assert_eq!(failed, 0, "\n{text}");
+    assert_stress_clean(&totals, &text);
 }
 
-/// The loop's check before every wait when nothing changed
-/// (`reconcile_after_event`: one `layout()` and a compare), with the dock
-/// open, at 1 and 16 tabs. Run by `just bench-render-scale`.
+/// The loop's check before every wait when nothing changed (the pass's one
+/// `surface_size()`, a `layout()`, and `reconcile_after_event`'s compare),
+/// with the dock open, at 1 and 16 tabs. Run by `just bench-render-scale`.
 #[test]
 #[ignore = "a profile: just bench-render-scale"]
 fn dock_sync_reconcile_render_scale_profile() {
@@ -1659,13 +1749,14 @@ fn dock_sync_reconcile_render_scale_profile() {
         for _ in 0..40 {
             let started = Instant::now();
             for _ in 0..250 {
+                let surface_size = harness.surface_size();
                 crate::client::loop_arms::reconcile_after_event(
                     &mut harness.state,
                     &mut harness.endpoints,
                     &mut harness.pending,
+                    surface_size,
                     harness.now,
-                )
-                .expect("reconcile");
+                );
             }
             samples.push(started.elapsed().as_nanos() / 250);
         }

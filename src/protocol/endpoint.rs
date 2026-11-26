@@ -82,6 +82,12 @@ pub struct EndpointClientHello {
     /// refuses the cycle for it.
     #[serde(default)]
     pub view_cycle: bool,
+    /// Fork (dock sync): this client sends its browser placement again
+    /// whenever an endpoint activation ends, so the server holds the stored
+    /// one unshown after its surface comes back until it does. An older
+    /// client omits it, and its placement shows again with its surface.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub placement_reconfirm: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -240,6 +246,7 @@ mod tests {
             blob_codecs: vec![BLOB_CODEC_V1.into()],
             placement_actions: false,
             view_cycle: false,
+            placement_reconfirm: false,
         }
     }
 
@@ -292,6 +299,8 @@ mod tests {
         assert!(!hello.placement_actions);
         // Fork (browser keys): nor that it takes the host's cycle key
         assert!(!hello.view_cycle);
+        // Fork (dock sync): nor that it places again after a return
+        assert!(!hello.placement_reconfirm);
 
         let welcome: EndpointServerWelcome = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),

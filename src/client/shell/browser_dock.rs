@@ -53,6 +53,10 @@ pub(crate) const PLACEMENT_REQUEST_PREFIX: &str = "client-shell-placement:";
 /// Fork (dock sync): a placement the server refused goes again this long
 /// after (a refusal repeats until the client's snapshot catches up).
 const REFUSED_RETRY: Duration = Duration::from_secs(1);
+/// Fork (dock sync): the band's text runs wider than the pane this long
+/// before the band says another herdr window sizes the tab (a switch's wide
+/// frame lasts one round trip, until the PTY follows).
+const SIZED_ELSEWHERE_AFTER: Duration = Duration::from_millis(500);
 
 /// A click target of the band, the strip or the placeholder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -286,6 +290,16 @@ pub(crate) struct ClientBrowserDockState {
     /// Fork (dock sync): ask again before the loop waits (a frame was
     /// presented while waiting for one, or an activation committed).
     recheck: bool,
+    /// Fork (dock sync): the last presented frame drew the band with the
+    /// tab's text wider (or taller) than the pane left of it (the info
+    /// dock's "sized by another client"; or the PTY has not followed yet).
+    wide_frame: bool,
+    /// Fork (dock sync): the tick that first saw `wide_frame` (cleared with
+    /// it).
+    wide_since: Option<Instant>,
+    /// Fork (dock sync): `wide_frame` lasted [`SIZED_ELSEWHERE_AFTER`]: the
+    /// placeholder says another herdr window sizes the tab.
+    sized_elsewhere: bool,
     /// Tests: what the terminal says (no `/dev/tty`), and how often it was asked.
     #[cfg(test)]
     pub(crate) extent_for_test: Option<(u16, u16, u32, u32)>,
@@ -337,6 +351,9 @@ impl ClientBrowserDockState {
             drawn: None,
             waits_for_frame: false,
             recheck: false,
+            wide_frame: false,
+            wide_since: None,
+            sized_elsewhere: false,
             #[cfg(test)]
             extent_for_test: None,
             #[cfg(test)]
@@ -1404,6 +1421,19 @@ impl ClientShellState {
             .find(|status| &status.id == id)
     }
 
+    /// Fork (dock sync): the band with nothing to say, unless another herdr
+    /// window sizes the tab: the window waits for room then.
+    fn browser_calm_placeholder(&self) -> Placeholder {
+        if self.browser_dock.sized_elsewhere {
+            Placeholder::say(vec![(
+                "This tab is sized by another herdr window".to_owned(),
+                PlaceholderTone::Title,
+            )])
+        } else {
+            Placeholder::calm()
+        }
+    }
+
     /// What the area under the browser says, for the focused tab's label.
     pub(crate) fn browser_placeholder(&self, now: Instant) -> Placeholder {
         let tab_label = self
@@ -1493,7 +1523,7 @@ impl ClientShellState {
                     "elsewhere" => Placeholder::say(vec![title(
                         "The browser is docked to another herdr window".into(),
                     )]),
-                    _ => Placeholder::calm(),
+                    _ => self.browser_calm_placeholder(),
                 },
                 // A companion that never reports on the placement predates
                 // docking (herdr was updated, the companion was not restarted).
@@ -1527,7 +1557,7 @@ impl ClientShellState {
                         }
                     }
                 }
-                None => Placeholder::calm(),
+                None => self.browser_calm_placeholder(),
             },
         }
     }
@@ -1820,6 +1850,16 @@ impl ClientShellState {
             (None, Some(_)) => true,
             _ => false,
         };
+        // the hold's own test (`browser_frame_makes_room`): wider or taller
+        let wide = drawn.as_ref().is_some_and(|drawn| {
+            !drawn.band.is_empty()
+                && (drawn.surface.0 > drawn.pane.width || drawn.surface.1 > drawn.pane.height)
+        });
+        if !wide {
+            self.browser_dock.wide_since = None;
+            self.browser_dock.sized_elsewhere = false;
+        }
+        self.browser_dock.wide_frame = wide;
         self.browser_dock.drawn = drawn;
         if self.browser_dock.waits_for_frame || (moved && self.browser_dock_in_use()) {
             self.browser_dock.recheck = true;
@@ -1978,9 +2018,13 @@ impl ClientShellState {
         if in_use && self.browser_dock.terminal_extent.is_none() {
             self.browser_dock.terminal_extent = Some(self.browser_dock.read_terminal_extent());
         }
+        // Fork (dock sync): only what the helper shows now stays shown
+        // without a frame; the placement kept while the machine was left
+        // (`active: false`) waits for a frame with room, as a new one.
         let previous = self
             .browser_link
             .told(&endpoint)
+            .filter(|told| told.active)
             .and_then(|told| told.spec.clone());
         let now_spec = self.browser_placement_now(previous.as_ref());
         self.browser_dock.waits_for_frame = now_spec.as_ref().is_some_and(|(_, waits)| *waits);
@@ -1994,10 +2038,15 @@ impl ClientShellState {
             self.browser_dock.pending = false;
             return;
         }
-        if self
-            .browser_dock
-            .sent_at
-            .is_some_and(|at| now.duration_since(at) < PLACEMENT_GAP)
+        // Fork (dock sync): one that stops showing goes at once, as Local's.
+        let hides = told
+            .is_some_and(|told| told.active && told.spec.as_ref().is_some_and(|spec| spec.shown))
+            && placement.spec.as_ref().is_none_or(|spec| !spec.shown);
+        if !hides
+            && self
+                .browser_dock
+                .sent_at
+                .is_some_and(|at| now.duration_since(at) < PLACEMENT_GAP)
         {
             self.browser_dock.pending = true;
             return;
@@ -2036,6 +2085,15 @@ impl ClientShellState {
     pub(crate) fn tick_browser_dock(&mut self, now: Instant, outcome: &mut ClientShellInput) {
         if self.browser_dock.pending {
             self.browser_dock.pending_ticked_at = Some(now);
+        }
+        // Fork (dock sync): text wider than the pane for a while: another
+        // window sizes the tab; the band is drawn again to say so.
+        if self.browser_dock.wide_frame && !self.browser_dock.sized_elsewhere {
+            let since = *self.browser_dock.wide_since.get_or_insert(now);
+            if now.duration_since(since) >= SIZED_ELSEWHERE_AFTER {
+                self.browser_dock.sized_elsewhere = true;
+                outcome.repaint = true;
+            }
         }
         if self.browser_dock.test_view.is_some() && self.browser_dock_offered() {
             if let Some(tab_id) = self.browser_dock_focused_tab().map(str::to_owned) {

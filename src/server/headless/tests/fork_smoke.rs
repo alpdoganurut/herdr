@@ -3659,6 +3659,8 @@ async fn placements_reach_the_host_with_focus_and_foreground() {
         })
     );
     let _ = client_shell_snapshot(&control_rx);
+    // Fork (dock sync): its hello said it places again after a return
+    board.set_placement_reconfirm(client_id, true);
     let boot_id = server.client_shell_boot_id.clone();
     server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
         client_id,

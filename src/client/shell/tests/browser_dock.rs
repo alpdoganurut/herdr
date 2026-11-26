@@ -1715,3 +1715,147 @@ fn a_new_placement_is_shown_only_over_a_frame_that_makes_room() {
         .expect("spec");
     assert!(spec.shown);
 }
+
+/// The helper placements queued since the last look: (active, shown).
+fn link_shown(state: &mut ClientShellState) -> Vec<(bool, Option<bool>)> {
+    state
+        .take_browser_link_intents()
+        .into_iter()
+        .filter_map(|intent| match intent {
+            super::super::browser_link::LinkIntent::Placement { placement, .. } => {
+                Some((placement.active, placement.spec.map(|spec| spec.shown)))
+            }
+            super::super::browser_link::LinkIntent::Companion { .. }
+            | super::super::browser_link::LinkIntent::ForgetLogins { .. } => None,
+        })
+        .collect()
+}
+
+fn snapshot_revision(state: &ClientShellState) -> u64 {
+    state
+        .snapshot
+        .as_deref()
+        .map(|snapshot| snapshot.revision)
+        .expect("a snapshot")
+}
+
+/// Fork (dock sync, F5): back on a linked machine, the placement its helper
+/// hid when the machine was left (`active: false`, its area kept) shows
+/// only over a frame of the machine that makes room again, as a new one.
+#[test]
+fn a_return_to_a_linked_machine_shows_its_placement_only_over_a_frame_with_room() {
+    let mut state = linked_state();
+    toggle_dock(&mut state);
+    let pane = state.layout(COLS, ROWS).pane_surface;
+    let rev = snapshot_revision(&state);
+    state.set_pane_surface(sized_surface(pane.width, pane.height, rev));
+    present(&mut state);
+    let t0 = std::time::Instant::now();
+    assert!(state.take_browser_placement_request(t0).is_none());
+    assert_eq!(link_shown(&mut state), [(true, Some(true))]);
+    // to Local: the machine's helper hides it
+    state.active_endpoint_id = crate::client::endpoint::ClientEndpointId::Local;
+    let t1 = t0 + std::time::Duration::from_secs(1);
+    assert!(state.take_browser_placement_request(t1).is_none());
+    assert_eq!(link_shown(&mut state), [(false, Some(true))]);
+    // Local's frame (its tab is not docked: no band) reaches the terminal
+    present(&mut state);
+    assert!(state
+        .browser_dock
+        .drawn
+        .as_ref()
+        .is_some_and(|drawn| drawn.band.is_empty()));
+    // back on the machine, Local's frame still on screen
+    state.active_endpoint_id = machine();
+    let t2 = t1 + std::time::Duration::from_secs(1);
+    assert!(state.take_browser_placement_request(t2).is_none());
+    assert_eq!(
+        link_shown(&mut state),
+        [(true, Some(false))],
+        "no frame of the machine makes room yet"
+    );
+    present(&mut state);
+    assert!(state
+        .take_browser_placement_request(t2 + std::time::Duration::from_secs(1))
+        .is_none());
+    assert_eq!(link_shown(&mut state), [(true, Some(true))]);
+}
+
+/// Fork (dock sync): a linked machine's placement that stops showing (the
+/// dock closed) reaches its helper at once, inside the gap after the last
+/// one, as Local's does: the window leaves before the frame without room.
+#[test]
+fn a_linked_machine_s_placement_that_stops_showing_goes_at_once() {
+    let mut state = linked_state();
+    toggle_dock(&mut state);
+    let pane = state.layout(COLS, ROWS).pane_surface;
+    let rev = snapshot_revision(&state);
+    state.set_pane_surface(sized_surface(pane.width, pane.height, rev));
+    present(&mut state);
+    let t0 = std::time::Instant::now();
+    assert!(state.take_browser_placement_request(t0).is_none());
+    assert_eq!(link_shown(&mut state), [(true, Some(true))]);
+    toggle_dock(&mut state);
+    let t1 = t0 + std::time::Duration::from_millis(10);
+    assert!(state.take_browser_placement_request(t1).is_none());
+    assert_eq!(
+        link_shown(&mut state),
+        [(true, None)],
+        "the hide does not wait for the gap"
+    );
+}
+
+/// Fork (dock sync): a tab another herdr window sizes (its text wider than
+/// the pane left of the band) holds the window back; once that has lasted
+/// half a second the band says why (drawn again to say it). A switch's
+/// wide frame, gone a moment later when the PTY follows, says nothing.
+#[test]
+fn a_band_held_back_by_another_window_s_size_says_why() {
+    let mut state = dock_state();
+    let wide = state.layout(COLS, ROWS).pane_surface;
+    toggle_dock(&mut state);
+    let rev = snapshot_revision(&state);
+    state.set_pane_surface(sized_surface(wide.width, wide.height, rev));
+    present(&mut state);
+    let area = state.browser_placement_spec().expect("spec").area;
+    let t0 = std::time::Instant::now();
+    let tick = |state: &mut ClientShellState, at: std::time::Instant| {
+        let mut outcome = ClientShellInput::default();
+        state.tick_browser_dock(at, &mut outcome);
+        outcome.repaint
+    };
+    assert!(!tick(&mut state, t0));
+    assert!(state.browser_placeholder(t0).calm, "not at once");
+    let t1 = t0 + std::time::Duration::from_millis(300);
+    assert!(!tick(&mut state, t1));
+    assert!(state.browser_placeholder(t1).calm);
+    let t2 = t0 + std::time::Duration::from_millis(600);
+    assert!(tick(&mut state, t2), "the band is drawn again to say why");
+    let placeholder = state.browser_placeholder(t2);
+    assert!(!placeholder.calm);
+    assert_eq!(
+        placeholder.lines.first().map(|line| line.0.as_str()),
+        Some("This tab is sized by another herdr window")
+    );
+    assert!(
+        !tick(&mut state, t2 + std::time::Duration::from_millis(100)),
+        "drawn again once"
+    );
+    // the band's title row may show now: the window's area stays
+    present(&mut state);
+    assert_eq!(state.browser_placement_spec().expect("spec").area, area);
+    // this window sizes the tab again: the text fits, the band is calm
+    let pane = state.layout(COLS, ROWS).pane_surface;
+    state.set_pane_surface(sized_surface(pane.width, pane.height, rev));
+    present(&mut state);
+    let t3 = t2 + std::time::Duration::from_secs(1);
+    assert!(!tick(&mut state, t3));
+    assert!(state.browser_placeholder(t3).calm);
+    // taller than the pane holds the window too, and says so as well
+    state.set_pane_surface(sized_surface(pane.width, pane.height + 2, rev));
+    present(&mut state);
+    assert!(!tick(&mut state, t3));
+    let t4 = t3 + std::time::Duration::from_millis(600);
+    assert!(tick(&mut state, t4));
+    assert!(!state.browser_placeholder(t4).calm);
+}

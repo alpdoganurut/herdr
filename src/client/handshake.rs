@@ -215,6 +215,8 @@ pub(super) fn do_handshake(
             placement_actions: true,
             // Fork (browser keys): takes endpoint.view-cycle.v1.
             view_cycle: true,
+            // Fork (dock sync): places again after every activation.
+            placement_reconfirm: true,
         };
         ClientMessage::EndpointControl {
             kind: ENDPOINT_HELLO_KIND.into(),

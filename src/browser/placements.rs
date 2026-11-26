@@ -90,6 +90,7 @@ struct Entry {
     /// Fork (dock sync): the client's surface came back (it showed another
     /// endpoint meanwhile): the stored placement is from before it left and
     /// stays unshown until the client sends one again (an equal one too).
+    /// Only for a client that said it does (`Board::reconfirms`).
     awaiting: bool,
 }
 
@@ -122,6 +123,11 @@ struct Board {
     /// Fork (browser keys): the clients whose handshake says they take the
     /// host's cycle key (`EndpointClientHello.view_cycle`).
     takes_view_cycle: HashSet<u64>,
+    /// Fork (dock sync): the clients whose handshake says they send their
+    /// placement again once their surface comes back
+    /// (`EndpointClientHello.placement_reconfirm`); an older client never
+    /// resends an unchanged one, so its placement shows with its surface.
+    reconfirms: HashSet<u64>,
     /// Fork (browser keys): the host's cycle-key presses, at most
     /// [`VIEW_CYCLE_CAP`].
     view_cycles: VecDeque<ViewCycleRecord>,
@@ -202,6 +208,7 @@ impl PlacementBoard {
                 action_revision: 0,
                 takes_actions: HashSet::new(),
                 takes_view_cycle: HashSet::new(),
+                reconfirms: HashSet::new(),
                 view_cycles: VecDeque::new(),
                 view_cycle_revision: 0,
                 foreground: None,
@@ -271,14 +278,19 @@ impl PlacementBoard {
 
     /// Refresh the facts of the clients on the board. Returns whether
     /// anything changed. Fork (dock sync): a client whose surface turns
-    /// active again keeps its placement unshown until it sends one.
+    /// active again keeps its placement unshown until it sends one, if its
+    /// handshake said it does (`set_placement_reconfirm`).
     pub fn set_facts(&self, facts: &[(u64, ClientFacts)]) -> bool {
-        let mut board = self.lock();
+        let mut guard = self.lock();
+        let board = &mut *guard;
         let mut changed = false;
         for (client_id, facts) in facts {
             if let Some(entry) = board.entries.get_mut(client_id) {
                 if entry.facts != *facts {
-                    if !entry.facts.surface_active && facts.surface_active {
+                    if !entry.facts.surface_active
+                        && facts.surface_active
+                        && board.reconfirms.contains(client_id)
+                    {
                         entry.awaiting = true;
                     }
                     entry.facts = *facts;
@@ -287,7 +299,7 @@ impl PlacementBoard {
             }
         }
         if changed {
-            self.bump(&mut board);
+            self.bump(board);
         }
         changed
     }
@@ -297,6 +309,7 @@ impl PlacementBoard {
         let mut board = self.lock();
         board.takes_actions.remove(&client_id);
         board.takes_view_cycle.remove(&client_id);
+        board.reconfirms.remove(&client_id);
         if board.foreground == Some(client_id) {
             board.foreground = None;
         }
@@ -326,6 +339,18 @@ impl PlacementBoard {
             board.takes_view_cycle.insert(client_id)
         } else {
             board.takes_view_cycle.remove(&client_id)
+        }
+    }
+
+    /// Fork (dock sync): client `client_id`'s handshake said whether it
+    /// sends its placement again once its surface comes back. Returns
+    /// whether that changed.
+    pub fn set_placement_reconfirm(&self, client_id: u64, reconfirms: bool) -> bool {
+        let mut board = self.lock();
+        if reconfirms {
+            board.reconfirms.insert(client_id)
+        } else {
+            board.reconfirms.remove(&client_id)
         }
     }
 
@@ -808,6 +833,7 @@ mod tests {
     #[test]
     fn a_returning_surface_hides_the_placement_until_the_client_sends_it_again() {
         let board = PlacementBoard::new();
+        board.set_placement_reconfirm(3, true);
         board.set(3, Some(spec("pe", "t1")), facts(true, true), 1);
         assert!(board.snapshot().placements[0].placement.shown);
         let away = ClientFacts {
@@ -832,6 +858,30 @@ mod tests {
         assert!(snapshot.rev > rev);
         assert!(snapshot.placements[0].placement.shown);
         assert!(!board.set(3, Some(spec("pe", "t1")), facts(true, true), 3));
+        // the client leaves: what its handshake said goes with it
+        assert!(board.remove(3));
+        assert!(!board.set_placement_reconfirm(3, false));
+    }
+
+    /// Fork (dock sync, F3): a client whose hello did not say it places
+    /// again after a return (one that predates it, kept running across a
+    /// server update) never resends an unchanged placement: its placement
+    /// shows again as soon as its surface does, as before.
+    #[test]
+    fn a_client_that_does_not_reconfirm_is_shown_again_on_return() {
+        let board = PlacementBoard::new();
+        board.set(3, Some(spec("pf", "t1")), facts(true, true), 1);
+        let away = ClientFacts {
+            surface_active: false,
+            ..facts(true, true)
+        };
+        assert!(board.set_facts(&[(3, away)]));
+        assert!(!board.snapshot().placements[0].placement.shown);
+        assert!(board.set_facts(&[(3, facts(true, true))]));
+        assert!(
+            board.snapshot().placements[0].placement.shown,
+            "shown again without a resend"
+        );
     }
 
     #[test]

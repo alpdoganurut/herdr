@@ -779,6 +779,10 @@ pub(crate) fn handle_client_handshake(
                 .set_takes_actions(client_id, hello.placement_actions);
             // Fork (browser keys): likewise the host's cycle key.
             crate::browser::placements::board().set_takes_view_cycle(client_id, hello.view_cycle);
+            // Fork (dock sync): whether it places again after its surface
+            // comes back (else the board shows its placement with it).
+            crate::browser::placements::board()
+                .set_placement_reconfirm(client_id, hello.placement_reconfirm);
             (
                 hello.surface_size.cols,
                 hello.surface_size.rows,
@@ -1490,6 +1494,7 @@ mod tests {
             blob_codecs: vec![crate::protocol::endpoint::BLOB_CODEC_V1.into()],
             placement_actions: false,
             view_cycle: false,
+            placement_reconfirm: false,
         };
         ClientMessage::EndpointControl {
             kind: ENDPOINT_HELLO_KIND.into(),
