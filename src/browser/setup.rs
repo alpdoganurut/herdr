@@ -1107,10 +1107,24 @@ pub fn checks(
     });
 
     // Fork (companion launcher): the companion app
-    out.push(super::companion_install::doctor_check(
+    let companion = super::companion_install::doctor_check(
         &super::companion_install::companion_home(&env.browser_home),
         live.and_then(|info| info.companion_app.as_ref()),
-    ));
+    );
+    // Fork (remote browser): a Mac serves this machine's browser; one here
+    // is not needed and nothing is to be installed for it
+    let linked = live
+        .and_then(|info| info.link.as_ref())
+        .filter(|link| matches!(link.state.as_str(), "linked" | "reconnecting"));
+    out.push(match linked {
+        Some(link) if !companion.ok => check(
+            "companion_app",
+            true,
+            format!("not needed here: the browser runs on {}", link.label),
+            BrowserFixKind::None,
+        ),
+        _ => companion,
+    });
 
     // MCP per agent
     let wants = |agent: &str| config.mcp_agents.iter().any(|a| a == agent);
@@ -1538,6 +1552,34 @@ mod tests {
             "something else entirely",
             "no tokens: the line as it came"
         );
+    }
+
+    /// Fork (remote browser): a server whose browser is a Mac's is not told
+    /// to install one.
+    #[test]
+    fn a_linked_server_needs_no_companion_of_its_own() {
+        let dir = temp("linked");
+        let env = env_in(&dir);
+        let config = config(&[], false);
+        assert!(!by_id(&checks(&config, &env, None), "companion_app").ok);
+        let mut live = BrowserGetInfo {
+            link: Some(crate::api::schema::BrowserLinkStatus {
+                state: "linked".into(),
+                label: "mbp".into(),
+                herdr: "0.9.5".into(),
+                since_unix: 1,
+            }),
+            ..BrowserGetInfo::default()
+        };
+        let linked = checks(&config, &env, Some(&live));
+        let check = by_id(&linked, "companion_app");
+        assert!(check.ok && !check.fixable);
+        assert_eq!(check.detail, "not needed here: the browser runs on mbp");
+        if let Some(link) = live.link.as_mut() {
+            link.state = "gone".into();
+        }
+        assert!(!by_id(&checks(&config, &env, Some(&live)), "companion_app").ok);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
