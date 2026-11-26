@@ -31,6 +31,7 @@ mod frame_output_tests;
 mod handshake;
 mod image_files;
 mod input;
+mod loop_arms;
 mod loop_config;
 mod notifications;
 mod shell;
@@ -50,6 +51,7 @@ use clipboard_forwarding::forward_clipboard;
 use config_reload::reload_local_client_config;
 use config_reload::{apply_reload, init_logging};
 use events::ClientLoopEvent;
+use loop_arms::*;
 use loop_config::ClientLoopConfig;
 use shell_runtime::*;
 use state::ClientState;
@@ -496,6 +498,7 @@ async fn run_client_loop(
         redraw_on_focus_gained: config.redraw_on_focus_gained,
         repaint_pending: false,
         presentation_frozen: false,
+        reported_surface: None,
         deferred_local_activation: None,
         draw_host_cursor,
         detached_process_children: Vec::new(),
@@ -817,6 +820,14 @@ async fn run_client_loop(
                 &supervisor_tx,
             );
         }
+        // Fork (dock sync): the surface size and the browser placement
+        // follow the layout, whatever event changed it.
+        reconcile_after_event(
+            &mut state,
+            &mut write_stream,
+            &mut pending_activation,
+            std::time::Instant::now(),
+        )?;
         let timer_delay = state
             .shell
             .as_ref()
@@ -960,6 +971,7 @@ async fn run_client_loop(
                         &mut endpoint_commands,
                         &mut prefix_input_source,
                         &mut scheduled_activation,
+                        now,
                     )? {
                         return Ok(());
                     }
@@ -1153,6 +1165,7 @@ async fn run_client_loop(
                         &mut endpoint_commands,
                         &mut prefix_input_source,
                         &mut scheduled_activation,
+                        now,
                     )? {
                         return Ok(());
                     }
@@ -1262,6 +1275,7 @@ async fn run_client_loop(
                         &mut endpoint_commands,
                         &mut prefix_input_source,
                         &mut scheduled_activation,
+                        now,
                     )? {
                         return Ok(());
                     }
@@ -1289,6 +1303,7 @@ async fn run_client_loop(
                         &mut endpoint_commands,
                         &mut prefix_input_source,
                         &mut scheduled_activation,
+                        now,
                     )? {
                         return Ok(());
                     }
@@ -1333,49 +1348,17 @@ async fn run_client_loop(
                     state.keyboard_report_all_active,
                     true,
                 );
-                state.reported_size = (new_cols, new_rows);
-                state.reported_cell_size = (cell_width_px, cell_height_px);
-                state.pixel_geometry_exact = pixel_geometry_exact;
-                // Resizing invalidates both the host-side blit baseline and pane hit geometry.
-                state.request_repaint();
-                if let Some(shell) = state.shell.as_mut() {
-                    shell.set_graphics_cell_size(cell_width_px, cell_height_px);
-                    shell.invalidate_pane_surface();
-                    // Fork (companion launcher): the browser placement asks
-                    // the terminal for its pixel extent again.
-                    shell.note_terminal_resized();
-                }
-                let msg = if let Some(shell) = &state.shell {
-                    client_shell_resize_message(
-                        shell,
-                        new_cols,
-                        new_rows,
-                        cell_width_px,
-                        cell_height_px,
-                        pixel_mouse_available,
-                    )
-                } else {
-                    ClientMessage::Resize {
-                        cols: new_cols,
-                        rows: new_rows,
-                        cell_width_px,
-                        cell_height_px,
-                        pixel_mouse: pixel_mouse_available,
-                    }
-                };
-                if let Some(activation) = pending_activation.as_mut() {
-                    if let Err(error) = activation.update_resize(msg, &mut write_stream) {
-                        rollback_endpoint_activation(
-                            &mut state,
-                            &mut write_stream,
-                            &mut pending_activation,
-                            error,
-                            false,
-                        );
-                    }
-                } else if let Err(e) = write_to_server(&mut write_stream, &msg) {
-                    return Err(ClientError::ConnectionLost(e));
-                }
+                apply_terminal_resize(
+                    &mut state,
+                    &mut write_stream,
+                    &mut pending_activation,
+                    new_cols,
+                    new_rows,
+                    cell_width_px,
+                    cell_height_px,
+                    pixel_geometry_exact,
+                    pixel_mouse_available,
+                )?;
             }
             ClientLoopEvent::EndpointSupervisor(event) => match event {
                 endpoint::EndpointSupervisorEvent::Status {
@@ -1512,43 +1495,17 @@ async fn run_client_loop(
                     }
                     continue;
                 }
-                let endpoint_active = write_stream.active_id() == &endpoint_id
-                    && write_stream
-                        .connection(&endpoint_id)
-                        .is_some_and(|connection| connection.surface_active);
-                let activation_message = pending_activation
-                    .as_ref()
-                    .is_some_and(|pending| pending.accepts_endpoint(&endpoint_id, generation));
-                let command_response = match message.as_ref() {
-                    ServerMessage::ClientShellEndpointResponseChunk {
-                        boot_id,
-                        request_id,
-                        ..
-                    } => endpoint_commands.accepts_response(
-                        &endpoint_id,
-                        generation,
-                        boot_id,
-                        request_id,
-                    ),
-                    _ => false,
-                };
-                if !endpoint::accepts_endpoint_message(
-                    endpoint_active,
-                    activation_message,
-                    command_response,
+                let Some(route) = route_server_message(
+                    &state,
+                    &write_stream,
+                    &pending_activation,
+                    &endpoint_commands,
+                    &endpoint_id,
+                    generation,
                     message.as_ref(),
-                ) {
+                ) else {
                     continue;
-                }
-                // Target presentation effects may arrive as soon as surface.set(true) is
-                // acknowledged. They cannot be applied while the source frame is frozen; the
-                // target receives one explicit replay after the coherent commit instead.
-                if state.presentation_frozen
-                    && activation_message
-                    && endpoint::is_presentation_effect(message.as_ref())
-                {
-                    continue;
-                }
+                };
                 match *message {
                     ServerMessage::ClientShellSnapshot(_) => {
                         let message = "server sent an unnegotiated binary endpoint snapshot";
@@ -1577,38 +1534,18 @@ async fn run_client_loop(
                         )));
                     }
                     ServerMessage::PaneSurface(surface) => {
-                        if activation_message {
-                            let progress = pending_activation.as_mut().map(|pending| {
-                                pending.receive_surface(&endpoint_id, generation, surface)
-                            });
-                            if matches!(progress, Some(endpoint::SurfaceActivationProgress::Ready))
-                            {
-                                if let Some(event) = complete_endpoint_activation(
-                                    &mut state,
-                                    &mut write_stream,
-                                    &mut pending_activation,
-                                    &mut endpoint_commands,
-                                )? {
-                                    scheduled_activation = Some(event);
-                                }
-                            }
-                            continue;
-                        }
-                        if !endpoint_active {
-                            continue;
-                        }
-                        let composed = if let Some(shell) = &mut state.shell {
-                            shell.set_pane_surface(surface);
-                            shell.compose(state.reported_size.0, state.reported_size.1)
-                        } else {
-                            None
-                        };
-                        apply_client_shell_input_source_changes(
+                        if let Some(event) = receive_pane_surface(
                             &mut state,
+                            &mut write_stream,
+                            &mut pending_activation,
+                            &mut endpoint_commands,
                             &mut prefix_input_source,
-                        );
-                        if let Some(frame) = composed {
-                            state.present_frame(frame);
+                            &endpoint_id,
+                            generation,
+                            surface,
+                            &route,
+                        )? {
+                            scheduled_activation = Some(event);
                         }
                     }
                     ServerMessage::PaneSurfacePatch(patch) => {
@@ -1897,149 +1834,43 @@ async fn run_client_loop(
                         final_chunk,
                         data,
                     } => {
-                        if pending_activation.as_ref().is_some_and(|pending| {
-                            pending.accepts_response(
-                                &endpoint_id,
-                                generation,
-                                &boot_id,
-                                &request_id,
-                            )
-                        }) {
-                            if !final_chunk {
-                                rollback_endpoint_activation(
-                                    &mut state,
-                                    &mut write_stream,
-                                    &mut pending_activation,
-                                    "endpoint returned a chunked activation acknowledgement".into(),
-                                    false,
-                                );
+                        match receive_lifecycle_response(
+                            &mut state,
+                            &mut write_stream,
+                            &mut pending_activation,
+                            &mut endpoint_commands,
+                            &endpoint_id,
+                            generation,
+                            &boot_id,
+                            &request_id,
+                            final_chunk,
+                            &data,
+                            now,
+                        )? {
+                            ResponseChunk::Handled(event) => {
+                                if let Some(event) = event {
+                                    scheduled_activation = Some(event);
+                                }
                                 continue;
                             }
-                            let progress = pending_activation.as_mut().map(|pending| {
-                                pending.receive_response_for_boot(
-                                    &endpoint_id,
-                                    generation,
-                                    &boot_id,
-                                    &request_id,
-                                    &data,
-                                    &mut write_stream,
-                                )
-                            });
-                            match progress {
-                                Some(endpoint::SurfaceActivationProgress::Ready) => {
-                                    if let Some(event) = complete_endpoint_activation(
-                                        &mut state,
-                                        &mut write_stream,
-                                        &mut pending_activation,
-                                        &mut endpoint_commands,
-                                    )? {
-                                        scheduled_activation = Some(event);
-                                    }
-                                }
-                                Some(endpoint::SurfaceActivationProgress::Rejected {
-                                    message,
-                                    source_release_rejected,
-                                }) => {
-                                    rollback_endpoint_activation(
-                                        &mut state,
-                                        &mut write_stream,
-                                        &mut pending_activation,
-                                        message,
-                                        source_release_rejected,
-                                    );
-                                }
-                                _ => {}
-                            }
-                            continue;
+                            ResponseChunk::Command => {}
                         }
-                        if request_id.starts_with("client-shell-surface:") {
-                            continue;
-                        }
-                        // Fork (companion launcher): placements are not waited for.
-                        if request_id.starts_with(shell::BROWSER_PLACEMENT_REQUEST_PREFIX) {
-                            continue;
-                        }
-                        let completed = endpoint_commands
-                            .receive_chunk(
-                                &endpoint_id,
-                                generation,
-                                &boot_id,
-                                &request_id,
-                                final_chunk,
-                                data,
-                            )
-                            .map_err(ClientError::ConnectionLost)?;
-                        let Some(completed) = completed else {
-                            continue;
-                        };
-                        let (repaint, actions) = state.shell.as_mut().map_or_else(
-                            || (false, Vec::new()),
-                            |shell| {
-                                if completed.generation == generation
-                                    && shell.endpoint_is_active(&completed.endpoint_id)
-                                {
-                                    shell.handle_endpoint_result(
-                                        &completed.boot_id,
-                                        &completed.request_id,
-                                        completed.result,
-                                    )
-                                } else {
-                                    (
-                                        shell.cancel_endpoint_request(&completed.request_id),
-                                        Vec::new(),
-                                    )
-                                }
-                            },
-                        );
-                        if let Some(shell) = state.shell.as_mut() {
-                            shell.reconcile_input_source();
-                        }
-                        apply_client_shell_input_source_changes(
+                        if receive_command_response(
                             &mut state,
-                            &mut prefix_input_source,
-                        );
-                        let (replay_mouse, dispatch_repaint) = dispatch_client_shell_actions(
-                            actions,
-                            &mut endpoint_commands,
                             &mut write_stream,
-                            state.shell.as_mut(),
-                            &mut state.detached_process_children,
+                            &mut pending_activation,
+                            &mut endpoint_commands,
+                            &mut prefix_input_source,
                             &mut scheduled_activation,
-                        )?;
-                        let repaint = repaint || dispatch_repaint;
-                        if replay_mouse.is_empty() {
-                            if repaint {
-                                if let Some(frame) = state.shell.as_mut().and_then(|shell| {
-                                    shell.compose(state.reported_size.0, state.reported_size.1)
-                                }) {
-                                    state.present_frame(frame);
-                                }
-                            }
-                        } else {
-                            let (outcome, frame) = {
-                                let shell = state.shell.as_mut().expect("shell endpoint response");
-                                let mut outcome = shell.replay_mouse_events(replay_mouse);
-                                outcome.repaint |= repaint;
-                                let frame = outcome
-                                    .repaint
-                                    .then(|| {
-                                        shell.compose(state.reported_size.0, state.reported_size.1)
-                                    })
-                                    .flatten();
-                                (outcome, frame)
-                            };
-                            if finish_client_shell_input(
-                                &mut state,
-                                outcome,
-                                frame,
-                                &mut write_stream,
-                                &mut pending_activation,
-                                &mut endpoint_commands,
-                                &mut prefix_input_source,
-                                &mut scheduled_activation,
-                            )? {
-                                return Ok(());
-                            }
+                            &endpoint_id,
+                            generation,
+                            &boot_id,
+                            &request_id,
+                            final_chunk,
+                            data,
+                            now,
+                        )? {
+                            return Ok(());
                         }
                     }
                     ServerMessage::Clipboard { data } => {
@@ -2128,23 +1959,16 @@ async fn run_client_loop(
                     }
                     ServerMessage::EndpointControl { kind, data } => {
                         if kind == crate::protocol::endpoint::PRESENTATION_EFFECTS_READY_KIND {
-                            let progress = pending_activation.as_mut().map(|activation| {
-                                activation.receive_presentation_effects_ready(
-                                    &endpoint_id,
-                                    generation,
-                                    &data,
-                                )
-                            });
-                            if matches!(progress, Some(endpoint::SurfaceActivationProgress::Ready))
-                            {
-                                if let Some(event) = complete_endpoint_activation(
-                                    &mut state,
-                                    &mut write_stream,
-                                    &mut pending_activation,
-                                    &mut endpoint_commands,
-                                )? {
-                                    scheduled_activation = Some(event);
-                                }
+                            if let Some(event) = receive_presentation_effects_ready(
+                                &mut state,
+                                &mut write_stream,
+                                &mut pending_activation,
+                                &mut endpoint_commands,
+                                &endpoint_id,
+                                generation,
+                                &data,
+                            )? {
+                                scheduled_activation = Some(event);
                             }
                             continue;
                         }
@@ -2306,6 +2130,7 @@ async fn run_client_loop(
                                     &mut endpoint_commands,
                                     &mut prefix_input_source,
                                     &mut scheduled_activation,
+                                    now,
                                 )? {
                                     return Ok(());
                                 }
@@ -2335,6 +2160,7 @@ async fn run_client_loop(
                                     &mut endpoint_commands,
                                     &mut prefix_input_source,
                                     &mut scheduled_activation,
+                                    now,
                                 )? {
                                     return Ok(());
                                 }
@@ -2364,6 +2190,7 @@ async fn run_client_loop(
                                     &mut endpoint_commands,
                                     &mut prefix_input_source,
                                     &mut scheduled_activation,
+                                    now,
                                 )? {
                                     return Ok(());
                                 }
@@ -2403,67 +2230,29 @@ async fn run_client_loop(
                                 )));
                             }
                         };
-                        let projection_pending = activation_message;
-                        let activation_progress = activation_message
-                            .then(|| {
-                                pending_activation.as_mut().map(|pending| {
-                                    pending.receive_snapshot(&endpoint_id, generation, &snapshot)
-                                })
-                            })
-                            .flatten();
-                        install_client_shell_snapshot(
+                        if let Some(event) = receive_shell_snapshot(
                             &mut state,
-                            &endpoint_id,
-                            snapshot,
-                            projection_pending,
                             &mut write_stream,
+                            &mut pending_activation,
+                            &mut endpoint_commands,
                             &mut prefix_input_source,
-                        )?;
-                        if matches!(
-                            activation_progress,
-                            Some(endpoint::SurfaceActivationProgress::Ready)
-                        ) {
-                            if let Some(event) = complete_endpoint_activation(
-                                &mut state,
-                                &mut write_stream,
-                                &mut pending_activation,
-                                &mut endpoint_commands,
-                            )? {
-                                scheduled_activation = Some(event);
-                            }
+                            &endpoint_id,
+                            generation,
+                            snapshot,
+                            &route,
+                            now,
+                        )? {
+                            scheduled_activation = Some(event);
                         }
-                        write_stream.mark_ready(&endpoint_id, generation);
                         supervisors.mark_ready(&endpoint_id, generation, now);
-                        if endpoint_id.is_local() {
-                            if let Some(event) =
-                                take_ready_local_activation(&mut state, &write_stream)
-                            {
-                                scheduled_activation = Some(event);
-                                continue;
-                            }
-                        }
-                        let selected_endpoint =
-                            desired_endpoint(&state, &endpoint_catalog, &write_stream);
-                        let activation_ready = state.shell.as_ref().is_some_and(|shell| {
-                            shell.endpoint_has_snapshot(&selected_endpoint)
-                                && (!write_stream
-                                    .connection(write_stream.active_id())
-                                    .is_some_and(|connection| connection.surface_active)
-                                    || shell.endpoint_boot_id(write_stream.active_id()).is_some())
-                        });
-                        let needs_surface = write_stream
-                            .connection(&selected_endpoint)
-                            .is_some_and(|connection| !connection.surface_active);
-                        if activation_ready
-                            && needs_surface
-                            && pending_activation.is_none()
-                            && state.deferred_local_activation.is_none()
-                        {
-                            scheduled_activation = Some(ClientLoopEvent::ActivateEndpoint {
-                                endpoint_id: selected_endpoint,
-                                target: None,
-                                force: false,
-                            });
+                        if let Some(event) = activation_after_snapshot(
+                            &mut state,
+                            &write_stream,
+                            &pending_activation,
+                            &endpoint_catalog,
+                            &endpoint_id,
+                        ) {
+                            scheduled_activation = Some(event);
                         }
                     }
                     ServerMessage::Welcome { .. } => {
@@ -2620,6 +2409,7 @@ async fn run_client_loop(
                         &mut endpoint_commands,
                         &mut prefix_input_source,
                         &mut scheduled_activation,
+                        now,
                     )? {
                         return Ok(());
                     }

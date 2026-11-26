@@ -434,7 +434,20 @@ pub(super) fn complete_endpoint_activation(
         return Ok(None);
     }
 
+    // Fork (dock sync): the endpoint now shown got this activation's last
+    // surface size; the placement is sent to it again (`browser_dock.rs`).
+    let committed = pending.as_ref().and_then(|activation| {
+        activation
+            .projected_endpoint()
+            .map(|endpoint_id| (endpoint_id.clone(), activation.surface_resize().clone()))
+    });
     let _ = pending.take();
+    if let Some((endpoint_id, resize)) = committed {
+        state.note_surface_reported(endpoints, &endpoint_id, &resize);
+    }
+    if let Some(shell) = state.shell.as_mut() {
+        shell.forget_browser_placement_sent();
+    }
     endpoints.unfreeze_input();
     let successor = match completion {
         endpoint::ActivationCompletion::RestoredSource {
@@ -708,6 +721,7 @@ pub(super) fn install_client_shell_snapshot(
     projection_pending: bool,
     endpoints: &mut endpoint::EndpointRegistry,
     prefix_input_source: &mut impl crate::platform::PrefixInputSource,
+    now: std::time::Instant,
 ) -> Result<(), ClientError> {
     let Some(connection) = endpoints.connection(endpoint_id) else {
         return Ok(());
@@ -770,7 +784,9 @@ pub(super) fn install_client_shell_snapshot(
     apply_client_shell_input_source_changes(state, prefix_input_source);
     state.present_graphics(&graphics_cleanup);
     if let Some(resize) = resize {
-        endpoints.send_to(endpoint_id, &resize);
+        if endpoints.send_to(endpoint_id, &resize) == endpoint::EndpointSendOutcome::Sent {
+            state.note_surface_reported(endpoints, endpoint_id, &resize);
+        }
     }
     // Fork (companion launcher): a snapshot may move the focused tab (a tab
     // switch, an agent's or the companion's tab.focus): the browser
@@ -779,9 +795,13 @@ pub(super) fn install_client_shell_snapshot(
         if let Some(placement) = state
             .shell
             .as_mut()
-            .and_then(|shell| shell.take_browser_placement_request(std::time::Instant::now()))
+            .and_then(|shell| shell.take_browser_placement_request(now))
         {
-            endpoints.send_to(endpoint_id, &placement);
+            if endpoints.send_to(endpoint_id, &placement) != endpoint::EndpointSendOutcome::Sent {
+                if let Some(shell) = state.shell.as_mut() {
+                    shell.browser_placement_not_sent();
+                }
+            }
         }
     }
     if let Some(frame) = composed {
@@ -803,6 +823,7 @@ pub(super) fn finish_client_shell_input(
     endpoint_commands: &mut endpoint_commands::EndpointCommands,
     prefix_input_source: &mut impl crate::platform::PrefixInputSource,
     scheduled_activation: &mut Option<ClientLoopEvent>,
+    now: std::time::Instant,
 ) -> Result<bool, ClientError> {
     apply_client_shell_input_source_changes(state, prefix_input_source);
     if outcome.detach {
@@ -823,8 +844,9 @@ pub(super) fn finish_client_shell_input(
             if let Err(error) = activation.update_resize(resize, endpoints) {
                 rollback_endpoint_activation(state, endpoints, pending_activation, error, false);
             }
-        } else {
-            let _ = write_to_server(endpoints, &resize);
+        } else if endpoints.send(&resize) == endpoint::EndpointSendOutcome::Sent {
+            let active = endpoints.active_id().clone();
+            state.note_surface_reported(endpoints, &active, &resize);
         }
     }
     #[cfg(not(windows))]
@@ -860,19 +882,17 @@ pub(super) fn finish_client_shell_input(
         .as_ref()
         .is_none_or(|shell| shell.endpoint_is_online(endpoints.active_id()))
         && endpoints.active_surface_available();
-    let mut requests = outcome.requests;
     // Fork (companion launcher): the browser placement, when it changed
     // (beside the command lane; never across a pending activation).
-    if active_endpoint_online && pending_activation.is_none() {
-        if let Some(placement) = state
+    let placement = if active_endpoint_online && pending_activation.is_none() {
+        state
             .shell
             .as_mut()
-            .and_then(|shell| shell.take_browser_placement_request(std::time::Instant::now()))
-        {
-            requests.push(placement);
-        }
-    }
-    for request in requests {
+            .and_then(|shell| shell.take_browser_placement_request(now))
+    } else {
+        None
+    };
+    for request in outcome.requests {
         if let ClientMessage::ClientShellHostTheme { update } = &request {
             state.record_host_theme_update(update);
             if let Some(activation) = pending_activation.as_mut() {
@@ -921,6 +941,14 @@ pub(super) fn finish_client_shell_input(
             continue;
         }
         write_to_server(endpoints, &request).map_err(ClientError::ConnectionLost)?;
+    }
+    // Fork (dock sync): a placement that never left is sent again.
+    if let Some(placement) = placement {
+        if endpoints.send(&placement) != endpoint::EndpointSendOutcome::Sent {
+            if let Some(shell) = state.shell.as_mut() {
+                shell.browser_placement_not_sent();
+            }
+        }
     }
     if let Some(frame) = frame {
         if pending_activation.is_some() {
@@ -983,6 +1011,7 @@ mod tests {
             &mut endpoint_commands,
             &mut prefix_input_source,
             &mut scheduled_activation,
+            std::time::Instant::now(),
         )
         .unwrap();
 
@@ -1017,6 +1046,7 @@ mod tests {
             &mut endpoint_commands,
             &mut prefix_input_source,
             &mut scheduled_activation,
+            std::time::Instant::now(),
         )
         .unwrap();
         assert_eq!(sent.lock().unwrap().len(), 1);
@@ -1172,6 +1202,7 @@ mod tests {
                 false,
                 &mut endpoints,
                 &mut source,
+                std::time::Instant::now(),
             )
             .unwrap();
             state.shell.as_ref().unwrap().last_composed() != composed

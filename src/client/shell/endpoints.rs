@@ -124,6 +124,7 @@ impl ClientShellState {
         self.active_endpoint_id = ClientEndpointId::Local;
         self.mode = ClientShellMode::Terminal;
         self.snapshot = None;
+        self.presentation_serial = self.presentation_serial.wrapping_add(1);
         self.refresh_suspended_pane_ids();
         self.graphics.set_scope("local:unavailable");
         self.reconcile_input_source();

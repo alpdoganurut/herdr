@@ -1407,6 +1407,9 @@ pub(crate) struct ClientShellState {
     pub(super) last_tab_bar_width: Option<u16>,
     pub(super) last_composed_size: Option<(u16, u16)>,
     pub(super) last_composed_at: Option<std::time::Instant>,
+    /// Fork (dock sync): bumped whenever the active snapshot is replaced, so
+    /// a presented frame says which snapshot it showed (`DrawnDock`).
+    pub(super) presentation_serial: u64,
     /// Fork: when the breathing glyph animation's cycle started.
     pub(super) breathe_epoch: std::time::Instant,
     /// Fork: test override of the clock the breathing phase is read from.
@@ -1717,6 +1720,7 @@ impl ClientShellState {
             last_tab_bar_width: None,
             last_composed_size: None,
             last_composed_at: None,
+            presentation_serial: 0,
             breathe_epoch,
             // Tests draw the breath's first frame unless they move the clock.
             breathe_clock: cfg!(test).then_some(breathe_epoch),
@@ -2308,6 +2312,7 @@ impl ClientShellState {
         self.prune_info_dock_tabs(&snapshot);
         self.prune_browser_dock_tabs(&snapshot);
         self.snapshot = Some(snapshot);
+        self.presentation_serial = self.presentation_serial.wrapping_add(1);
         self.refresh_suspended_pane_ids();
         self.reconcile_pending_workspace_highlight();
         let pending_surface = self.pending_pane_surface.take();

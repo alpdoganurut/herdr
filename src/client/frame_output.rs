@@ -14,6 +14,10 @@ pub(crate) struct ComposedFrame {
     /// Fork (scrollback scroll): pane content rectangles the blit may scroll
     /// on the host; empty when the frame must be painted cell by cell.
     pub(crate) scroll_regions: Vec<crate::protocol::SurfaceRect>,
+    /// Fork (dock sync): what the frame shows of the browser dock and the
+    /// pane surface; `None` for a frame without panes (no snapshot or
+    /// surface yet).
+    pub(crate) drawn: Option<super::shell::DrawnDock>,
 }
 
 impl From<FrameData> for ComposedFrame {
@@ -23,6 +27,7 @@ impl From<FrameData> for ComposedFrame {
             frame,
             graphics,
             scroll_regions: Vec::new(),
+            drawn: None,
         }
     }
 }

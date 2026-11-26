@@ -87,6 +87,10 @@ struct Entry {
     spec: BrowserPlacementSpec,
     facts: ClientFacts,
     updated_unix: u64,
+    /// Fork (dock sync): the client's surface came back (it showed another
+    /// endpoint meanwhile): the stored placement is from before it left and
+    /// stays unshown until the client sends one again (an equal one too).
+    awaiting: bool,
 }
 
 /// The server's facts about a client with a placement.
@@ -238,7 +242,7 @@ impl PlacementBoard {
             return self.remove_locked(&mut board, client_id);
         };
         if let Some(entry) = board.entries.get(&client_id) {
-            if entry.spec == spec && entry.facts == facts {
+            if entry.spec == spec && entry.facts == facts && !entry.awaiting {
                 return false;
             }
         }
@@ -258,6 +262,7 @@ impl PlacementBoard {
                 spec,
                 facts,
                 updated_unix: now_unix,
+                awaiting: false,
             },
         );
         self.bump(&mut board);
@@ -265,13 +270,17 @@ impl PlacementBoard {
     }
 
     /// Refresh the facts of the clients on the board. Returns whether
-    /// anything changed.
+    /// anything changed. Fork (dock sync): a client whose surface turns
+    /// active again keeps its placement unshown until it sends one.
     pub fn set_facts(&self, facts: &[(u64, ClientFacts)]) -> bool {
         let mut board = self.lock();
         let mut changed = false;
         for (client_id, facts) in facts {
             if let Some(entry) = board.entries.get_mut(client_id) {
                 if entry.facts != *facts {
+                    if !entry.facts.surface_active && facts.surface_active {
+                        entry.awaiting = true;
+                    }
                     entry.facts = *facts;
                     changed = true;
                 }
@@ -349,7 +358,7 @@ impl PlacementBoard {
                 .iter()
                 .map(|(client_id, entry)| {
                     let mut placement = entry.spec.clone();
-                    placement.shown &= entry.facts.surface_active;
+                    placement.shown &= entry.facts.surface_active && !entry.awaiting;
                     BrowserPlacementInfo {
                         placement,
                         focused: entry.facts.focused,
@@ -791,6 +800,38 @@ mod tests {
             }
         )]));
         assert!(!board.snapshot().placements[0].placement.shown);
+    }
+
+    /// Fork (dock sync, F3): a client whose surface comes back (it showed
+    /// another endpoint meanwhile) keeps its placement hidden until it sends
+    /// one again, an equal one too: the one stored is from before it left.
+    #[test]
+    fn a_returning_surface_hides_the_placement_until_the_client_sends_it_again() {
+        let board = PlacementBoard::new();
+        board.set(3, Some(spec("pe", "t1")), facts(true, true), 1);
+        assert!(board.snapshot().placements[0].placement.shown);
+        let away = ClientFacts {
+            surface_active: false,
+            ..facts(true, true)
+        };
+        assert!(board.set_facts(&[(3, away)]));
+        assert!(!board.snapshot().placements[0].placement.shown);
+        assert!(board.set_facts(&[(3, facts(true, true))]));
+        assert!(
+            !board.snapshot().placements[0].placement.shown,
+            "not before the client places it again"
+        );
+        // the surface asked for again while active (a presentation sync)
+        assert!(!board.set_facts(&[(3, facts(true, true))]));
+        let rev = board.snapshot().rev;
+        assert!(
+            board.set(3, Some(spec("pe", "t1")), facts(true, true), 2),
+            "an equal placement confirms it"
+        );
+        let snapshot = board.snapshot();
+        assert!(snapshot.rev > rev);
+        assert!(snapshot.placements[0].placement.shown);
+        assert!(!board.set(3, Some(spec("pe", "t1")), facts(true, true), 3));
     }
 
     #[test]

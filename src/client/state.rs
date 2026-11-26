@@ -29,6 +29,14 @@ impl RetiredDirectGraphics {
     }
 }
 
+/// Fork (dock sync): a `ClientShellResize` and the connection it went to.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct ReportedSurface {
+    pub(super) endpoint_id: endpoint::ClientEndpointId,
+    pub(super) generation: u64,
+    pub(super) message: ClientMessage,
+}
+
 /// State tracking for the thin client.
 pub(super) struct ClientState {
     /// Stateful semantic-frame encoder used when the server sends FrameData.
@@ -77,6 +85,10 @@ pub(super) struct ClientState {
     /// During a source-off-first handoff the currently blitted frame remains authoritative until
     /// an acknowledged target snapshot/surface pair commits.
     pub(super) presentation_frozen: bool,
+    /// Fork (dock sync): the last surface size reported to the endpoint
+    /// connection that shows it (the loop reports again whenever the layout
+    /// wants another, `loop_arms::reconcile_after_event`).
+    pub(super) reported_surface: Option<ReportedSurface>,
     /// Latest explicit Local selection awaiting this client's replacement Local connection.
     pub(super) deferred_local_activation: Option<endpoint::EndpointActivationIntent>,
     pub(super) draw_host_cursor: bool,
@@ -140,6 +152,7 @@ impl ClientState {
             redraw_on_focus_gained: false,
             repaint_pending: false,
             presentation_frozen: false,
+            reported_surface: None,
             deferred_local_activation: None,
             draw_host_cursor: false,
             detached_process_children: Vec::new(),
@@ -151,6 +164,24 @@ impl ClientState {
 
     pub(super) fn request_repaint(&mut self) {
         self.repaint_pending = true;
+    }
+
+    /// Fork (dock sync): `message` (a `ClientShellResize`) went to
+    /// `endpoint_id`'s current connection.
+    pub(super) fn note_surface_reported(
+        &mut self,
+        endpoints: &endpoint::EndpointRegistry,
+        endpoint_id: &endpoint::ClientEndpointId,
+        message: &ClientMessage,
+    ) {
+        self.reported_surface =
+            endpoints
+                .connection(endpoint_id)
+                .map(|connection| ReportedSurface {
+                    endpoint_id: endpoint_id.clone(),
+                    generation: connection.generation,
+                    message: message.clone(),
+                });
     }
 
     pub(super) fn freeze_presentation(&mut self) {
@@ -556,6 +587,10 @@ impl ClientState {
         &mut self,
         frame_data: impl Into<frame_output::ComposedFrame>,
     ) -> bool {
+        // Tests have no terminal: the frame is encoded and dropped.
+        #[cfg(test)]
+        return self.try_present_frame_to(&mut io::sink(), frame_data);
+        #[cfg(not(test))]
         self.try_present_frame_to(&mut io::stdout(), frame_data)
     }
 
@@ -571,6 +606,7 @@ impl ClientState {
             frame: mut frame_data,
             graphics,
             scroll_regions,
+            drawn,
         } = frame_data.into();
         // Fork (scrollback scroll): host images do not follow a scrolled region.
         let scroll_regions = if graphics.is_empty() {
@@ -611,6 +647,10 @@ impl ClientState {
         crate::perf::record_client_frame(crate::perf::now_ns().saturating_sub(perf_started)); // fork (perf watch)
         self.blit_encoder.commit(frame_data, encoded);
         self.repaint_pending = false;
+        // Fork (dock sync): the browser placement follows what is on screen.
+        if let Some(shell) = self.shell.as_mut() {
+            shell.note_presented(drawn);
+        }
         true
     }
 }

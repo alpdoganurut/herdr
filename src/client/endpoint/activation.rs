@@ -204,6 +204,24 @@ impl PendingEndpointActivation {
         resize_geometry(&self.resize).expect("activation resize was validated before construction")
     }
 
+    /// Fork (dock sync): the endpoint the shell already projects while this
+    /// activation synchronizes its presentation, if it does; the shell's
+    /// layout is that endpoint's, so its surface size is current.
+    pub(crate) fn projected_endpoint(&self) -> Option<&ClientEndpointId> {
+        match &self.phase {
+            ActivationPhase::SynchronizingPresentation { lease, .. }
+            | ActivationPhase::AwaitingPresentationEffects { lease, .. } => {
+                Some(&lease.endpoint_id)
+            }
+            _ => None,
+        }
+    }
+
+    /// Fork (dock sync): the surface size this activation last sent.
+    pub(crate) fn surface_resize(&self) -> &crate::protocol::ClientMessage {
+        &self.resize
+    }
+
     pub(crate) fn presentation_sync_endpoint(&self) -> Option<&ClientEndpointId> {
         match self.phase {
             ActivationPhase::ActivatingTarget { .. } => Some(&self.target.endpoint_id),

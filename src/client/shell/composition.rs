@@ -382,6 +382,7 @@ impl ClientShellState {
             self.ensure_tabs_sidebar_model(news_row.as_ref(), coordinator_row.as_ref());
         let snapshot = self.snapshot.as_deref()?;
         let surface = self.pane_surface.as_ref()?;
+        let surface_size = (surface.frame.width, surface.frame.height);
         let layout = self.layout(cols, rows);
         if self.last_tab_bar_width != Some(layout.tab_bar.width) {
             self.last_tab_bar_width = Some(layout.tab_bar.width);
@@ -1282,6 +1283,23 @@ impl ClientShellState {
         } else {
             self.perf_readout.drawn = None;
         }
+        // Fork (dock sync): what this frame shows of the dock and the panes.
+        let drawn = super::browser_dock::DrawnDock {
+            serial: self.presentation_serial,
+            band: layout.browser_band,
+            full: if browser_view {
+                super::browser_dock::full_area(&layout)
+            } else {
+                Rect::default()
+            },
+            pane: layout.pane_surface,
+            surface: surface_size,
+            #[cfg(test)]
+            tab_id: self
+                .snapshot
+                .as_deref()
+                .and_then(|snapshot| snapshot.focused_tab_id.clone()),
+        };
         let graphics = self.compose_graphics(layout, &occlusion);
         // Fork (scrollback scroll): the panes' content the blit may scroll on
         // the host, unless a host image is placed (images do not follow).
@@ -1303,6 +1321,7 @@ impl ClientShellState {
             frame,
             graphics,
             scroll_regions,
+            drawn: Some(drawn),
         })
     }
 }

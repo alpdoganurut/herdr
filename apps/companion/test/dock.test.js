@@ -729,3 +729,41 @@ test('the terminal settings are read again when the extent or cell size changes'
   t.mock.timers.tick(10 * CONFIG_FOLLOW_MS);
   assert.equal(decisions, stopped);
 });
+
+// Fork (dock sync): herdr's board can flip fast (tab switches, machine round trips). The
+// dock's decision depends only on the latest list and what the probe sees, never on the lists
+// before it: after every list it matches a fresh core given only that list, and with no
+// shown placement nothing is shown.
+test('rapid placement flips: the dock follows the latest list only', () => {
+  let seed = 7;
+  const rand = (n) => {
+    seed = (Math.imul(seed, 1103515245) + 12345) >>> 0;
+    return (seed >>> 8) % n;
+  };
+  const sample = (c, t) => c.onSample({ t, candidates: [win(11)] }, t);
+  const c = core();
+  c.setPlacements([placement('p1')]);
+  sample(c, 1);
+  c.decide(2);
+  for (let i = 0; i < 100; i++) {
+    const t = 10 + i * 10;
+    const list = rand(4) === 0
+      ? []
+      : [placement('p1', {
+        shown: rand(3) !== 0,
+        kind: rand(4) === 0 ? 'full' : 'side',
+        tab_id: `w1:t${rand(3)}`,
+        area: { x: 60 + rand(8), y: 1, width: 50 + rand(6), height: 35 },
+      })];
+    c.setPlacements(list);
+    sample(c, t);
+    const d = c.decide(t + 1);
+    const fresh = core();
+    fresh.setPlacements(list);
+    sample(fresh, t);
+    const want = fresh.decide(t + 1);
+    assert.equal(d.show, want.show, `list ${i}`);
+    if (want.show) assert.deepEqual(d.rect, want.rect, `list ${i}`);
+    if (!list.some((p) => p.placement.shown)) assert.equal(d.show, false, `list ${i}: nothing shown`);
+  }
+});

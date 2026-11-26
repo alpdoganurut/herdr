@@ -38,6 +38,7 @@ mod browser;
 mod browser_dock;
 mod browser_dock_render;
 mod browser_link;
+pub(crate) use browser_dock::DrawnDock;
 pub(crate) use browser_dock::PLACEMENT_REQUEST_PREFIX as BROWSER_PLACEMENT_REQUEST_PREFIX;
 #[cfg(all(test, unix))]
 pub(crate) use browser_link::LinkPlacement;

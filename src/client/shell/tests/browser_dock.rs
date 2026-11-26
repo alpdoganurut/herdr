@@ -72,15 +72,19 @@ fn dock_state_with(config: &Config) -> ClientShellState {
     state.set_pane_surface(surface());
     state.browser.info = Some(companion("running"));
     state.browser_dock.extent_for_test = Some((COLS, ROWS, 1600, 900));
-    state.compose(COLS, ROWS);
+    present(&mut state);
     state
 }
 
+/// Compose, and the frame reaches the terminal (a placement shows only
+/// over a presented frame that makes room for it).
 fn recompose(state: &mut ClientShellState) -> Option<FrameData> {
     if state.pane_surface.is_none() {
         state.set_pane_surface(surface());
     }
-    state.compose(COLS, ROWS).map(|composed| composed.frame)
+    let composed = state.compose(COLS, ROWS)?;
+    state.note_presented(composed.drawn);
+    Some(composed.frame)
 }
 
 fn toggle_dock(state: &mut ClientShellState) -> ClientShellInput {
@@ -1580,4 +1584,134 @@ fn the_helper_coming_and_going_resizes_and_the_link_state_is_shown() {
         &mut outcome,
     );
     assert!(!outcome.repaint && !outcome.resize);
+}
+
+/// A pane surface frame of `cols`×`rows` for projection `revision`.
+fn sized_surface(cols: u16, rows: u16, revision: u64) -> PaneSurfaceFrame {
+    let mut surface = surface();
+    surface.projection_revision = revision;
+    surface.frame = FrameData::from_ratatui_buffer_with_hyperlinks(
+        &Buffer::empty(Rect::new(0, 0, cols, rows)),
+        None,
+        &[],
+    );
+    surface
+}
+
+/// The frame composed now reaches the terminal.
+fn present(state: &mut ClientShellState) {
+    let drawn = state.compose(COLS, ROWS).and_then(|frame| frame.drawn);
+    state.note_presented(drawn);
+}
+
+fn placement_request_id(message: &crate::protocol::ClientMessage) -> String {
+    let crate::protocol::ClientMessage::ClientShellEndpointRequest { request, .. } = message else {
+        panic!("a placement is an endpoint request");
+    };
+    serde_json::from_str::<Request>(request)
+        .expect("request json")
+        .id
+}
+
+/// Fork (dock sync, F4): a placement the server refused goes again after a
+/// pause (never at once: a refusal can repeat), one it took does not, and a
+/// new connection to the same server gets it again (the server forgot it
+/// with the old connection).
+#[test]
+fn a_refused_placement_or_a_new_connection_gets_it_again() {
+    let mut state = dock_state();
+    toggle_dock(&mut state);
+    let t0 = std::time::Instant::now();
+    let message = state.take_browser_placement_request(t0).expect("sent");
+    state.receive_browser_placement_answer(&placement_request_id(&message), false, t0);
+    let soon = t0 + std::time::Duration::from_millis(100);
+    assert!(sent_placement(&mut state, soon).is_none(), "no busy loop");
+    let later = t0 + std::time::Duration::from_secs(2);
+    let message = state
+        .take_browser_placement_request(later)
+        .expect("sent again after the pause");
+    state.receive_browser_placement_answer(&placement_request_id(&message), true, later);
+    assert!(sent_placement(&mut state, later + std::time::Duration::from_secs(5)).is_none());
+    // the same server, a new connection
+    state.set_endpoint_snapshot_for_generation(
+        &crate::client::endpoint::ClientEndpointId::Local,
+        2,
+        Box::new(two_tab_snapshot("tab_1")),
+    );
+    let spec = sent_placement(&mut state, later + std::time::Duration::from_secs(6))
+        .expect("placed again")
+        .expect("spec");
+    assert_eq!(spec.tab_id, "tab_1");
+}
+
+/// Fork (dock sync, F5): a placement newly shown (the dock opened, a switch
+/// into a docked tab) waits for a drawn frame of its tab that makes room:
+/// the band drawn and the tab's text no wider than the pane left of it.
+/// Once shown, a divider drag (the text re-flowing a moment later) never
+/// hides it.
+#[test]
+fn a_new_placement_is_shown_only_over_a_frame_that_makes_room() {
+    let mut state = dock_state();
+    let wide = state.layout(COLS, ROWS).pane_surface;
+    state.set_pane_surface(sized_surface(wide.width, wide.height, 1));
+    present(&mut state);
+    let t0 = std::time::Instant::now();
+    let mut outcome = ClientShellInput::default();
+    state.toggle_browser_dock_for_focused_tab(&mut outcome);
+    let spec = sent_placement(&mut state, t0).expect("sent").expect("spec");
+    assert!(!spec.shown, "no frame with the band is on screen yet");
+    // the band is drawn, the text still the width before
+    present(&mut state);
+    let t1 = t0 + std::time::Duration::from_secs(1);
+    assert!(
+        sent_placement(&mut state, t1).is_none(),
+        "still hidden: the text runs under the band"
+    );
+    // the narrower surface arrives (the PTY followed the report)
+    let narrow = state.layout(COLS, ROWS).pane_surface;
+    assert!(narrow.width < wide.width);
+    state.set_pane_surface(sized_surface(narrow.width, narrow.height, 1));
+    present(&mut state);
+    let spec = sent_placement(&mut state, t1 + std::time::Duration::from_secs(1))
+        .expect("sent")
+        .expect("spec");
+    assert!(spec.shown);
+    // a divider drag: the surface is a moment behind, the window stays
+    let divider = state.hits.browser_dock.divider;
+    state.handle_raw_events(vec![
+        mouse(MouseEventKind::Down(MouseButton::Left), divider.x, 10),
+        mouse(MouseEventKind::Drag(MouseButton::Left), divider.x - 12, 10),
+    ]);
+    present(&mut state);
+    let spec = sent_placement(&mut state, t1 + std::time::Duration::from_secs(2))
+        .expect("the area moved")
+        .expect("spec");
+    assert!(spec.shown, "a drag never blinks the window");
+    // another tab and back: the snapshot lands before its surface
+    state.handle_raw_events(vec![mouse(
+        MouseEventKind::Up(MouseButton::Left),
+        divider.x - 12,
+        10,
+    )]);
+    let mut second = two_tab_snapshot("tab_2");
+    second.revision = 2;
+    state.set_snapshot(Box::new(second));
+    let spec = sent_placement(&mut state, t1 + std::time::Duration::from_secs(3))
+        .expect("sent")
+        .expect("spec");
+    assert!(!spec.shown);
+    let mut back = two_tab_snapshot("tab_1");
+    back.revision = 3;
+    state.set_snapshot(Box::new(back));
+    let spec = sent_placement(&mut state, t1 + std::time::Duration::from_secs(4))
+        .expect("sent")
+        .expect("spec");
+    assert!(!spec.shown, "tab_2's frame is still on screen");
+    let pane = state.layout(COLS, ROWS).pane_surface;
+    state.set_pane_surface(sized_surface(pane.width, pane.height, 3));
+    present(&mut state);
+    let spec = sent_placement(&mut state, t1 + std::time::Duration::from_secs(5))
+        .expect("sent")
+        .expect("spec");
+    assert!(spec.shown);
 }

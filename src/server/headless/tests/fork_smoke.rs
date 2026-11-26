@@ -3724,6 +3724,44 @@ async fn placements_reach_the_host_with_focus_and_foreground() {
         }),
     });
     assert!(!read().placement.shown);
+    // Fork (dock sync): it shows this server again: the placement stored is
+    // from before it left, unshown until the client places it again
+    let surface_on = |server: &mut HeadlessServer, id: &str| {
+        let boot_id = server.client_shell_boot_id.clone();
+        server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
+            client_id,
+            boot_id,
+            request: Box::new(Request {
+                id: id.into(),
+                method: Method::ClientShellSurfaceSet(api::schema::ClientShellSurfaceSetParams {
+                    active: true,
+                }),
+            }),
+        });
+    };
+    surface_on(&mut server, "client-shell-surface:10");
+    assert!(!read().placement.shown);
+    // a presentation sync asks for the active surface again: still unshown
+    surface_on(&mut server, "client-shell-surface:11");
+    assert!(!read().placement.shown);
+    let boot_id = server.client_shell_boot_id.clone();
+    server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
+        client_id,
+        boot_id,
+        request: Box::new(Request {
+            id: "client-shell-placement:3".into(),
+            method: Method::BrowserPlacementSet(api::schema::BrowserPlacementSetParams {
+                placement: Some(api::schema::BrowserPlacementSpec {
+                    id: "pl-fork-smoke-b".into(),
+                    kind: api::schema::BrowserPlacementKind::Full,
+                    tab_id: "tab_1".into(),
+                    shown: true,
+                    ..Default::default()
+                }),
+            }),
+        }),
+    });
+    assert!(read().placement.shown, "placed again: shown");
     // the host's long poll needs its live lease
     let answer = crate::browser::serve::placements(
         "c1".into(),

@@ -47,8 +47,12 @@ const SPIN_EVERY: Duration = Duration::from_millis(250);
 /// A companion that has said nothing about a placement this long is not
 /// docking it (an older companion).
 const UNANSWERED_AFTER: Duration = Duration::from_secs(4);
-/// The request id prefix of a placement (its answer is not waited for).
+/// The request id prefix of a placement (its answer is not waited for; a
+/// refusal sends it again, fork dock sync).
 pub(crate) const PLACEMENT_REQUEST_PREFIX: &str = "client-shell-placement:";
+/// Fork (dock sync): a placement the server refused goes again this long
+/// after (a refusal repeats until the client's snapshot catches up).
+const REFUSED_RETRY: Duration = Duration::from_secs(1);
 
 /// A click target of the band, the strip or the placeholder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -162,11 +166,42 @@ pub(crate) struct TabBrowserMark {
     pub(crate) view: Option<&'static str>,
 }
 
-/// The last placement sent, for the server boot it went to.
+/// The last placement sent, for the server boot and the connection it
+/// went to (fork, dock sync: a new connection to the same server has
+/// none, so it is sent again).
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SentPlacement {
     boot_id: String,
+    generation: Option<u64>,
     spec: Option<BrowserPlacementSpec>,
+    request_id: String,
+    /// The server refused it (an error answer): sent again after
+    /// [`REFUSED_RETRY`].
+    refused_at: Option<Instant>,
+}
+
+impl SentPlacement {
+    fn went_to(&self, boot_id: &str, generation: Option<u64>) -> bool {
+        self.boot_id == boot_id && self.generation == generation
+    }
+}
+
+/// Fork (dock sync): what a presented frame showed: the snapshot it was
+/// composed from (`presentation_serial`), the band, the Browser view's
+/// area, the pane surface's rect and the size of the surface frame blitted
+/// into it. A placement newly shown waits for a frame that matches it
+/// (`browser_placement_now`), so the companion never covers text the frame
+/// still draws there.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct DrawnDock {
+    pub(crate) serial: u64,
+    pub(crate) band: Rect,
+    pub(crate) full: Rect,
+    pub(crate) pane: Rect,
+    pub(crate) surface: (u16, u16),
+    /// The focused tab the frame showed (the stress test's check).
+    #[cfg(test)]
+    pub(crate) tab_id: Option<String>,
 }
 
 /// Tab ids by endpoint; an endpoint without any is not listed (so an empty
@@ -240,6 +275,17 @@ pub(crate) struct ClientBrowserDockState {
     /// again after a terminal resize (`note_terminal_resized`) or when a dock
     /// or Browser view opens: `None` until then.
     terminal_extent: Option<(u16, u16, u32, u32)>,
+    /// Fork (dock sync): what the last presented frame showed (`None`: a
+    /// frame without panes, or none yet). A presented surface patch keeps
+    /// the projection revision and the pane geometry
+    /// (`apply_pane_surface_patch`), so it leaves this as it is.
+    pub(crate) drawn: Option<DrawnDock>,
+    /// Fork (dock sync): the placement would show but waits for a frame
+    /// that makes room for it; the next frame presented asks again.
+    waits_for_frame: bool,
+    /// Fork (dock sync): ask again before the loop waits (a frame was
+    /// presented while waiting for one, or an activation committed).
+    recheck: bool,
     /// Tests: what the terminal says (no `/dev/tty`), and how often it was asked.
     #[cfg(test)]
     pub(crate) extent_for_test: Option<(u16, u16, u32, u32)>,
@@ -288,6 +334,9 @@ impl ClientBrowserDockState {
                 _ => None,
             },
             terminal_extent: None,
+            drawn: None,
+            waits_for_frame: false,
+            recheck: false,
             #[cfg(test)]
             extent_for_test: None,
             #[cfg(test)]
@@ -1569,8 +1618,26 @@ impl ClientShellState {
         }
     }
 
-    /// This client's placement now (`None`: none to publish).
+    /// This client's placement now (`None`: none to publish), as the
+    /// companion was never told of one (the tests' view).
+    #[cfg(test)]
     pub(super) fn browser_placement_spec(&self) -> Option<BrowserPlacementSpec> {
+        self.browser_placement_now(None).map(|(spec, _)| spec)
+    }
+
+    /// Fork (dock sync): the placement now, after `previous` (the one the
+    /// companion was last told about, for this server and connection), and
+    /// whether it is held back from showing until a frame makes room. A
+    /// placement newly shown (the dock opened, another tab, Browser view
+    /// switched, back from another endpoint) shows only over a presented
+    /// frame of the current snapshot that draws its band (or Browser view)
+    /// with the tab's text no wider than the pane left of it; one already
+    /// shown on the same tab stays shown (a divider drag or a terminal
+    /// resize re-flows the text a moment later, the window does not blink).
+    fn browser_placement_now(
+        &self,
+        previous: Option<&BrowserPlacementSpec>,
+    ) -> Option<(BrowserPlacementSpec, bool)> {
         if !self.browser_dock_in_use() || !self.browser_dock_available() {
             return None;
         }
@@ -1617,6 +1684,11 @@ impl ClientShellState {
             (kind, Rect::default(), false)
         };
         let shown = shown && !self.herdr_ui_over(area);
+        let stays = previous.is_some_and(|previous| {
+            previous.shown && previous.kind == kind && previous.tab_id == tab_id
+        });
+        let waits = shown && !stays && !self.browser_frame_makes_room(&layout, kind, area);
+        let shown = shown && !waits;
         let (grid_cols, grid_rows, width_px, height_px) = self.browser_terminal_pixels(cols, rows);
         let cell = |extent: u32, cells: u16| {
             if cells == 0 {
@@ -1651,6 +1723,34 @@ impl ClientShellState {
             shown,
             nudge: self.browser_dock.nudge,
         })
+        .map(|spec| (spec, waits))
+    }
+
+    /// Fork (dock sync): the last presented frame shows the current snapshot
+    /// with room for the placement's `area`: the band as laid out now and the
+    /// pane's text no wider (nor taller) than its rect, or the Browser view
+    /// over `area`. O(1): a few rect compares.
+    fn browser_frame_makes_room(
+        &self,
+        layout: &ClientShellLayout,
+        kind: BrowserPlacementKind,
+        area: Rect,
+    ) -> bool {
+        let Some(drawn) = self.browser_dock.drawn.as_ref() else {
+            return false;
+        };
+        if drawn.serial != self.presentation_serial {
+            return false;
+        }
+        match kind {
+            BrowserPlacementKind::Full => drawn.full == area,
+            _ => {
+                drawn.band == layout.browser_band
+                    && drawn.pane == layout.pane_surface
+                    && drawn.surface.0 <= drawn.pane.width
+                    && drawn.surface.1 <= drawn.pane.height
+            }
+        }
     }
 
     /// The terminal's grid and pixel extent (`TIOCGWINSZ`, as last read);
@@ -1664,16 +1764,83 @@ impl ClientShellState {
         }
     }
 
+    /// Fork (dock sync): the server's answer to placement `request_id`: a
+    /// refusal (`stale_boot`, an error) sends the placement again after
+    /// [`REFUSED_RETRY`]; an answer to an older one changes nothing.
+    pub(crate) fn receive_browser_placement_answer(
+        &mut self,
+        request_id: &str,
+        accepted: bool,
+        now: Instant,
+    ) {
+        if accepted {
+            return;
+        }
+        if let Some(sent) = self
+            .browser_dock
+            .sent
+            .as_mut()
+            .filter(|sent| sent.request_id == request_id)
+        {
+            sent.refused_at = Some(now);
+        }
+    }
+
+    /// Fork (dock sync): the placement taken last never left (the
+    /// connection failed): the next take sends it again.
+    pub(crate) fn browser_placement_not_sent(&mut self) {
+        self.browser_dock.sent = None;
+    }
+
+    /// Fork (dock sync): an endpoint activation committed: the server it
+    /// shows now holds this client's placement hidden until it is sent again
+    /// (it may be the one the client left and came back to), so it is, before
+    /// the loop waits.
+    pub(crate) fn forget_browser_placement_sent(&mut self) {
+        self.browser_dock.sent = None;
+        self.browser_dock.recheck = true;
+    }
+
+    /// Fork (dock sync): whether the placement is asked for before the loop
+    /// waits (once per presented frame while it waits for one); clears it.
+    pub(crate) fn take_browser_placement_recheck(&mut self) -> bool {
+        std::mem::take(&mut self.browser_dock.recheck)
+    }
+
+    /// Fork (dock sync): a frame reached the terminal; `drawn` is what it
+    /// showed of the dock and the panes.
+    pub(crate) fn note_presented(&mut self, drawn: Option<DrawnDock>) {
+        // A frame that moved the band, the Browser view or the pane (a
+        // resize, a strip or title row appearing) asks for the placement
+        // before the loop waits, not at the next tick.
+        let moved = match (&self.browser_dock.drawn, &drawn) {
+            (Some(before), Some(after)) => {
+                before.band != after.band || before.full != after.full || before.pane != after.pane
+            }
+            (None, Some(_)) => true,
+            _ => false,
+        };
+        self.browser_dock.drawn = drawn;
+        if self.browser_dock.waits_for_frame || (moved && self.browser_dock_in_use()) {
+            self.browser_dock.recheck = true;
+        }
+    }
+
     /// The terminal resized: its extent is read again when a placement
     /// needs it (the extent beyond whole cells matters to the companion, so
     /// it is never derived from the grid).
     pub(crate) fn note_terminal_resized(&mut self) {
         self.browser_dock.terminal_extent = None;
+        // Fork (dock sync): the terminal re-flowed what it showed.
+        self.browser_dock.drawn = None;
     }
 
     /// The `browser.placement.set` to send now, if the placement changed
     /// (at most one per 33 ms: a change inside the gap waits for the
-    /// deadline). Sent beside the command lane; its answer is not waited for.
+    /// deadline; fork, dock sync: one that stops showing goes at once), or
+    /// the server or connection it went to no longer holds it (a new
+    /// connection, a refusal [`REFUSED_RETRY`] ago). Sent beside the command
+    /// lane; its answer is not waited for (`receive_browser_placement_answer`).
     pub(crate) fn take_browser_placement_request(
         &mut self,
         now: Instant,
@@ -1701,34 +1868,60 @@ impl ClientShellState {
                 .is_none_or(|sent| sent.spec.is_none())
         {
             self.browser_dock.pending = false;
+            self.browser_dock.waits_for_frame = false;
             return None;
         }
         if in_use && self.browser_dock.terminal_extent.is_none() {
             self.browser_dock.terminal_extent = Some(self.browser_dock.read_terminal_extent());
         }
         let boot_id = self.snapshot.as_deref()?.boot_id.clone();
-        let spec = self.browser_placement_spec();
-        let current = SentPlacement {
-            boot_id: boot_id.clone(),
-            spec,
+        let generation = self.active_snapshot_generation;
+        let previous = self
+            .browser_dock
+            .sent
+            .as_ref()
+            .filter(|sent| sent.went_to(&boot_id, generation))
+            .and_then(|sent| sent.spec.as_ref());
+        let (spec, waits) = match self.browser_placement_now(previous) {
+            Some((spec, waits)) => (Some(spec), waits),
+            None => (None, false),
         };
+        self.browser_dock.waits_for_frame = waits;
         match &self.browser_dock.sent {
-            Some(sent) if *sent == current => {
+            Some(sent)
+                if sent.went_to(&boot_id, generation)
+                    && sent.spec == spec
+                    && sent
+                        .refused_at
+                        .is_none_or(|at| now.duration_since(at) < REFUSED_RETRY) =>
+            {
                 self.browser_dock.pending = false;
                 return None;
             }
             // Never sent for this boot and nothing to say: nothing to clear.
-            None if current.spec.is_none() => return None,
-            Some(sent) if sent.boot_id != boot_id && current.spec.is_none() => {
+            None if spec.is_none() => return None,
+            // Fork (dock sync): another boot or connection has nothing to clear.
+            Some(sent) if !sent.went_to(&boot_id, generation) && spec.is_none() => {
                 self.browser_dock.sent = None;
                 return None;
             }
             _ => {}
         }
-        if self
+        // Fork (dock sync): a placement that stops showing goes at once (the
+        // window must leave before the frame without room is drawn); the gap
+        // paces moves (a divider drag).
+        let hides = self
             .browser_dock
-            .sent_at
-            .is_some_and(|at| now.duration_since(at) < PLACEMENT_GAP)
+            .sent
+            .as_ref()
+            .and_then(|sent| sent.spec.as_ref())
+            .is_some_and(|sent| sent.shown)
+            && spec.as_ref().is_none_or(|spec| !spec.shown);
+        if !hides
+            && self
+                .browser_dock
+                .sent_at
+                .is_some_and(|at| now.duration_since(at) < PLACEMENT_GAP)
         {
             self.browser_dock.pending = true;
             return None;
@@ -1736,22 +1929,28 @@ impl ClientShellState {
         let request_id = format!("{PLACEMENT_REQUEST_PREFIX}{}", self.next_request_id);
         self.next_request_id = self.next_request_id.saturating_add(1);
         let request = crate::api::schema::Request {
-            id: request_id,
+            id: request_id.clone(),
             method: Method::BrowserPlacementSet(BrowserPlacementSetParams {
-                placement: current.spec.clone(),
+                placement: spec.clone(),
             }),
         };
         let request = serde_json::to_string(&request).ok()?;
         let fresh = !matches!(
             &self.browser_dock.sent,
-            Some(sent) if sent.boot_id == current.boot_id && sent.spec.is_some()
+            Some(sent) if sent.boot_id == boot_id && sent.spec.is_some()
         );
-        if current.spec.is_none() {
+        if spec.is_none() {
             self.browser_dock.first_sent_at = None;
         } else if fresh {
             self.browser_dock.first_sent_at = Some(now);
         }
-        self.browser_dock.sent = Some(current);
+        self.browser_dock.sent = Some(SentPlacement {
+            boot_id: boot_id.clone(),
+            generation,
+            spec,
+            request_id,
+            refused_at: None,
+        });
         self.browser_dock.sent_at = Some(now);
         self.browser_dock.pending = false;
         Some(crate::protocol::ClientMessage::ClientShellEndpointRequest { boot_id, request })
@@ -1779,8 +1978,14 @@ impl ClientShellState {
         if in_use && self.browser_dock.terminal_extent.is_none() {
             self.browser_dock.terminal_extent = Some(self.browser_dock.read_terminal_extent());
         }
+        let previous = self
+            .browser_link
+            .told(&endpoint)
+            .and_then(|told| told.spec.clone());
+        let now_spec = self.browser_placement_now(previous.as_ref());
+        self.browser_dock.waits_for_frame = now_spec.as_ref().is_some_and(|(_, waits)| *waits);
         let placement = super::browser_link::LinkPlacement {
-            spec: self.browser_placement_spec(),
+            spec: now_spec.map(|(spec, _)| spec),
             active: true,
             focused: self.outer_focused == Some(true),
         };

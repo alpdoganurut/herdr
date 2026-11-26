@@ -273,6 +273,7 @@ mod context_menu_look;
 mod context_menu_session;
 mod coordinator;
 mod copy;
+mod dock_sync;
 mod endpoint_requests;
 mod endpoints;
 /// Fork (force suspend): the refusal notice's force button.
