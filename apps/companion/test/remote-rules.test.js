@@ -18,7 +18,7 @@ const T2 = 'a'.repeat(24);
 const T3 = 'b'.repeat(24);
 
 test('text: one line, no control, bidi or invisible characters, clipped', () => {
-  assert.equal(rules.cleanText('leap\u001b[1mmini\n'), 'leap[1mmini');
+  assert.equal(rules.cleanText('dev\u001b[1mhost1\n'), 'dev[1mhost1');
   assert.equal(rules.cleanText('a\r\nb\tc\u2028d'), 'a b c d');
   assert.equal(rules.cleanText('x\u202ey\u2066z\u200b\u200f\ufeff\u061c\u0000\u009b'), 'xyz');
   assert.equal(rules.cleanText('é ü 日本 👩‍💻'), 'é ü 日本 👩‍💻');
@@ -89,6 +89,17 @@ test('another machine\'s text is cleaned where it is kept; a local herdr\'s is n
   assert.equal(local.tabs.get('t1').label, 'on\u202ee');
   assert.deepEqual(local.group('t1').entries.map((x) => [x.title, x.url, x.file, x.root, x.allow_network]), [['x\u202ey', 'file:///x', null, null, false], ['b2', 'file:///b/x.html', '/b/x.html', '/b', true]]);
   assert.deepEqual(local.syncGroup(local.group('t1')).entries[1], { view_id: 'v2', kind: 'html_view', url: 'file:///b/x.html', title: 'b2', id: 'b2', file: '/b/x.html', allow_network: true, opened_by: 'agent:w1:p1' });
+});
+
+test('a tab without a name is named by its id, cleaned; the id itself stays as herdr sent it', () => {
+  const id = 'w1:t\u202e1\u0007';
+  const s = new GroupStore({ remote: true });
+  s.applyHostState({ tabs: [{ tab_id: id, label: '\u0007', workspace_id: 'w1' }] });
+  assert.deepEqual(s.tabs.get(id), { tab_id: id, workspace_id: 'w1', label: 'w1:t1' });
+  assert.equal(s.label(id), 'w1:t1');
+  const local = new GroupStore();
+  local.applyHostState({ tabs: [{ tab_id: id, workspace_id: 'w1' }] });
+  assert.equal(local.label(id), id);
 });
 
 test('a new host_state renews the tokens: of a live page (its URL stays), of one not loaded yet', () => {

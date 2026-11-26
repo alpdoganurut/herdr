@@ -135,19 +135,31 @@ impl FileGrants {
         ))
     }
 
-    /// The file a `herdr-file://` URL names here (not checked on disk).
+    /// The file a `herdr-file://` URL names here, as it names it; `None`
+    /// when a link leads it out of its token's directory. One that is not
+    /// there (yet) is taken as named.
     pub fn to_file_path(&self, url: &str) -> Option<PathBuf> {
-        self.resolve(url).map(|(file, _)| file)
+        let (root, file, _) = self.resolve_in(url)?;
+        match std::fs::canonicalize(&file) {
+            Ok(real) if !real.starts_with(&root) => None,
+            _ => Some(file),
+        }
     }
 
     fn resolve<'a>(&self, url: &'a str) -> Option<(PathBuf, &'a str)> {
+        self.resolve_in(url).map(|(_, file, suffix)| (file, suffix))
+    }
+
+    /// The token's directory (canonical), the file and the URL's rest.
+    fn resolve_in<'a>(&self, url: &'a str) -> Option<(PathBuf, PathBuf, &'a str)> {
         let (token, rest) = split_file_url(url)?;
         let root = self.grants().by_token.get(token)?.root.clone();
         let (path, suffix) = match rest.find(['?', '#']) {
             Some(at) => rest.split_at(at),
             None => (rest, ""),
         };
-        Some((root.join(decode_rel(path)?), suffix))
+        let file = root.join(decode_rel(path)?);
+        Some((root, file, suffix))
     }
 
     /// A file shown here, as its page on the Mac in `epoch`.

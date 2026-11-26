@@ -66,12 +66,12 @@ fn entry_from_mac(files: &crate::browser::link_files::FileGrants, entry: &mut Va
     let file = files.to_file_path(url);
     let file_url = files.to_file_url(url);
     let html_view = fields.get("kind").and_then(Value::as_str) == Some("html_view");
+    // only a shown file's page is one here: another page's URL would come
+    // back to the Mac as this machine's path
     match (file, file_url) {
-        (Some(file), Some(file_url)) => {
+        (Some(file), Some(file_url)) if html_view => {
             fields.insert("url".into(), json!(file_url));
-            if html_view {
-                fields.insert("file".into(), json!(file.display().to_string()));
-            }
+            fields.insert("file".into(), json!(file.display().to_string()));
         }
         _ => {
             fields.insert("url".into(), json!("about:blank"));
@@ -392,7 +392,13 @@ impl BrowserHub {
                 }
                 Ok(reply)
             }
-            Ok((reply, _)) => {
+            Ok((reply, written)) => {
+                // a failed op keeps none of its pictures
+                for (name, path) in &sinks {
+                    if written.contains(name) {
+                        let _ = std::fs::remove_file(path);
+                    }
+                }
                 let error = reply.error.unwrap_or_default();
                 let code = if error.code.is_empty() {
                     "browser_error"
@@ -801,10 +807,13 @@ impl LinkHandler for BrowserHub {
     }
 
     fn closed(&self, link: &Arc<Link>, end: &LinkEnd) {
-        // the last client quit there and its browser with it; a dropped link's
-        // lease runs out by itself
+        // the last client quit there and its browser with it, or the config
+        // ended the link (its first reason, whatever the reader saw after);
+        // a dropped link's lease runs out by itself
         if matches!(end, LinkEnd::Bye(said) if said.code == bye::QUIT) {
             self.drop_link_lease(link, "the helper quit");
+        } else if matches!(link.ended(), Some(LinkEnd::Off)) {
+            self.drop_link_lease(link, "the browser link is off");
         }
         self.companion_changed();
     }

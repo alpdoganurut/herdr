@@ -17,7 +17,7 @@ use crate::browser::link_proto::{
     LinkActivity, LinkError, LinkOp, OpGate, OpRule, Refusal, RefuseRule, ACTIVITY_MAX_CHARS,
     ACTIVITY_MAX_MS, EVAL_MAX_BYTES, PRESS_MODIFIERS, RELEASE_MAX_KEYS, STALE_ECHO_MS,
 };
-use crate::config::BrowserConfig;
+use crate::config::{BrowserConfig, MAX_OP_TIMEOUT_MS};
 
 /// A's own `[browser]` keys an op is under, whatever B's say.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -220,7 +220,8 @@ fn check(op: LinkOp, policy: Policy) -> Result<Passed, Refusal> {
         rule,
         target,
         args: check_args(rule, sent, policy)?,
-        deadline_ms: op.deadline_ms,
+        // B's deadline, never past what a local op may take
+        deadline_ms: op.deadline_ms.min(MAX_OP_TIMEOUT_MS),
         activity: op.activity.and_then(check_activity),
     }))
 }
@@ -500,6 +501,25 @@ mod tests {
 
     fn rule_of(op: LinkOp, policy: Policy) -> Option<RefuseRule> {
         check(op, policy).err().map(|refusal| refusal.rule)
+    }
+
+    #[test]
+    fn bs_deadline_is_bounded_and_never_raised() {
+        let gated = |deadline_ms| {
+            let op = LinkOp {
+                deadline_ms,
+                ..page_op("read", json!({ "format": "markdown" }))
+            };
+            match check(op, DEFAULT) {
+                Ok(Passed::Run(checked)) => checked.deadline_ms(),
+                _ => panic!("refused"),
+            }
+        };
+        assert_eq!(gated(u64::MAX), MAX_OP_TIMEOUT_MS);
+        assert_eq!(gated(MAX_OP_TIMEOUT_MS + 1), MAX_OP_TIMEOUT_MS);
+        assert_eq!(gated(MAX_OP_TIMEOUT_MS), MAX_OP_TIMEOUT_MS);
+        assert_eq!(gated(30_000), 30_000);
+        assert_eq!(gated(1), 1);
     }
 
     #[test]

@@ -568,7 +568,7 @@ class Companion {
         break;
       case 'tab.renamed': {
         const t = this.store.tabs.get(d.tab_id);
-        if (t) t.label = remote.on ? rules.cleanText(d.label) || d.tab_id : d.label;
+        if (t) t.label = remote.on ? rules.cleanText(d.label) || rules.cleanText(d.tab_id) : d.label;
         if (d.tab_id === this.shownTab) this.pushStrip();
         break;
       }

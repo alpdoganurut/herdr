@@ -164,7 +164,8 @@ class GroupStore {
     for (const t of state.tabs || []) {
       const label = this.remote ? this.text(t.label, MAX_TITLE) : t.label;
       const workspace_id = this.remote ? this.text(t.workspace_id, MAX_TITLE) : t.workspace_id;
-      this.tabs.set(t.tab_id, { tab_id: t.tab_id, workspace_id, label: label || t.tab_id });
+      const fallback = this.remote ? this.text(t.tab_id, MAX_TITLE) : t.tab_id;
+      this.tabs.set(t.tab_id, { tab_id: t.tab_id, workspace_id, label: label || fallback });
     }
     for (const t of state.tabs || []) {
       let g = (t.key && this.groupByKey(t.key)) || null;

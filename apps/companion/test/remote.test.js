@@ -119,7 +119,7 @@ test('--remote needs an absolute home, a socket and a profile on the command lin
     assert.ok(r.error);
     assert.equal(parseRemote(argvOf(home(bad))).error.includes('s3cret'), false);
   }
-  assert.equal(parseRemote(argvOf(home({ port: PORT, secret: 'x', label: 'leap\u001b[1mmini\n' }))).config.label, 'leap[1mmini');
+  assert.equal(parseRemote(argvOf(home({ port: PORT, secret: 'x', label: 'dev\u001b[1mhost1\n' }))).config.label, 'dev[1mhost1');
 });
 
 test('the switches: no EXCLUDE, the port in the MAP, no loopback bypass, no secret', () => {

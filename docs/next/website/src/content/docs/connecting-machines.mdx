@@ -134,7 +134,7 @@ While your client is connected to a machine whose server offers it, the client s
 - The browser docks beside that machine's tabs like the local one, and hides when you switch to another machine.
 - Settings → Browser, while a machine is shown, has this Mac's two settings and "Forget *machine*'s logins" (a second ↵ confirms; only that machine's profile is removed).
 
-The machine cannot reach your Mac's files, local network, clipboard, or other browsers. Your Mac checks every command it gets: only `http`, `https` and `about:blank` pages, a fixed set of keys (no paste by key), no file choosers or save paths, every permission denied, no client certificates, and no DevTools. A site you sign in to in that browser is usable by the machine's agents, like any browser you hand to an agent.
+The machine cannot reach your Mac's files, local network, or other browsers, and cannot read your clipboard; a page can write to it. Your Mac checks every command it gets: only `http`, `https` and `about:blank` pages, a fixed set of keys (no paste by key), no file choosers or save paths, every permission denied, no client certificates, and no DevTools. A site you sign in to in that browser is usable by the machine's agents, like any browser you hand to an agent.
 
 ```toml
 # on your Mac

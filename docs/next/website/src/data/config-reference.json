@@ -1936,7 +1936,7 @@
           "key": "browser.link",
           "type": "string",
           "default": "\"auto\"",
-          "description": "Fork (remote browser): on a machine you reach with `herdr machine add`, whether its agents may use the browser of the Mac you connect from. `auto` (the default) uses it while a herdr+ client on that Mac is connected, else this machine's own companion browser. `only` uses nothing else: without a connected Mac, agents are told so and this machine's companion is never started for them. `off` refuses the link. Each Mac's browser has its own logins and sends every page's traffic through this machine. Anything else reads as `auto` with a diagnostic. Applies live after `herdr server reload-config`; `off` ends a link at once."
+          "description": "Fork (remote browser): on a machine you reach with `herdr machine add`, whether its agents may use the browser of the Mac you connect from. `auto` (the default) uses it while a herdr+ client on that Mac is connected, else this machine's own companion browser. `only` uses nothing else: without a connected Mac, agents are told so and this machine's companion is never started for them. `off` refuses the link. Each Mac's browser has its own logins; with the Mac's default `egress = \"split\"` it loads public sites from the Mac, and this machine's localhost, private networks and the Mac's own networks through this machine (`browser.egress`). Anything else reads as `auto` with a diagnostic. Applies live after `herdr server reload-config`; `off` ends a link at once."
         },
         {
           "key": "browser.remote_machines",

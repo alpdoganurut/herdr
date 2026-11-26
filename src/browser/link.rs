@@ -94,7 +94,7 @@ impl std::fmt::Display for LinkEnd {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             LinkEnd::Lost(why) => write!(f, "lost: {why}"),
-            LinkEnd::Bye(bye) => write!(f, "bye {}: {}", bye.code, bye.message),
+            LinkEnd::Bye(bye) => write!(f, "bye {}: {}", bye.code, clip_text(&bye.message)),
             LinkEnd::Silent => write!(f, "silent for {} s", TTL_MS / 1000),
             LinkEnd::Protocol(why) => write!(f, "protocol: {why}"),
             LinkEnd::Backlog => f.write_str("the helper does not read"),
@@ -277,6 +277,16 @@ impl Sink {
             let _ = std::fs::remove_file(&self.part);
         }
     }
+
+    /// Its call has no answer: nothing is left of the picture, also where
+    /// it was put.
+    fn withdraw(&mut self) {
+        self.discard();
+        if self.done {
+            let _ = std::fs::remove_file(&self.dest);
+            self.done = false;
+        }
+    }
 }
 
 /// The `ensure` under way: everyone who needs the browser waits for the one.
@@ -344,7 +354,7 @@ impl Link {
         lock(&self.pending).clear();
         lock(&self.ensure).take();
         for (_, mut sink) in lock(&self.sinks).drain() {
-            sink.discard();
+            sink.withdraw();
         }
     }
 
@@ -401,6 +411,10 @@ impl Link {
         let mut open = lock(&self.sinks);
         for (name, _) in sinks {
             if let Some(mut sink) = open.remove(&(id, *name)) {
+                if outcome.is_err() {
+                    sink.withdraw();
+                    continue;
+                }
                 if sink.done {
                     written.push(*name);
                 }

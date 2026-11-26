@@ -647,6 +647,19 @@ fn more_file_requests_than_a_helper_keeps_drop_the_link() {
     assert!(!link.queue.wait_for_room(WriteLane::Bulk, 1));
 }
 
+#[test]
+fn a_goodbye_names_what_the_helper_said_clipped_to_one_line() {
+    let end = LinkEnd::Bye(Bye {
+        code: bye::QUIT.into(),
+        message: format!(" gone\u{1b}[2J\n{}", "x".repeat(200)),
+    });
+    let shown = end.to_string();
+    assert_eq!(
+        shown,
+        format!("bye quit: gone[2J{}", "x".repeat(LABEL_MAX_CHARS - 7))
+    );
+}
+
 /// A whole helper, for the hub's tests (unix: they use the fake sidecar).
 #[cfg(unix)]
 pub(crate) mod fake_mac {
@@ -674,6 +687,10 @@ pub(crate) mod fake_mac {
         /// the first chunk.
         pub picture: Option<Vec<u8>>,
         pub picture_cut: bool,
+        /// Its pictures come whole, the `re` never.
+        pub picture_unanswered: bool,
+        /// Its pictures come whole, then a `re` that failed.
+        pub picture_refused: bool,
         /// The answers to its `file` pulls.
         pub files: Vec<FileReply>,
         pub next_target: u32,
@@ -806,6 +823,19 @@ pub(crate) mod fake_mac {
             return frames;
         }
         frames.extend(chunks(BlobName::Inline, b"tiny", 1, false));
+        if state.picture_unanswered {
+            return frames;
+        }
+        if state.picture_refused {
+            frames.push(HelperFrame::Re(LinkReply {
+                id,
+                ok: false,
+                result: serde_json::Value::Null,
+                page: None,
+                error: Some(LinkError::new("host_failed", "the page went away")),
+            }));
+            return frames;
+        }
         frames.push(HelperFrame::Re(LinkReply {
             id,
             ok: true,

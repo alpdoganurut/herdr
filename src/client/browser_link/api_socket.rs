@@ -21,6 +21,8 @@ const REQUEST_MAX: usize = 1024 * 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// A companion that does not read its answer for this long is dropped.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+/// A failed accept (out of descriptors, say) is not retried before this.
+const ACCEPT_BACKOFF: Duration = Duration::from_millis(50);
 
 /// What a method answers.
 pub(crate) enum Answer {
@@ -123,6 +125,20 @@ pub(crate) fn accept_loop(
     stopped: &UnixStream,
     serve: impl Fn(UnixStream) + Clone + Send + 'static,
 ) {
+    accept_loop_with(
+        listener,
+        stopped,
+        || listener.accept().map(|(stream, _)| stream),
+        serve,
+    );
+}
+
+fn accept_loop_with(
+    listener: &UnixListener,
+    stopped: &UnixStream,
+    mut accept: impl FnMut() -> io::Result<UnixStream>,
+    serve: impl Fn(UnixStream) + Clone + Send + 'static,
+) {
     loop {
         let mut fds = [
             libc::pollfd {
@@ -147,11 +163,12 @@ pub(crate) fn accept_loop(
         if fds[1].revents != 0 {
             return;
         }
-        let stream = match listener.accept() {
-            Ok((stream, _)) => stream,
+        let stream = match accept() {
+            Ok(stream) => stream,
             Err(err) if err.kind() == io::ErrorKind::WouldBlock => continue,
             Err(err) => {
                 tracing::debug!(%err, "browser link socket accept failed");
+                std::thread::sleep(ACCEPT_BACKOFF);
                 continue;
             }
         };
@@ -307,6 +324,37 @@ pub(super) mod tests {
                 serde_json::from_str(&line).unwrap()
             })
             .collect()
+    }
+
+    #[test]
+    fn a_failing_accept_is_not_retried_at_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let dir = short_dir();
+        let path = dir.path().join("k.api");
+        let listener = bind_private(&path).unwrap();
+        // a connection waits, so the socket stays readable while accept fails
+        let _waiting = UnixStream::connect(&path).unwrap();
+        let (stop, stopped) = UnixStream::pair().unwrap();
+        let tries = Arc::new(AtomicUsize::new(0));
+        let accept = {
+            let tries = Arc::clone(&tries);
+            std::thread::spawn(move || {
+                accept_loop_with(
+                    &listener,
+                    &stopped,
+                    || {
+                        tries.fetch_add(1, Ordering::Relaxed);
+                        Err(io::Error::other("too many open files"))
+                    },
+                    |_| {},
+                )
+            })
+        };
+        std::thread::sleep(Duration::from_millis(300));
+        drop(stop);
+        accept.join().unwrap();
+        let tries = tries.load(Ordering::Relaxed);
+        assert!((1..=100).contains(&tries), "{tries}");
     }
 
     #[test]

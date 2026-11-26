@@ -962,6 +962,67 @@ fn a_picture_cut_off_leaves_nothing() {
     assert_eq!(files_in(&site.0), ["app.js", "index.html"]);
 }
 
+/// The herdr-named files of the companion's screenshots.
+fn shots_of(hub: &BrowserHub) -> Vec<String> {
+    files_in(&hub.home_dir().join("shots").join("companion"))
+}
+
+#[test]
+fn the_pictures_of_a_call_that_failed_are_not_kept() {
+    let (hub, _shared, mac) = linked("link-shot-failed");
+    open(&hub).expect("open");
+    let site = site("shot-failed");
+    let out = site.0.join("lost.png");
+    // the pictures came whole, the answer never: the link drops
+    mac.state.lock().unwrap().picture_unanswered = true;
+    let pending = {
+        let hub = hub.clone();
+        let out = out.clone();
+        std::thread::spawn(move || screenshot(&hub, Some(&out)))
+    };
+    wait_for("its pictures", || {
+        out.exists() && shots_of(&hub).iter().any(|name| name.contains(".inline."))
+    });
+    mac.close(LinkEnd::Lost("test".into()));
+    assert_eq!(pending.join().unwrap().unwrap_err().code, "host_link_lost");
+    assert_eq!(files_in(&site.0), ["app.js", "index.html"]);
+    assert_eq!(shots_of(&hub), Vec::<String>::new());
+    // the same --out again, once the Mac is back: it was never kept
+    let back = FakeMac::open(&hub, "mac-a", "mac").expect("back");
+    back.up("i1", &["V1"]);
+    wait_for("host_ok", || !back.state.lock().unwrap().leases.is_empty());
+    back.state.lock().unwrap().picture_refused = true;
+    let err = screenshot(&hub, Some(&out)).unwrap_err();
+    assert_eq!(err.code, "host_failed");
+    assert_eq!(files_in(&site.0), ["app.js", "index.html"]);
+    assert_eq!(shots_of(&hub), Vec::<String>::new());
+    back.state.lock().unwrap().picture_refused = false;
+    screenshot(&hub, Some(&out)).expect("taken");
+    assert_eq!(std::fs::read(&out).unwrap(), b"the full picture");
+}
+
+#[test]
+fn a_picture_whose_answer_times_out_is_not_kept() {
+    let (hub, _shared, mac) = linked("link-shot-timeout");
+    open(&hub).expect("open");
+    let site = site("shot-timeout");
+    let out = site.0.join("late.png");
+    let inline = site.0.join("late.inline.png");
+    mac.state.lock().unwrap().picture_unanswered = true;
+    let err = hub
+        .request(
+            "screenshot",
+            Some("companion"),
+            Some("V1"),
+            json!({ "format": "png", "path": out.display().to_string(),
+                    "inline_path": inline.display().to_string() }),
+            Duration::from_millis(100),
+        )
+        .unwrap_err();
+    assert_eq!(err.code, "browser_timeout");
+    assert_eq!(files_in(&site.0), ["app.js", "index.html"]);
+}
+
 // ---- the companion's calls (SV4)
 
 #[test]
@@ -1051,6 +1112,79 @@ fn a_call_over_the_link_carries_its_own_lease_and_no_path_of_the_mac() {
         )
         .unwrap();
     assert_eq!(sent["url"], format!("file://{}", page.display()));
+}
+
+#[test]
+fn a_page_the_mac_names_is_a_file_of_its_shown_directory_or_none() {
+    let (hub, _shared, mac) = linked("link-sync-confined");
+    let outside = site("sync-outside");
+    let site = site("sync-confined");
+    let page = site.0.join("index.html");
+    show(&hub, &page, json!({}));
+    let token = mac.state.lock().unwrap().ops.last().unwrap().args["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    std::os::unix::fs::symlink(outside.0.join("index.html"), site.0.join("lnk.html")).unwrap();
+    std::os::unix::fs::symlink(&outside.0, site.0.join("out")).unwrap();
+    std::os::unix::fs::symlink(site.0.join("index.html"), site.0.join("same.html")).unwrap();
+    let url = |rel: &str| format!("herdr-file://{token}/{rel}");
+    let synced = hub
+        .api_params(
+            &mac.link,
+            "browser.host_sync",
+            json!({ "seq": 1, "groups": [{ "tab_id": "w1:t1", "entries": [
+                { "kind": "html_view", "url": url("lnk.html") },
+                { "kind": "html_view", "url": url("out/index.html") },
+                { "kind": "html_view", "url": url("same.html") },
+                { "kind": "html_view", "url": url("gone.html") },
+                { "kind": "web", "url": url("index.html") },
+            ] }] }),
+        )
+        .unwrap();
+    let entries = &synced["groups"][0]["entries"];
+    // a link that leads out of the directory is no page of it
+    for (at, entry) in entries.as_array().unwrap().iter().enumerate() {
+        if [0, 1, 4].contains(&at) {
+            assert_eq!(entry["url"], "about:blank", "{at}: {entry}");
+            assert!(entry.get("file").is_none(), "{at}: {entry}");
+        }
+    }
+    // one that stays in it is, and a file not there (yet) keeps its path
+    for (at, name) in [(2, "same.html"), (3, "gone.html")] {
+        let file = site.0.join(name);
+        assert_eq!(entries[at]["file"], file.display().to_string());
+        assert_eq!(entries[at]["url"], format!("file://{}", file.display()));
+    }
+}
+
+#[test]
+fn a_link_the_config_turned_off_takes_its_lease_with_it() {
+    let (hub, _shared, mac) = linked("link-config-off");
+    open(&hub).expect("open");
+    let config = BrowserConfig {
+        link: "off".into(),
+        ..hub.config()
+    };
+    hub.apply_config(&config);
+    wait_for("its goodbye", || {
+        mac.state.lock().unwrap().byes == ["disabled"]
+    });
+    // the connection closes after the goodbye
+    mac.close(LinkEnd::Lost("closed".into()));
+    assert!(!hub.companion_live());
+    assert_ne!(
+        hub.get(None).link.map(|status| status.state),
+        Some("reconnecting".into())
+    );
+    hub.expire_host_lease_for_test();
+    hub.supervise();
+    hub.with_state(|state| {
+        assert!(!matches!(
+            state.profile("companion"),
+            crate::browser::state::ProfileStatus::Crashed { .. }
+        ));
+    });
 }
 
 #[test]

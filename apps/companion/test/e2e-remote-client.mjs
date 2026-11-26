@@ -853,7 +853,7 @@ const scenarios = {
   // the machine's name on every surface, and the other machine's text on them
   async labels() {
     const r = await rig({
-      label: 'leap\u202emini\u0007',
+      label: 'dev\u202ehost1\u0007',
       restore: (mock) => {
         mock.state.tabs.get('w1:t1').label = 'pla\u202enner\n\u001b[1m';
       },
