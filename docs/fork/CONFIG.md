@@ -65,7 +65,7 @@ The notes pane toggle moved to the session header's `≡` (below); the sidebar h
 
 ### Session header
 
-One row on top of the session area (the `tabs` layout only; the `spaces` layout keeps its tab bar and view strip). Selection and hover change only the text colour: the active view and the open dock are accent, other controls dim (`overlay0`), a hovered one `text`.
+One row at the bottom of the session area, the window's last row right of the sidebar (the `tabs` layout only; the `spaces` layout keeps its tab bar and view strip). Selection and hover change only the text colour: the active view and the open dock are accent, other controls dim (`overlay0`), a hovered one `text`.
 
 | Part | What it shows or does | Shown when |
 |---|---|---|

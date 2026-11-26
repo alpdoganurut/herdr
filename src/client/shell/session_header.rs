@@ -1,7 +1,10 @@
 //! The session header (fork, header design: the Codex mock,
-//! `.local/prd/header-design/codex.html`): the `tabs` layout's one row on
-//! top of the session area, in place of the sidebar's detail strip and the
-//! view strip.
+//! `.local/prd/header-design/codex.html`): the `tabs` layout's one row at
+//! the bottom of the session area (the screen's last row, right of the
+//! sidebar; the tabs layout has no tab bar), in place of the sidebar's
+//! detail strip and the view strip. The pane area, the docks and the band
+//! end above it; a mode bar (prefix, navigate) keeps the pane area's last
+//! row, directly above the header, and toasts stack above it.
 //!
 //! Left: the focused tab's status as an icon only (its state colour), the
 //! tab's group when it is in one (`overlay1`, then ` · `; named as the
@@ -60,16 +63,16 @@ const GROUP_SEPARATOR: &str = " \u{00B7} "; //  ·
 const BANNER_MIN: u16 = 16;
 
 /// Where the desktop toasts, endpoint notices, the lifecycle banner and the
-/// config diagnostic stack: the frame below the header row while the header
+/// config diagnostic stack: the frame above the header row while the header
 /// is drawn (so they never cover it), else the whole frame (upstream). Only
-/// the top moves; bottom-anchored toasts keep the frame's bottom.
+/// the bottom moves; top-anchored toasts keep row 0.
 pub(crate) fn toast_area(layout: &ClientShellLayout, cols: u16, rows: u16) -> Rect {
-    let top = if layout.session_header.is_empty() {
-        0
+    let height = if layout.session_header.is_empty() {
+        rows
     } else {
-        layout.session_header.bottom().min(rows)
+        layout.session_header.y.min(rows)
     };
-    Rect::new(0, top, cols, rows - top)
+    Rect::new(0, 0, cols, height)
 }
 
 /// Where the config diagnostic and the endpoint status banner go while the

@@ -395,7 +395,7 @@ fn client_pids() -> Vec<u32> {
 }
 
 /// The Browser view's area: everything right of the sidebar below the
-/// strip (the pane surface, the info dock and the band), so a toggle never
+/// strip, or above the session header (the pane surface, the info dock and the band), so a toggle never
 /// resizes the panes. Fork (session header): in the tabs layout the info
 /// dock is the dock slot and stays beside the Browser view.
 pub(super) fn full_area(layout: &ClientShellLayout) -> Rect {

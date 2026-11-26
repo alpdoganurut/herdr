@@ -362,7 +362,7 @@ fn fork_smoke_browser_view_covers_the_pane_area_without_resizing_the_panes() {
     let frame = recompose(&mut state).expect("frame");
     assert!(state.hits.panes.is_empty());
     assert!(frame.cursor.is_none());
-    let strip = row_text(&frame, layout.view_strip.y);
+    let strip = row_text(&frame, layout.session_header.y);
     assert!(
         strip.contains("Terminal") && strip.contains("Browser"),
         "{strip}"

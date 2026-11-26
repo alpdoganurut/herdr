@@ -10,7 +10,8 @@
 //! tick returns at once, nothing is polled, composed or drawn.
 //!
 //! The text is rebuilt once a second in the tick; compose only copies it into
-//! the bottom-right corner. Surface patches landing under the readout fall
+//! the bottom-right corner (fork, session header: above the `tabs` layout's
+//! header row, the screen's last, so it never covers `◨` or `≡`). Surface patches landing under the readout fall
 //! back to a full compose (see [`perf_readout_blocks_patch`]) so it is not
 //! overwritten.
 
@@ -223,12 +224,15 @@ impl ClientShellState {
         )
     }
 
-    /// Writes the readout straight into the bottom-right cells of `frame`;
-    /// returns where (None while off or before the first second). No buffer
-    /// round trip and no formatting: the text is built in the tick.
+    /// Writes the readout straight into the bottom-right cells of `frame`,
+    /// on the row above `bottom` (the frame's height, or the session
+    /// header's row); returns where (None while off or before the first
+    /// second). No buffer round trip and no formatting: the text is built in
+    /// the tick.
     pub(super) fn paint_perf_readout(
         &mut self,
         frame: &mut crate::protocol::FrameData,
+        bottom: u16,
     ) -> Option<Rect> {
         self.perf_readout.drawn = None;
         let state = &self.perf_readout;
@@ -236,11 +240,12 @@ impl ClientShellState {
         if !self.config.perf_readout
             || state.padded.is_empty()
             || frame.width < width
-            || frame.height == 0
+            || bottom == 0
+            || bottom > frame.height
         {
             return None;
         }
-        let rect = Rect::new(frame.width - width, frame.height - 1, width, 1);
+        let rect = Rect::new(frame.width - width, bottom - 1, width, 1);
         let palette = &self.config.palette;
         let mut styled = ratatui::buffer::Cell::default();
         styled.set_style(Style::default().fg(palette.overlay0).bg(palette.panel_bg));

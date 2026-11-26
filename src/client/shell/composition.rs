@@ -813,7 +813,7 @@ impl ClientShellState {
             &self.hits.browser_dock,
             &self.hits.session_header,
         );
-        // Fork (session header): top-anchored toasts start below the header.
+        // Fork (session header): bottom-anchored toasts end above the header.
         let toast_area = super::session_header::toast_area(&layout, cols, rows);
         // The config diagnostic and the endpoint status banner keep clear of
         // the browser (beside the dock, or in Browser view on the header's
@@ -978,7 +978,7 @@ impl ClientShellState {
             occlusion.cover(self.hits.notification_toast);
             frame.replace_from_ratatui_buffer_preserving_effects(&composed, cursor);
         }
-        // Fork: agent cards (`agent_cards.rs`), under the tab bar at the top
+        // Fork: agent cards (`agent_cards.rs`), at the pane area's top
         // right, below a top-right toast stack. No cards: no work.
         self.hits.agent_cards.clear();
         if self.has_agent_cards() {
@@ -1274,10 +1274,10 @@ impl ClientShellState {
             self.hits.pane_splits.clear();
             self.hits.popup = None;
         }
-        // Fork (perf watch): the `[ui] perf_readout` corner, last on top.
-        // Off: no work.
+        // Fork (perf watch): the `[ui] perf_readout` corner, last on top
+        // (above the session header, like the bottom toasts). Off: no work.
         if self.config.perf_readout {
-            if let Some(rect) = self.paint_perf_readout(&mut frame) {
+            if let Some(rect) = self.paint_perf_readout(&mut frame, toast_area.bottom()) {
                 occlusion.cover(rect);
             }
         } else {

@@ -112,8 +112,8 @@ pub(super) struct ClientShellLayout {
     /// Fork (companion launcher): the focused tab's [Terminal | Browser]
     /// strip, the pane area's top row (empty when not shown).
     pub view_strip: Rect,
-    /// Fork (session header): the `tabs` layout's one-row header on top of
-    /// the session area (empty in the spaces layout, on mobile, or when the
+    /// Fork (session header): the `tabs` layout's one-row header at the
+    /// bottom of the session area, the screen's last row (empty in the spaces layout, on mobile, or when the
     /// area is too short).
     pub session_header: Rect,
 }

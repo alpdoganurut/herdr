@@ -570,14 +570,14 @@ impl ClientShellConfig {
         };
 
         // Fork (session header): the tabs layout's header takes the pane
-        // area's top row, in place of the view strip (whose controls it
-        // carries); the spaces layout keeps the strip.
+        // area's bottom row (the screen's last row: the tabs layout has no
+        // tab bar), in place of the view strip (whose controls it carries);
+        // the spaces layout keeps the strip. The docks and the band start on
+        // the pane area's top row and end above the header.
         let tabs_layout = self.sidebar_layout == crate::config::SidebarLayoutConfig::Tabs;
         let session_header = if tabs_layout && pane_surface.height > 2 {
-            let header = Rect::new(pane_surface.x, pane_surface.y, pane_surface.width, 1);
-            pane_surface.y += 1;
             pane_surface.height -= 1;
-            header
+            Rect::new(pane_surface.x, pane_surface.bottom(), pane_surface.width, 1)
         } else {
             Rect::default()
         };

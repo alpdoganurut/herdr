@@ -130,15 +130,16 @@ fn per_event_position_stacks_in_its_own_corner() {
     deliver(&mut state, custom("bottom"));
     deliver(&mut state, top);
     state.compose(100, 40).expect("frame");
-    // Top cards start below the tabs layout's session header (row 0).
+    // Top cards keep row 0; bottom ones end above the tabs layout's
+    // session header (the last row).
     assert_eq!(
         state.hits.notification_toasts[0],
-        (Rect::new(0, 1, 9, 3), Some(1))
+        (Rect::new(0, 0, 9, 3), Some(1))
     );
     // The top-left card does not push the bottom-right stack.
     assert_eq!(
         state.hits.notification_toasts[1],
-        (Rect::new(88, 37, 12, 3), Some(0))
+        (Rect::new(88, 36, 12, 3), Some(0))
     );
 }
 
@@ -157,16 +158,16 @@ fn cards_beyond_max_stack_fold_into_one_more_line() {
         hits.iter().map(|(_, index)| *index).collect::<Vec<_>>(),
         [Some(3), Some(2), Some(1), None]
     );
-    assert_eq!(hits[3].0, Rect::new(91, 27, 9, 1));
+    assert_eq!(hits[3].0, Rect::new(91, 26, 9, 1));
     let rows = frame_rows(&frame);
-    assert!(rows[27].contains("+1 more"), "{}", rows[27]);
+    assert!(rows[26].contains("+1 more"), "{}", rows[26]);
     assert!(!rows.iter().any(|row| row.contains("first")));
 
     // Clicks on the fold line are swallowed and change nothing.
     let outcome = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
         column: 95,
-        row: 27,
+        row: 26,
         modifiers: KeyModifiers::empty(),
     })]);
     assert!(outcome.actions.is_empty());
@@ -189,7 +190,8 @@ fn stack_height_is_capped_at_half_the_frame() {
         [Some(3), Some(2), None]
     );
     assert!(hits.iter().all(|(rect, _)| rect.y >= 10));
-    assert!(frame_rows(&frame)[11].contains("+2 more"));
+    // Fork (session header): the stack ends above the header (row 19).
+    assert!(frame_rows(&frame)[10].contains("+2 more"));
 }
 
 #[test]
@@ -550,9 +552,10 @@ fn toasts_keep_the_whole_frame_while_the_dock_is_closed() {
     deliver(&mut state, custom("bottom"));
     state.compose(100, 40).expect("frame");
     assert!(state.info_dock_area().is_empty());
+    // the frame above the session header
     assert_eq!(
         state.hits.notification_toasts,
-        vec![(Rect::new(88, 37, 12, 3), Some(0))]
+        vec![(Rect::new(88, 36, 12, 3), Some(0))]
     );
 }
 
@@ -577,8 +580,8 @@ fn right_anchored_sticky_cards_and_the_fold_line_sit_left_of_the_open_dock() {
     for (rect, _) in hits {
         assert_eq!(rect.right(), dock.x - 1, "{rect:?} beside {dock:?}");
     }
-    assert_eq!(hits[0].0.y, 1);
-    assert_eq!(hits[1].0.bottom(), 40);
+    assert_eq!(hits[0].0.y, 0);
+    assert_eq!(hits[1].0.bottom(), 39, "above the session header");
     let rows = frame_rows(&frame);
     assert!(rows[usize::from(hits[2].0.y)].contains("+2 more"));
 }
@@ -594,7 +597,7 @@ fn a_timed_top_right_toast_sits_left_of_the_open_dock() {
     let rect = state.hits.notification_toast;
     assert!(!rect.is_empty());
     assert_eq!(rect.right(), dock.x - 1);
-    assert_eq!(rect.y, 1);
+    assert_eq!(rect.y, 0);
 }
 
 #[test]
@@ -607,7 +610,7 @@ fn left_anchored_cards_ignore_the_open_dock() {
     state.compose(120, 40).expect("frame");
     assert_eq!(
         state.hits.notification_toasts,
-        vec![(Rect::new(0, 1, 9, 3), Some(0))]
+        vec![(Rect::new(0, 0, 9, 3), Some(0))]
     );
 }
 
@@ -662,16 +665,16 @@ mod fork_smoke {
         assert_eq!(
             state.hits.notification_toasts,
             vec![
-                (Rect::new(89, 37, 11, 3), Some(2)),
-                (Rect::new(88, 33, 12, 3), Some(1)),
-                (Rect::new(89, 29, 11, 3), Some(0)),
+                (Rect::new(89, 36, 11, 3), Some(2)),
+                (Rect::new(88, 32, 12, 3), Some(1)),
+                (Rect::new(89, 28, 11, 3), Some(0)),
             ]
         );
         let rows = frame_rows(&frame);
-        assert!(rows[38].contains("third"));
-        assert!(rows[34].contains("second"));
-        assert!(rows[30].contains("first"));
-        assert!(!rows[36].contains('─') && !rows[32].contains('─'));
+        assert!(rows[37].contains("third"));
+        assert!(rows[33].contains("second"));
+        assert!(rows[29].contains("first"));
+        assert!(!rows[35].contains('─') && !rows[31].contains('─'));
 
         // Sticky cards have no deadline.
         let (_, repaint) = state
@@ -702,27 +705,28 @@ mod fork_smoke {
         (state, frame_rows(&frame))
     }
 
-    // Fork (session header): top-anchored toasts start below the header row,
-    // so the header stays readable; bottom-anchored ones keep the bottom.
+    // Fork (session header): the header is the last row, so bottom-anchored
+    // toasts end above it and the header stays readable; top-anchored ones
+    // keep row 0.
     #[test]
-    fn fork_smoke_top_toasts_start_below_the_session_header() {
+    fn fork_smoke_bottom_toasts_end_above_the_session_header() {
         let (state, rows) = corner_cards(&Config::default(), 100, 40);
         let header = state.layout(100, 40).session_header;
         assert!(!header.is_empty(), "the tabs layout draws the header");
+        assert_eq!(header.y, 39, "the header is the last row");
         let left = card_hit(&state, "lefty");
         let right = card_hit(&state, "righty");
-        for rect in [left, right] {
+        let bottom = card_hit(&state, "bottom");
+        for rect in [left, right, bottom] {
             assert!(!rect.intersects(header), "{rect:?} clear of {header:?}");
-            assert_eq!(rect.y, header.bottom());
         }
+        assert_eq!((left.y, right.y), (0, 0));
         assert_eq!(left.x, 0);
         assert_eq!(right.right(), 100);
-        assert_eq!(card_hit(&state, "bottom").bottom(), 40);
+        assert_eq!(bottom.bottom(), header.y);
+        assert_eq!(bottom.right(), 100);
         let header_row = &rows[usize::from(header.y)];
-        assert!(
-            !header_row.contains("lefty") && !header_row.contains("righty"),
-            "{header_row}"
-        );
+        assert!(!header_row.contains("bottom"), "{header_row}");
         assert!(rows[usize::from(left.y) + 1].contains("lefty"));
         assert!(rows[usize::from(right.y) + 1].contains("righty"));
     }

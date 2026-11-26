@@ -1,5 +1,5 @@
-//! The session header (fork, header design): the tabs layout's one row on
-//! top of the session area. Goldens of the row at several widths
+//! The session header (fork, header design): the tabs layout's one row at
+//! the bottom of the session area (the screen's last row). Goldens of the row at several widths
 //! (`golden/session_header.txt`, rewritten by `HERDR_UPDATE_GOLDEN=1`), its
 //! facts' rules, its controls' hits and actions, and the one dock slot the
 //! notes and browser docks share.
@@ -450,7 +450,7 @@ fn context_shows_from_75_percent_and_the_counts_only_when_not_zero() {
     assert_eq!(view.subagents, 2);
     assert_eq!(view.mail.map(|(text, _)| text), Some("✉3"));
     let frame = state.compose(COLS, ROWS).expect("frame").frame;
-    let row = super::tab_sidebar_golden::sidebar_lines(&frame, COLS, 0, 1).remove(0);
+    let row = super::tab_sidebar_golden::sidebar_lines(&frame, COLS, ROWS - 1, ROWS).remove(0);
     assert!(row.contains("● restart screen  95% ⚭2 ✉3"), "{row}");
     // no agent: the shell's dot, no facts
     let mut snapshot = (*state.snapshot.clone().expect("snapshot")).clone();
@@ -547,13 +547,37 @@ fn press(
 }
 
 #[test]
-fn fork_smoke_the_header_sits_on_top_and_its_controls_switch_views_and_docks() {
+fn fork_smoke_the_header_sits_at_the_bottom_and_its_controls_switch_views_and_docks() {
     let mut state = browser_state();
     let layout = state.layout(COLS, ROWS);
-    assert_eq!(layout.session_header.y, 0);
-    assert_eq!(layout.session_header.x, layout.sidebar.right());
-    assert_eq!(layout.pane_surface.y, 1);
+    let header = layout.session_header;
+    assert_eq!(
+        header,
+        Rect::new(layout.sidebar.right(), ROWS - 1, COLS - header.x, 1)
+    );
+    // the panes get the same rows, one row higher, and end above the header
+    assert_eq!(layout.pane_surface.y, 0);
+    assert_eq!(layout.pane_surface.height, ROWS - 1);
+    assert_eq!(layout.pane_surface.bottom(), header.y);
+    let frame = state.compose(COLS, ROWS).expect("frame").frame;
+    let last = frame_rows(&frame).swap_remove(usize::from(ROWS - 1));
+    assert!(
+        last.contains("Terminal")
+            && last.contains("Browser")
+            && last.contains("◨")
+            && last.contains("≡"),
+        "the header on the last row: {last}"
+    );
     let hits = state.hits.session_header;
+    assert_eq!(hits.area, header);
+    for rect in [
+        hits.terminal,
+        hits.browser,
+        hits.browser_dock,
+        hits.notes_dock,
+    ] {
+        assert_eq!(rect.y, ROWS - 1, "{rect:?} on the last row");
+    }
     assert!(!hits.terminal.is_empty() && !hits.browser.is_empty());
     assert!(!hits.browser_dock.is_empty() && !hits.notes_dock.is_empty());
     assert_eq!(hits.notes_dock.right(), COLS, "≡ at the far right");
@@ -586,8 +610,8 @@ fn fork_smoke_the_header_sits_on_top_and_its_controls_switch_views_and_docks() {
     assert!(!state.browser_view_open_for("tab_1"));
     assert!(state.browser_dock_open_for("tab_1"));
     // a press on the header never reaches a pane
-    let x = state.hits.session_header.area.x + 1;
-    let outcome = click(&mut state, Rect::new(x, 0, 1, 1));
+    let area = state.hits.session_header.area;
+    let outcome = click(&mut state, Rect::new(area.x + 1, area.y, 1, 1));
     assert!(outcome.requests.is_empty(), "{:?}", outcome.requests);
 }
 
@@ -1192,7 +1216,7 @@ fn the_header_names_the_focused_tabs_group_and_its_team_purpose() {
     let view = state.session_header_view().expect("header");
     assert_eq!(view.group, Some("Search It"));
     let frame = state.compose(COLS, ROWS).expect("frame").frame;
-    let row = super::tab_sidebar_golden::sidebar_lines(&frame, COLS, 0, 1).remove(0);
+    let row = super::tab_sidebar_golden::sidebar_lines(&frame, COLS, ROWS - 1, ROWS).remove(0);
     assert!(row.contains("Search It · restart screen"), "{row}");
 }
 

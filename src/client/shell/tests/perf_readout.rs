@@ -47,9 +47,16 @@ fn perf_polls(outcome: &ClientShellInput) -> Vec<String> {
         .collect()
 }
 
+/// The readout's row: the frame's last, or (fork, session header) the one
+/// above the `tabs` layout's header row.
 fn bottom_row(state: &mut ClientShellState) -> String {
+    let header = state.layout(COLS, ROWS).session_header;
+    let y = if header.is_empty() { ROWS } else { header.y } - 1;
+    frame_row(state, y)
+}
+
+fn frame_row(state: &mut ClientShellState, y: u16) -> String {
     let frame = state.compose(COLS, ROWS).expect("composed frame").frame;
-    let y = ROWS - 1;
     (0..COLS)
         .map(|x| frame.cells[(y * frame.width + x) as usize].symbol.as_str())
         .collect::<String>()
@@ -130,6 +137,14 @@ fn fork_smoke_perf_readout_shows_fps_and_polls_at_most_once_a_second() {
     let row = bottom_row(&mut state);
     assert!(row.trim_end().ends_with("59 fps · 4.1 ms"), "{row:?}");
     assert!(state.perf_readout.drawn.is_some());
+    // Fork (session header): the header keeps the last row and its `≡`.
+    let header = state.layout(COLS, ROWS).session_header;
+    assert_eq!(header.y, ROWS - 1, "the tabs layout's header");
+    let last = frame_row(&mut state, ROWS - 1);
+    assert!(
+        !last.contains("fps") && last.trim_end().ends_with('≡'),
+        "{last:?}"
+    );
 
     // The next answer of the same server run adds its render time (20 renders
     // in 50 ms) and a stall.
