@@ -233,7 +233,6 @@ fn run_client_with_mode(
         endpoint_keybindings,
         remote_image_paste_key,
         shell_config,
-        browser_remote_machines: loaded_config.config.browser.remote_machines,
     };
 
     crate::logging::startup("client");
@@ -507,13 +506,8 @@ async fn run_client_loop(
     // (`browser_link/links.rs`).
     #[cfg(unix)]
     let mut browser_links = browser_link::links::ShellLinks::new(
-        config.browser_remote_machines
-            && browser_link::links::STARTS_HELPERS
-            && state.shell.is_some()
-            && !is_remote_client,
+        browser_link::links::STARTS_HELPERS && state.shell.is_some() && !is_remote_client,
     );
-    #[cfg(not(unix))]
-    let _ = config.browser_remote_machines;
     if let Some(shell) = state.shell.as_mut() {
         shell.set_host_reports_key_releases(config.host_escape_disambiguation_active);
         shell.set_host_erase_byte(crate::platform::terminal_erase_byte());

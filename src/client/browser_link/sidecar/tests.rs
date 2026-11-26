@@ -206,7 +206,7 @@ fn a_gated_op_goes_out_under_the_companion_profile_with_the_helpers_id() {
     });
     let (sidecar, _) = rig(&fake, options());
     sidecar.attach_companion(9333, "n").unwrap();
-    let mut gate = Gate::new("mbp", Duration::from_secs(1));
+    let mut gate = Gate::new("mac", Duration::from_secs(1));
     let echo = gate.ping(Duration::from_secs(1));
     let op = LinkOp {
         id: 77,

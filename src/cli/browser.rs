@@ -1883,13 +1883,13 @@ mod tests {
         });
         status.get.link = Some(crate::api::schema::BrowserLinkStatus {
             state: "linked".into(),
-            label: "mbp".into(),
+            label: "mac".into(),
             herdr: "0.9.5".into(),
             since_unix: 40,
         });
         let text = format_status(&status, 100);
         assert!(
-            text.contains("browser on mbp · linked for 1m · herdr 0.9.5\n"),
+            text.contains("browser on mac · linked for 1m · herdr 0.9.5\n"),
             "{text}"
         );
         assert!(!text.contains("companion running"), "{text}");
@@ -1902,7 +1902,7 @@ mod tests {
             "{text}"
         );
         assert!(
-            text.contains("browser link: none (last: mbp, 1 min ago)"),
+            text.contains("browser link: none (last: mac, 1 min ago)"),
             "{text}"
         );
     }

@@ -181,7 +181,7 @@ impl Rig {
             options: CompanionOptions {
                 companion_home,
                 key: KEY.into(),
-                label: "buildbox".into(),
+                label: "devhost1".into(),
                 api_socket: root.join(format!("{KEY}.api")),
             },
             binder: Arc::new(Binder {
@@ -309,7 +309,7 @@ fn a_lazy_start_writes_proxy_json_first_and_runs_in_its_own_home_and_profile() {
         .clone()
         .expect("proxy.json at the spawn");
     assert_eq!(seen.port, FIRST_PORT);
-    assert_eq!(seen.label.as_deref(), Some("buildbox"));
+    assert_eq!(seen.label.as_deref(), Some("devhost1"));
     assert_eq!(seen.secret.len(), 64);
     assert!(seen.secret.bytes().all(|b| b.is_ascii_hexdigit()));
     assert!(
@@ -376,8 +376,8 @@ fn five_crashes_in_five_minutes_and_it_gives_up() {
     };
     assert!(why.contains("crashed 5 times"), "{why}");
     assert_eq!(
-        err.link_error("mbp").message,
-        format!("the browser on mbp did not start ({why}); nothing was sent")
+        err.link_error("mac").message,
+        format!("the browser on mac did not start ({why}); nothing was sent")
     );
     assert_eq!(
         rig.procs.spawns(),
@@ -590,10 +590,10 @@ fn an_app_without_remote_mode_or_no_install_is_never_launched() {
     let err = companion.ensure(Duration::from_secs(1)).unwrap_err();
     assert_eq!(err, EnsureError::NotInstalled);
     assert_eq!(
-        err.link_error("mbp"),
+        err.link_error("mac"),
         LinkError::new(
             "host_unavailable",
-            "the browser is not installed on mbp; ask the user to run \"herdr browser setup --companion\" there"
+            "the browser is not installed on mac; ask the user to run \"herdr browser setup --companion\" there"
         )
     );
     assert_eq!(companion.info().state, "not_installed");
@@ -710,7 +710,7 @@ mod e2e {
             let proxy = Proxy::start(
                 port,
                 ProxyOptions {
-                    label: "buildbox".into(),
+                    label: "devhost1".into(),
                     instance: crate::browser::session::random_hex(16),
                     secret: secret.to_string(),
                     remote_only: true,
@@ -986,7 +986,7 @@ mod e2e {
         let options = CompanionOptions {
             companion_home: companion_home.clone(),
             key: KEY.into(),
-            label: "buildbox".into(),
+            label: "devhost1".into(),
             api_socket: root.join("k.api"),
         };
         let mut run = Run {
@@ -1015,7 +1015,7 @@ mod e2e {
         let grant = first.grant().unwrap();
         let file = read_proxy_file(first.home()).expect("proxy.json");
         assert_eq!((file.port, &file.secret), (grant.port, &grant.secret));
-        assert_eq!(file.label.as_deref(), Some("buildbox"));
+        assert_eq!(file.label.as_deref(), Some("devhost1"));
         assert!(first_sidecar.attached());
         run.pids.extend(first_sidecar.pid());
         // remote mode: no path of this Mac is shown, pictures come back in the answer

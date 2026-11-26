@@ -461,7 +461,7 @@ mod tests {
 
     /// `expect` of the fixture: what goes on, the helper, or the refusal.
     fn outcome(op: LinkOp, policy: Policy) -> Value {
-        let gate = Gate::new("laptop1", Duration::ZERO);
+        let gate = Gate::new("alp-mac", Duration::ZERO);
         let verdict = gate.op(
             LinkOp {
                 echo: 0,
@@ -472,7 +472,7 @@ mod tests {
         );
         let checked = match check(op.clone(), policy) {
             Err(refusal) => {
-                assert_eq!(verdict, Verdict::Refuse(refusal.error("laptop1")));
+                assert_eq!(verdict, Verdict::Refuse(refusal.error("alp-mac")));
                 return json!({ "refuse": refusal });
             }
             Ok(Passed::Helper(helper)) => {
@@ -775,13 +775,13 @@ mod tests {
             assert_eq!(err.code, "host_link_lost");
             assert_eq!(
                 err.message,
-                "the connection to the browser on laptop1 dropped and is reconnecting; nothing was sent; call again in a few seconds"
+                "the connection to the browser on alp-mac dropped and is reconnecting; nothing was sent; call again in a few seconds"
             );
             assert_eq!(
                 verdict,
                 Verdict::Refuse(LinkError::new(
                     "host_link_lost",
-                    "the connection to laptop1 dropped while tabs ran; it changed nothing, call it again"
+                    "the connection to alp-mac dropped while tabs ran; it changed nothing, call it again"
                 ))
             );
         }
@@ -790,7 +790,7 @@ mod tests {
 
     #[test]
     fn an_op_of_an_old_ping_does_not_run() {
-        let mut gate = Gate::new("laptop1", ms(1_000));
+        let mut gate = Gate::new("alp-mac", ms(1_000));
         assert_eq!(gate.ping(ms(2_000)), 1);
         assert_eq!(gate.ping(ms(5_000)), 2);
         for (echo, sent) in [(0, 1_000), (1, 2_000), (2, 5_000)] {
@@ -810,21 +810,21 @@ mod tests {
 
     #[test]
     fn an_echo_of_no_ping_does_not_run() {
-        let mut gate = Gate::new("laptop1", ms(0));
+        let mut gate = Gate::new("alp-mac", ms(0));
         gate.ping(ms(10));
         for echo in [2, 3, u64::MAX] {
             assert!(!runs(&gate, echo, 20), "{echo}");
         }
         assert!(runs(&gate, 1, 20));
         // a new link knows none of the old one's
-        assert!(!runs(&Gate::new("laptop1", ms(15)), 1, 20));
+        assert!(!runs(&Gate::new("alp-mac", ms(15)), 1, 20));
         // a clock that ran backwards proves nothing
         assert!(!runs(&gate, 1, 9));
     }
 
     #[test]
     fn the_pings_are_not_kept_longer_than_they_count() {
-        let mut gate = Gate::new("laptop1", ms(0));
+        let mut gate = Gate::new("alp-mac", ms(0));
         for n in 1..=10_000u64 {
             assert_eq!(gate.ping(ms(n * 3_000)), n);
         }
@@ -841,7 +841,7 @@ mod tests {
 
     #[test]
     fn a_stale_op_is_only_that() {
-        let gate = Gate::new("laptop1", ms(0));
+        let gate = Gate::new("alp-mac", ms(0));
         let stale = |op: &str| match gate.op(page_op(op, json!({"x": 1})), DEFAULT, ms(15_001)) {
             Verdict::Refuse(err) => err,
             other => panic!("{op}: {other:?}"),
@@ -849,12 +849,12 @@ mod tests {
         for rule in OPS {
             let err = stale(rule.op);
             assert_eq!(err.code, "host_link_lost");
-            assert_eq!(err.message, text::link_lost("laptop1", rule.op));
+            assert_eq!(err.message, text::link_lost("alp-mac", rule.op));
             assert_eq!(err.target, None);
         }
         assert_eq!(
             stale("open").message,
-            "the connection to laptop1 dropped while open ran: it may or may not have happened. Check with browser_read or browser_snapshot before repeating it."
+            "the connection to alp-mac dropped while open ran: it may or may not have happened. Check with browser_read or browser_snapshot before repeating it."
         );
         let unknown = stale(&format!("a\u{1b}{}", "b".repeat(1 << 20)));
         assert!(unknown.message.len() < 400 && !unknown.message.contains('\u{1b}'));
@@ -865,7 +865,7 @@ mod tests {
 
     #[test]
     fn the_refusal_texts() {
-        let gate = Gate::new("laptop1", ms(0));
+        let gate = Gate::new("alp-mac", ms(0));
         let off = Policy {
             allow_eval: false,
             ..DEFAULT
@@ -874,37 +874,37 @@ mod tests {
             (
                 link_op("set_input_files", None, Value::Null),
                 DEFAULT,
-                "laptop1 refuses set_input_files for remote machines (unknown operation)",
+                "alp-mac refuses set_input_files for remote machines (unknown operation)",
             ),
             (
                 link_op("show", None, json!({"file": "/etc/hosts"})),
                 DEFAULT,
-                "laptop1 refuses show for remote machines (only herdr+ on that machine may do it)",
+                "alp-mac refuses show for remote machines (only herdr+ on that machine may do it)",
             ),
             (
                 link_op("read", None, Value::Null),
                 DEFAULT,
-                "laptop1 refuses read target for remote machines (missing, or not what it must be)",
+                "alp-mac refuses read target for remote machines (missing, or not what it must be)",
             ),
             (
                 link_op("release", None, json!({"keys": vec!["w1:p1"; 65]})),
                 DEFAULT,
-                "laptop1 refuses release keys for remote machines (too large)",
+                "alp-mac refuses release keys for remote machines (too large)",
             ),
             (
                 link_op("open", None, json!({"url": "file:///etc/hosts"})),
                 DEFAULT,
-                "laptop1 refuses open url for remote machines (only http, https and about:blank pages)",
+                "alp-mac refuses open url for remote machines (only http, https and about:blank pages)",
             ),
             (
                 page_op("act", json!({"kind": "press", "key": "Meta+v"})),
                 DEFAULT,
-                "laptop1 refuses the key Meta+v for remote machines (not one of the allowed keys)",
+                "alp-mac refuses the key Meta+v for remote machines (not one of the allowed keys)",
             ),
             (
                 page_op("eval", json!({"expr": "1"})),
                 off,
-                "laptop1 refuses eval for remote machines ([browser] allow_eval = false there)",
+                "alp-mac refuses eval for remote machines ([browser] allow_eval = false there)",
             ),
         ] {
             assert_eq!(

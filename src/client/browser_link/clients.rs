@@ -402,7 +402,7 @@ mod tests {
             machine: MachineFacts {
                 id: "0".repeat(32),
                 label: label.into(),
-                target: "buildbox".into(),
+                target: "devhost1".into(),
                 session: "default".into(),
             },
             cycle_keys: vec!["ctrl+shift+b".into()],
@@ -434,9 +434,9 @@ mod tests {
         stream
             .set_read_timeout(Some(Duration::from_secs(5)))
             .unwrap();
-        say(&mut stream, &hello("buildbox"));
+        say(&mut stream, &hello("devhost1"));
         let wait = || saw.recv_timeout(Duration::from_secs(5)).unwrap();
-        assert_eq!(wait(), Seen::Hello(1, "buildbox".into()));
+        assert_eq!(wait(), Seen::Hello(1, "devhost1".into()));
         assert_eq!(clients.count(), 1);
         assert!(clients.idle_since().is_none());
         let spec = BrowserPlacementSpec {
@@ -488,7 +488,7 @@ mod tests {
 
         let mut old = UnixStream::connect(&path).unwrap();
         old.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-        let mut hello = hello("buildbox");
+        let mut hello = hello("devhost1");
         if let ClientMessage::Hello { proto, .. } = &mut hello {
             *proto = 2;
         }

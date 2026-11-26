@@ -67,6 +67,11 @@ pub(crate) struct ClientShellConfig {
     pub(super) daily_reminder_minutes: u32,
     /// `[browser] active_glyph_secs`: the `◎` marker window on tab rows.
     pub(super) browser_active_glyph_secs: u64,
+    /// Fork (remote browser): `[browser] remote_machines` and `egress =
+    /// "remote"`, this Mac's (live: the client loop reads the first per
+    /// poll; a machine's helper reads `egress` when it starts).
+    pub(super) browser_remote_machines: bool,
+    pub(super) browser_egress_remote: bool,
     pub(super) copy_on_select: bool,
     pub(super) clipboard_toast_enabled: bool,
     pub(super) clipboard_toast_position: crate::config::ToastClipboardPosition,

@@ -1623,7 +1623,7 @@ mod tests {
         let mut live = BrowserGetInfo {
             link: Some(crate::api::schema::BrowserLinkStatus {
                 state: "linked".into(),
-                label: "mbp".into(),
+                label: "mac".into(),
                 herdr: "0.9.5".into(),
                 since_unix: 1,
             }),
@@ -1632,7 +1632,7 @@ mod tests {
         let linked = checks(&config, &env, Some(&live));
         let check = by_id(&linked, "companion_app");
         assert!(check.ok && !check.fixable);
-        assert_eq!(check.detail, "not needed here: the browser runs on mbp");
+        assert_eq!(check.detail, "not needed here: the browser runs on mac");
         if let Some(link) = live.link.as_mut() {
             link.state = "gone".into();
         }

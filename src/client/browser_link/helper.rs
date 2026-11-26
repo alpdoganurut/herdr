@@ -1732,7 +1732,17 @@ impl Helper {
     // Clients
 
     fn view(&self) -> LinkView {
-        let link = self.state().link.clone();
+        let (link, open) = {
+            let state = self.state();
+            (state.link.clone(), state.session.is_some())
+        };
+        // the clients hear about the link to the machine: open is linked,
+        // whether or not a companion runs here yet (the lease's own state
+        // waits for B's host_ok)
+        let link = match link {
+            LinkStatus::Connecting | LinkStatus::Reconnecting if open => LinkStatus::Linked,
+            link => link,
+        };
         let (link, owner, text) = match link {
             LinkStatus::Connecting => ("connecting", None, None),
             LinkStatus::Linked => ("linked", None, None),

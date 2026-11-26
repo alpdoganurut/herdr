@@ -42,7 +42,7 @@ pub(crate) use browser_dock::PLACEMENT_REQUEST_PREFIX as BROWSER_PLACEMENT_REQUE
 #[cfg(all(test, unix))]
 pub(crate) use browser_link::LinkPlacement;
 #[cfg(unix)]
-pub(crate) use browser_link::{LinkIntent, LinkedBrowser};
+pub(crate) use browser_link::{LinkIntent, LinkedBrowser, REMOTE_BROWSER_HERE};
 mod browser_overlay;
 mod global_menu;
 mod graphics;

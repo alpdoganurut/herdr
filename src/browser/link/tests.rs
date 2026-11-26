@@ -11,7 +11,7 @@ pub(crate) fn facts() -> OpenFacts {
         enabled: true,
         supported: true,
         local_host: false,
-        machine: "buildbox".into(),
+        machine: "devhost1".into(),
         now: "14:02".into(),
         ..OpenFacts::default()
     }
@@ -29,7 +29,7 @@ pub(crate) fn mac_params(host_id: &str, label: &str) -> BrowserLinkOpenParams {
 
 fn link() -> Arc<Link> {
     LinkSlot::default()
-        .open(&mac_params("mac-a", "mbp"), &facts())
+        .open(&mac_params("mac-a", "mac"), &facts())
         .unwrap()
 }
 
@@ -120,8 +120,8 @@ fn lost() -> LinkEnd {
 #[test]
 fn the_same_mac_replaces_its_link_and_the_old_connection_takes_nothing_with_it() {
     let slot = LinkSlot::default();
-    let first = slot.open(&mac_params("mac-a", "mbp"), &facts()).unwrap();
-    let second = slot.open(&mac_params("mac-a", "mbp"), &facts()).unwrap();
+    let first = slot.open(&mac_params("mac-a", "mac"), &facts()).unwrap();
+    let second = slot.open(&mac_params("mac-a", "mac"), &facts()).unwrap();
     assert_eq!((first.epoch, second.epoch), (1, 2));
     assert_ne!(first.link_id, second.link_id);
     assert_eq!(first.ended(), Some(LinkEnd::Replaced));
@@ -147,7 +147,7 @@ fn the_same_mac_replaces_its_link_and_the_old_connection_takes_nothing_with_it()
 #[test]
 fn another_mac_is_told_where_the_browser_is() {
     let slot = LinkSlot::default();
-    let live = slot.open(&mac_params("mac-a", "mbp"), &facts()).unwrap();
+    let live = slot.open(&mac_params("mac-a", "mac"), &facts()).unwrap();
     let later = OpenFacts {
         now: "15:30".into(),
         ..facts()
@@ -158,7 +158,7 @@ fn another_mac_is_told_where_the_browser_is() {
     assert_eq!(err.code, "link_in_use");
     assert_eq!(
         err.message,
-        "the browser of buildbox is on mbp (since 14:02); quit herdr+ there"
+        "the browser of devhost1 is on mac (since 14:02); quit herdr+ there"
     );
     assert_eq!(live.ended(), None);
 }
@@ -166,7 +166,7 @@ fn another_mac_is_told_where_the_browser_is() {
 #[test]
 fn what_refuses_an_open_changes_nothing() {
     let slot = LinkSlot::default();
-    let good = mac_params("mac-a", "mbp");
+    let good = mac_params("mac-a", "mac");
     let refused = |params: &BrowserLinkOpenParams, facts: OpenFacts| {
         slot.open(params, &facts).unwrap_err().code
     };

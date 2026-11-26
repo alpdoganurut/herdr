@@ -882,8 +882,8 @@ const scenarios = {
     const pop = await waitFor(async () => { const x = (await call('popups'))[0]; return x && /^devhost1 — idp\.test — /.test(x.title) && x; });
     check('a popup\'s title: the machine, its host, its title', pop, pop || (await call('popups')));
     const pp = await waitFor(() => r.pages().find((x) => x.url() === 'https://idp.test/'));
-    await pp.evaluate(() => (document.title = '\u202eherdr+ companion — mbp'));
-    check('... whatever the page calls itself', await waitFor(async () => (await call('popups'))[0].title === 'devhost1 — idp.test — herdr+ companion — mbp'), (await call('popups'))[0].title);
+    await pp.evaluate(() => (document.title = '\u202eherdr+ companion — mac'));
+    check('... whatever the page calls itself', await waitFor(async () => (await call('popups'))[0].title === 'devhost1 — idp.test — herdr+ companion — mac'), (await call('popups'))[0].title);
     await pp.evaluate(() => window.close()).catch(() => {});
 
     for (const [type, js] of [['alert', () => alert('hello')], ['confirm', () => confirm('hello')], ['prompt', () => prompt('hello', 'd')]]) {

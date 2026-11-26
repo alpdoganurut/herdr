@@ -149,8 +149,8 @@ pub(crate) fn link_serves(link: &crate::api::schema::BrowserLinkStatus) -> bool 
     matches!(link.state.as_str(), "linked" | "reconnecting")
 }
 
-/// Fork (remote browser): `browser on mbp · linked for 2h 3m · herdr 0.9.5`,
-/// `browser on mbp · reconnecting for 5s`, `browser link: none (last: mbp,
+/// Fork (remote browser): `browser on mac · linked for 2h 3m · herdr 0.9.5`,
+/// `browser on mac · reconnecting for 5s`, `browser link: none (last: mac,
 /// 12 min ago)`.
 pub(crate) fn link_line(link: &crate::api::schema::BrowserLinkStatus, now: u64) -> String {
     let since = now.saturating_sub(link.since_unix);
@@ -396,25 +396,25 @@ mod tests {
     fn the_link_line_names_the_mac_and_how_long() {
         let link = |state: &str, herdr: &str| crate::api::schema::BrowserLinkStatus {
             state: state.into(),
-            label: "mbp".into(),
+            label: "mac".into(),
             herdr: herdr.into(),
             since_unix: 1000,
         };
         assert_eq!(
             link_line(&link("linked", "0.9.5"), 1000 + 2 * 3600 + 3 * 60),
-            "browser on mbp · linked for 2h 3m · herdr 0.9.5"
+            "browser on mac · linked for 2h 3m · herdr 0.9.5"
         );
         assert_eq!(
             link_line(&link("linked", ""), 1005),
-            "browser on mbp · linked for 5s"
+            "browser on mac · linked for 5s"
         );
         assert_eq!(
             link_line(&link("reconnecting", "0.9.5"), 1005),
-            "browser on mbp · reconnecting for 5s"
+            "browser on mac · reconnecting for 5s"
         );
         assert_eq!(
             link_line(&link("gone", "0.9.5"), 1000 + 12 * 60),
-            "browser link: none (last: mbp, 12 min ago)"
+            "browser link: none (last: mac, 12 min ago)"
         );
         assert!(link_serves(&link("linked", "")) && link_serves(&link("reconnecting", "")));
         assert!(!link_serves(&link("gone", "")));

@@ -347,8 +347,8 @@ impl Rig {
         let links: Arc<Mutex<Vec<bool>>> = Arc::default();
         let start = Instant::now();
         let helper = Helper::new(Deps {
-            label: "mbp".into(),
-            machine: "buildbox".into(),
+            label: "mac".into(),
+            machine: "devhost1".into(),
             host_id: "h".repeat(32),
             herdr: "test".into(),
             companion: Arc::clone(&companion) as Arc<dyn CompanionControl>,
@@ -528,7 +528,7 @@ fn the_open_says_who_and_what() {
     assert_eq!(params["link_protocol"], 1);
     assert_eq!(params["host_id"], "h".repeat(32));
     assert_eq!(params["instance"], "inst-1");
-    assert_eq!(params["label"], "mbp");
+    assert_eq!(params["label"], "mac");
     assert_eq!(params["ready"], "ready");
 }
 
@@ -655,7 +655,7 @@ fn replaced_and_refusals_are_not_reopened_fast() {
     );
 
     let rig = Rig::new();
-    let text = "the browser of buildbox is on workstation (since 14:02); quit herdr+ there";
+    let text = "the browser of devhost1 is on laptop1 (since 14:02); quit herdr+ there";
     rig.b().refuse(code::LINK_IN_USE, text);
     assert!(rig.no_open_within(Duration::from_millis(800)));
     assert_eq!(rig.helper.view().owner.as_deref(), Some(text));
@@ -929,8 +929,8 @@ fn a_companion_and_a_client_on_the_real_sockets() {
         herdr: "test".into(),
         machine: super::super::clients::MachineFacts {
             id: "0".repeat(32),
-            label: "buildbox".into(),
-            target: "buildbox".into(),
+            label: "devhost1".into(),
+            target: "devhost1".into(),
             session: "default".into(),
         },
         cycle_keys: vec!["ctrl+shift+b".into()],
@@ -1092,4 +1092,18 @@ fn one_helper_per_machine_home() {
         .permissions()
         .mode();
     assert_eq!(mode & 0o777, 0o600);
+}
+
+/// An open link is `linked` for the clients before any companion runs here
+/// (the companion's own lease waits for B's `host_ok`); a dropped one is
+/// `reconnecting`.
+#[test]
+fn an_open_link_is_linked_for_the_clients_before_a_companion_runs() {
+    let rig = Rig::new();
+    assert_eq!(rig.helper.view().link, "connecting");
+    let mut b = rig.b();
+    b.open(1);
+    wait_for(|| rig.helper.view().link == "linked");
+    drop(b);
+    wait_for(|| rig.helper.view().link == "reconnecting");
 }

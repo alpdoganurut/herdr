@@ -781,7 +781,7 @@ pub(super) fn clip_text(text: &str) -> String {
         .collect()
 }
 
-/// This machine's name for texts (`buildbox`, without its domain).
+/// This machine's name for texts (`devhost1`, without its domain).
 fn machine_name() -> String {
     crate::platform::hostname()
         .and_then(|name| name.split('.').next().map(str::to_string))

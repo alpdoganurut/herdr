@@ -21,7 +21,7 @@ use crate::client::shell::{ClientShellInput, ClientShellState, LinkIntent, Linke
 
 /// Version 1 starts helpers on macOS only: the companion's key table and
 /// the proxy's switches were measured there.
-pub(crate) const STARTS_HELPERS: bool = cfg!(target_os = "macos");
+pub(crate) const STARTS_HELPERS: bool = crate::client::shell::REMOTE_BROWSER_HERE;
 
 /// Starts the client of one machine's helper.
 pub(crate) type Starter = Box<dyn Fn(MachineFacts, Vec<String>) -> io::Result<LinkClient>>;
@@ -76,8 +76,9 @@ fn linked(news: HelperNews) -> (Option<LinkedBrowser>, Option<String>) {
 }
 
 impl ShellLinks {
-    /// `enabled`: `[browser] remote_machines`, this platform starts
-    /// helpers, and this client is not `herdr --remote`.
+    /// `enabled`: this platform starts helpers and this client is not
+    /// `herdr --remote`; `[browser] remote_machines` is read per poll (a
+    /// config reload turns them on or off).
     pub(crate) fn new(enabled: bool) -> Self {
         Self::with_starter(
             enabled,
@@ -101,9 +102,9 @@ impl ShellLinks {
     pub(crate) fn deliver(&self, shell: &mut ClientShellState) {
         for intent in shell.take_browser_link_intents() {
             let endpoint = match &intent {
-                LinkIntent::Placement { endpoint, .. } | LinkIntent::Companion { endpoint, .. } => {
-                    endpoint
-                }
+                LinkIntent::Placement { endpoint, .. }
+                | LinkIntent::Companion { endpoint, .. }
+                | LinkIntent::ForgetLogins { endpoint } => endpoint,
             };
             let ClientEndpointId::Ssh(profile) = endpoint else {
                 continue;
@@ -122,6 +123,9 @@ impl ShellLinks {
                         running.client.companion(action);
                     }
                 }
+                LinkIntent::ForgetLogins { .. } => {
+                    running.client.companion(CompanionAction::Forget)
+                }
             }
         }
     }
@@ -137,7 +141,7 @@ impl ShellLinks {
         outcome: &mut ClientShellInput,
     ) {
         let mut wanted = HashMap::new();
-        if self.enabled {
+        if self.enabled && shell.browser_remote_machines() {
             for machine in machines.iter().filter(|machine| machine.enabled) {
                 let endpoint = ClientEndpointId::Ssh(machine.id.clone());
                 if let Some(connection) = endpoints.connection(&endpoint) {

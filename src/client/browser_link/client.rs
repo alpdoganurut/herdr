@@ -465,8 +465,8 @@ mod tests {
     fn machine() -> MachineFacts {
         MachineFacts {
             id: "0".repeat(32),
-            label: "workstation".into(),
-            target: "workstation".into(),
+            label: "devhost1".into(),
+            target: "devhost1".into(),
             session: "default".into(),
         }
     }
@@ -495,7 +495,7 @@ mod tests {
         let mut config = LinkClientConfig::new(machine(), Vec::new(), socket.clone(), spawn);
         config.retry = Duration::from_millis(20);
         let client = LinkClient::start(config).unwrap();
-        wait_for(|| lock(&seen.0).contains(&"hello workstation".to_string()));
+        wait_for(|| lock(&seen.0).contains(&"hello devhost1".to_string()));
         assert_eq!(spawns.load(Ordering::SeqCst), 1);
         let spec = BrowserPlacementSpec {
             id: "p1".into(),

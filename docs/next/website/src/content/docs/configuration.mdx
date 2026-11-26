@@ -121,6 +121,17 @@ manage_ssh_config = true
 
 When enabled, `herdr --remote` writes a private temporary SSH config that includes your user and system SSH configs first, then adds fallback `ServerAliveInterval` and `ServerAliveCountMax` values. Your own keepalive settings win. Linux and macOS clients also use a private per-attach OpenSSH control socket to reuse the first authenticated connection; Windows OpenSSH does not. Set `manage_ssh_config = false` to run remote attach through plain `ssh` without Herdr's generated config or control socket.
 
+## Remote browser
+
+herdr+ only. Agents on a saved machine can use a companion browser on your Mac; see [Remote browser](/docs/connecting-machines/#remote-browser).
+
+```toml
+[browser]
+remote_machines = true   # on your Mac: run saved machines' browsers here
+egress = "split"         # on your Mac: public sites from this Mac; "remote": all through the machine
+link = "auto"            # on the machine: "auto", "only" or "off"
+```
+
 ## Keybindings
 
 For a guided introduction to the prefix and a vetted prefix-free setup, see [Keyboard](/docs/keyboard/).

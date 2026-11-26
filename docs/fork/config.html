@@ -530,6 +530,24 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
       <div class="s"><span class="badge cfg">config only</span></div>
     </div>
     <div class="row">
+      <div class="f"><h3>Remote browser: run saved machines' browsers on this Mac</h3><p>Agents on a saved machine use a companion browser on your Mac, one per machine with its own logins, started by a helper your client runs while it is connected to that machine. macOS; not over <code>herdr --remote</code>. Applies after a config reload.</p></div>
+      <div class="d"><span class="pill on">on</span></div>
+      <div class="k"><code>[browser] remote_machines = false</code></div>
+      <div class="s"><span class="badge set">in Settings</span></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Remote browser: where a machine's pages load from</h3><p><code>"split"</code>: public sites from this Mac, the machine's localhost and private networks through the machine. <code>"remote"</code>: everything through the machine. Applies when the machine's helper starts again.</p></div>
+      <div class="d"><span class="pill val">"split"</span></div>
+      <div class="k"><code>[browser] egress = "remote"</code></div>
+      <div class="s"><span class="badge set">in Settings</span></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Remote browser: on the machine</h3><p>Whether the Mac connected to this machine may serve its browser. <code>"only"</code>: never this machine's own companion; <code>"off"</code>: no link.</p></div>
+      <div class="d"><span class="pill val">"auto"</span></div>
+      <div class="k"><code>[browser] link = "only"</code> or <code>"off"</code></div>
+      <div class="s"><span class="badge cfg">config only</span></div>
+    </div>
+    <div class="row">
       <div class="f"><h3>Page errors of a tab an agent uses</h3><p>Stored quietly for that Claude agent; others read them with <code>herdr browser console</code>.</p></div>
       <div class="d"><span class="pill val">"agent"</span></div>
       <div class="k"><code>[browser] page_errors = "off"</code></div>

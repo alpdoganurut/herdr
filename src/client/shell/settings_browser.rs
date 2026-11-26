@@ -69,6 +69,9 @@ pub(super) struct ClientBrowserSettings {
     /// row) and the actions its menu had, from the shell's `browser.get`.
     pub(super) live: Option<super::browser::BrowserRow>,
     pub(super) actions: Vec<LiveAction>,
+    /// Fork (remote browser): "Forget <machine>'s logins" was chosen once;
+    /// only a second ↵ (or click) on it forgets them.
+    pub(super) forget_armed: bool,
 }
 
 /// Fork (session header): one of the rows after `ROWS`, the Browser row
@@ -76,7 +79,66 @@ pub(super) struct ClientBrowserSettings {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct LiveAction {
     pub(super) label: String,
-    pub(super) action: ClientContextMenuAction,
+    pub(super) action: LiveDo,
+}
+
+/// What a live row does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum LiveDo {
+    /// The Browser row menu's item.
+    Menu(ClientContextMenuAction),
+    /// Fork (remote browser): this Mac's `[browser] remote_machines`.
+    RemoteMachines,
+    /// Fork (remote browser): this Mac's `[browser] egress`.
+    Egress,
+    /// Fork (remote browser): forget the shown machine's logins (armed
+    /// first, then confirmed).
+    Forget,
+}
+
+/// Fork (remote browser): the rows of this Mac's side of saved machines'
+/// browsers, after the live rows while a saved machine is shown: the two
+/// settings (this Mac's config) and, on a machine whose browser runs here,
+/// "Forget <machine>'s logins" (a second ↵ confirms).
+pub(super) fn remote_browser_actions(
+    remote_machines: bool,
+    egress_remote: bool,
+    linked: Option<&str>,
+    forget_armed: bool,
+) -> Vec<LiveAction> {
+    let mut actions = Vec::new();
+    if !super::browser_link::REMOTE_BROWSER_HERE {
+        return actions;
+    }
+    actions.push(LiveAction {
+        label: format!(
+            "this Mac: run saved machines' browsers here: {}",
+            if remote_machines { "on" } else { "off" }
+        ),
+        action: LiveDo::RemoteMachines,
+    });
+    actions.push(LiveAction {
+        label: format!(
+            "this Mac: their public sites load {}",
+            if egress_remote {
+                "through the machine (egress remote)"
+            } else {
+                "from this Mac (egress split)"
+            }
+        ),
+        action: LiveDo::Egress,
+    });
+    if let Some(machine) = linked {
+        actions.push(LiveAction {
+            label: if forget_armed {
+                format!("↵ again to forget {machine}'s logins (every site there signs out)")
+            } else {
+                format!("forget {machine}'s logins…")
+            },
+            action: LiveDo::Forget,
+        });
+    }
+    actions
 }
 
 /// The live rows for the browser's state: the companion's items (a local
@@ -88,7 +150,12 @@ pub(super) fn live_actions(
     window: bool,
 ) -> Vec<LiveAction> {
     let mut actions = Vec::new();
-    let mut push = |label: String, action| actions.push(LiveAction { label, action });
+    let mut push = |label: String, action| {
+        actions.push(LiveAction {
+            label,
+            action: LiveDo::Menu(action),
+        })
+    };
     if let Some(live) = live.filter(|_| local) {
         if let Some(state) = live.companion.as_deref() {
             for (label, action, _) in super::browser::companion_menu_items(state) {
@@ -240,13 +307,27 @@ impl ClientShellState {
             return;
         }
         let live = self.browser_row();
-        let local = self.active_endpoint_id.is_local();
+        // Fork (remote browser): a linked machine's companion runs here.
+        let linked = self.browser_link_active().is_some();
+        let local = self.active_endpoint_id.is_local() || linked;
         let window = self
             .browser
             .info
             .as_ref()
             .is_some_and(|info| !info.window_off);
-        let actions = live_actions(live.as_ref(), local, window);
+        let mut actions = live_actions(live.as_ref(), local, window);
+        let forget_armed = self.browser_settings().is_some_and(|b| b.forget_armed);
+        // only while a saved machine is shown: Local's own browser is not
+        // what they set
+        if !self.active_endpoint_id.is_local() {
+            let machine = linked.then(|| self.active_endpoint_label().to_string());
+            actions.extend(remote_browser_actions(
+                self.config.browser_remote_machines,
+                self.config.browser_egress_remote,
+                machine.as_deref(),
+                forget_armed && linked,
+            ));
+        }
         if let Some(ClientShellOverlay::Settings(settings)) = self.overlay.as_mut() {
             settings.browser.live = live;
             settings.browser.actions = actions;
@@ -410,6 +491,7 @@ impl ClientShellState {
             self.apply_browser_live_action(selected - ROWS, outcome);
             return;
         }
+        self.disarm_browser_forget();
         match selected {
             ROW_ENABLED => self.set_browser_setting("enabled", (!info.enabled).into(), outcome),
             ROW_ACTIVITY => {
@@ -509,6 +591,18 @@ impl ClientShellState {
         else {
             return;
         };
+        let action = match action {
+            LiveDo::Menu(action) => {
+                self.disarm_browser_forget();
+                action
+            }
+            other => {
+                self.apply_remote_browser_action(other, outcome);
+                self.sync_browser_settings_live();
+                outcome.repaint = true;
+                return;
+            }
+        };
         let (profile, running) = self
             .browser_settings()
             .and_then(|b| b.live.as_ref())
@@ -523,6 +617,76 @@ impl ClientShellState {
         self.refresh_browser();
         self.sync_browser_settings_live();
         outcome.repaint = true;
+    }
+
+    fn disarm_browser_forget(&mut self) {
+        let armed = self
+            .browser_settings_mut()
+            .is_some_and(|browser| std::mem::take(&mut browser.forget_armed));
+        if armed {
+            self.sync_browser_settings_live();
+        }
+    }
+
+    /// Fork (remote browser): this Mac's two settings go to this Mac's
+    /// config (the shown machine's server never reads them); Forget arms
+    /// first and, confirmed, goes to the machine's helper.
+    fn apply_remote_browser_action(&mut self, action: LiveDo, outcome: &mut ClientShellInput) {
+        match action {
+            LiveDo::RemoteMachines => {
+                self.disarm_browser_forget();
+                let value = !self.config.browser_remote_machines;
+                self.save_settings_edit(
+                    crate::config::ConfigEdit::BrowserBool {
+                        key: "remote_machines",
+                        value,
+                    },
+                    outcome,
+                );
+            }
+            LiveDo::Egress => {
+                self.disarm_browser_forget();
+                let value = if self.config.browser_egress_remote {
+                    "split"
+                } else {
+                    "remote"
+                };
+                if self.save_settings_edit(
+                    crate::config::ConfigEdit::BrowserString {
+                        key: "egress",
+                        value,
+                    },
+                    outcome,
+                ) {
+                    if let Some(browser) = self.browser_settings_mut() {
+                        browser.note = Some(
+                            "egress applies when a machine's browser helper starts again".into(),
+                        );
+                    }
+                }
+            }
+            LiveDo::Forget => {
+                let armed = self.browser_settings().is_some_and(|b| b.forget_armed);
+                if !armed {
+                    if let Some(browser) = self.browser_settings_mut() {
+                        browser.forget_armed = true;
+                    }
+                    return;
+                }
+                self.disarm_browser_forget();
+                if self.browser_link_active().is_some() {
+                    let endpoint = self.active_endpoint_id.clone();
+                    self.browser_link.forget_logins(&endpoint);
+                    let machine = self.active_endpoint_label().to_string();
+                    if let Some(browser) = self.browser_settings_mut() {
+                        browser.note = Some(format!(
+                            "{machine}'s logins are being forgotten; its browser starts signed out"
+                        ));
+                    }
+                }
+            }
+            LiveDo::Menu(_) => {}
+        }
     }
 
     /// The section's own keys, ahead of the overlay's: → cycles the colour

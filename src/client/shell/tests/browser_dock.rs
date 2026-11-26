@@ -1368,7 +1368,8 @@ fn link_placements(state: &mut ClientShellState) -> Vec<(String, Option<String>,
                 placement.spec.map(|spec| spec.tab_id),
                 placement.active,
             )),
-            super::super::browser_link::LinkIntent::Companion { .. } => None,
+            super::super::browser_link::LinkIntent::Companion { .. }
+            | super::super::browser_link::LinkIntent::ForgetLogins { .. } => None,
         })
         .collect()
 }

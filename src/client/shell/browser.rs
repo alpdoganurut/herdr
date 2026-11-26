@@ -223,8 +223,11 @@ pub(super) fn age(then: u64, now: u64) -> String {
 /// The overlay's rows for `info`: a header per profile, its open tabs
 /// newest activity first. Fork (companion launcher): each session's line
 /// says its view on this client (`docked`, `browser view`).
+/// `companion`: the companion this client shows (the server's, or a saved
+/// machine's helper's: `ClientShellState::browser_companion`).
 pub(crate) fn browser_overlay_rows_with_views(
     info: &BrowserGetInfo,
+    companion: Option<&crate::api::schema::BrowserCompanionAppInfo>,
     now: u64,
     views: &std::collections::HashMap<String, super::browser_dock::TabBrowserMark>,
 ) -> Vec<BrowserOverlayRow> {
@@ -237,7 +240,7 @@ pub(crate) fn browser_overlay_rows_with_views(
     }
     // Fork (companion launcher): the companion app first; its tabs follow
     // it (no `companion` profile header of their own).
-    if let Some(companion) = info.companion_app.as_ref() {
+    if let Some(companion) = companion {
         let home = std::env::var("HOME").ok();
         rows.extend(browser_companion::companion_overlay_rows(
             companion,
@@ -383,8 +386,9 @@ impl ClientShellState {
             return None;
         }
         let active = info.tabs.iter().any(|tab| tab.active);
-        // Fork (companion launcher): a server that runs the companion shows it.
-        if let Some(companion) = info.companion_app.as_ref() {
+        // Fork (companion launcher): a server that runs the companion shows
+        // it (fork, remote browser: a linked machine, its helper's).
+        if let Some(companion) = self.browser_companion() {
             if let Some((state, mut status)) =
                 browser_companion::companion_row_state(info, companion, unix_now())
             {
@@ -430,7 +434,7 @@ impl ClientShellState {
             active,
             profile,
             running: running.is_some(),
-            companion: info.companion_app.as_ref().map(|c| c.state.clone()),
+            companion: self.browser_companion().map(|c| c.state.clone()),
             dock: self
                 .browser_dock_offered()
                 .then(|| self.browser_dock_open_for_focused_tab()),
@@ -621,11 +625,12 @@ impl ClientShellState {
     /// follows at once.
     pub(crate) fn open_browser_overlay(&mut self, outcome: &mut ClientShellInput) {
         let views = self.browser_page_tabs();
+        let companion = self.browser_companion();
         let rows = self
             .browser
             .info
             .as_ref()
-            .map(|info| browser_overlay_rows_with_views(info, unix_now(), &views))
+            .map(|info| browser_overlay_rows_with_views(info, companion, unix_now(), &views))
             .unwrap_or_default();
         let cursor = rows
             .iter()
@@ -635,7 +640,8 @@ impl ClientShellState {
             rows,
             cursor,
             scroll: 0,
-            local: self.active_endpoint_id.is_local(),
+            // Fork (remote browser): a linked machine's companion runs here.
+            local: self.active_endpoint_id.is_local() || self.browser_link_active().is_some(),
             // "loading" only when a pull can actually happen.
             loading: self.browser.info.is_none()
                 && self.supports_endpoint_method(&Method::BrowserGet(BrowserGetParams::default()))
@@ -654,14 +660,15 @@ impl ClientShellState {
         }
     }
 
-    fn sync_browser_overlay(&mut self) {
+    pub(super) fn sync_browser_overlay(&mut self) {
         // Fork (session header): Settings → Browser's live rows follow too.
         self.sync_browser_settings_live();
         let views = self.browser_page_tabs();
         let Some(info) = self.browser.info.as_ref() else {
             return;
         };
-        let rows = browser_overlay_rows_with_views(info, unix_now(), &views);
+        let rows =
+            browser_overlay_rows_with_views(info, self.browser_companion(), unix_now(), &views);
         if let Some(ClientShellOverlay::Browser(overlay)) = self.overlay.as_mut() {
             let selected = overlay.rows.get(overlay.cursor).cloned();
             let cursor = selected

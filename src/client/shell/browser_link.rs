@@ -28,6 +28,9 @@ use crate::server::headless::view_cycle::ViewCyclePayload;
 /// the Mac in front of the user, which that connection does not reach).
 pub(crate) const REMOTE_CLIENT_REASON: &str =
     "The browser is not available over herdr --remote; add the machine (herdr machine add).";
+/// Version 1 runs saved machines' browsers on macOS only (the policy the
+/// client loop starts helpers by).
+pub(crate) const REMOTE_BROWSER_HERE: bool = cfg!(target_os = "macos");
 /// A saved machine without an attached helper.
 pub(crate) const NOT_LINKED_REASON: &str = "This machine's browser is not linked: it needs herdr+ on the machine and [browser] remote_machines on this Mac.";
 
@@ -68,6 +71,8 @@ pub(crate) enum LinkIntent {
         endpoint: ClientEndpointId,
         action: BrowserCompanionAction,
     },
+    /// "Forget <machine>'s logins", after the user confirmed it.
+    ForgetLogins { endpoint: ClientEndpointId },
 }
 
 /// The helpers' facts and the shell's asks (the one field
@@ -192,6 +197,13 @@ impl ClientBrowserLinkState {
         });
     }
 
+    /// The user confirmed forgetting `endpoint`'s logins.
+    pub(crate) fn forget_logins(&mut self, endpoint: &ClientEndpointId) {
+        self.intents.push(LinkIntent::ForgetLogins {
+            endpoint: endpoint.clone(),
+        });
+    }
+
     #[cfg_attr(not(unix), allow(dead_code))] // the unix client loop's
     pub(crate) fn take_intents(&mut self) -> Vec<LinkIntent> {
         std::mem::take(&mut self.intents)
@@ -217,6 +229,12 @@ impl ClientShellState {
             return None;
         }
         self.browser_link.attached(&self.active_endpoint_id)
+    }
+
+    /// `[browser] remote_machines` as last loaded (this Mac's).
+    #[cfg_attr(not(unix), allow(dead_code))] // the unix client loop's
+    pub(crate) fn browser_remote_machines(&self) -> bool {
+        self.config.browser_remote_machines
     }
 
     /// The direct keys of `keys.cycle_browser`, for the helpers' leases.
@@ -247,6 +265,8 @@ impl ClientShellState {
             .flatten();
         if self.browser_link.set(endpoint, browser, notice) && active {
             outcome.repaint = true;
+            // the Browser overlay and Settings → Browser show its companion
+            self.sync_browser_overlay();
             let size_after = self
                 .last_composed_size
                 .map(|(cols, rows)| self.surface_size(cols, rows));

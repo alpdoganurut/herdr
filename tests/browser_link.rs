@@ -232,7 +232,7 @@ fn mac(host_id: &str, label: &str) -> Value {
 #[test]
 fn a_link_opens_and_the_same_mac_replaces_it() {
     let server = Server::start("");
-    let (mut first, info) = server.link(mac("mac-a", "mbp"));
+    let (mut first, info) = server.link(mac("mac-a", "mac"));
     assert_eq!(info["epoch"], 1);
     assert_eq!(info["link_protocol"], 1);
     assert_eq!(info["features"], json!([]));
@@ -247,7 +247,7 @@ fn a_link_opens_and_the_same_mac_replaces_it() {
     first.send(&json!({ "t": "host_down", "reason": "test", "x": 1 }));
     first.ping(2);
 
-    let (mut second, again) = server.link(mac("mac-a", "mbp"));
+    let (mut second, again) = server.link(mac("mac-a", "mac"));
     assert_eq!(again["epoch"], 2);
     assert_eq!(again["boot_id"], info["boot_id"]);
     assert_ne!(again["link_id"], info["link_id"]);
@@ -265,12 +265,12 @@ fn a_link_opens_and_the_same_mac_replaces_it() {
 #[test]
 fn another_mac_waits_until_the_first_one_quits() {
     let server = Server::start("");
-    let (mut first, _) = server.link(mac("mac-a", "mbp"));
+    let (mut first, _) = server.link(mac("mac-a", "mac"));
     let (code, message) = server.refusal(mac("mac-b", "other"));
     assert_eq!(code, "link_in_use");
     let rest = message
         .strip_prefix("the browser of ")
-        .and_then(|rest| rest.split_once(" is on mbp (since "))
+        .and_then(|rest| rest.split_once(" is on mac (since "))
         .and_then(|(_, rest)| rest.strip_suffix("); quit herdr+ there"))
         .unwrap_or_else(|| panic!("{message}"));
     assert!(rest.len() == 5 && &rest[2..3] == ":", "{message}");
@@ -284,7 +284,7 @@ fn another_mac_waits_until_the_first_one_quits() {
     drop(other);
     let until = Instant::now() + WAIT;
     loop {
-        let (_conn, answer) = server.open(mac("mac-a", "mbp"));
+        let (_conn, answer) = server.open(mac("mac-a", "mac"));
         if answer["result"]["link"]["epoch"] == 3 {
             break;
         }
@@ -303,11 +303,11 @@ fn lines_that_are_no_frames_drop_the_link() {
         r#"{"t":"host_up","instance":7}"#,
         r#"{"t":"blob","op":1,"name":"full","seq":1,"data":"","last":true,"size":0}"#,
     ] {
-        let (mut link, _) = server.link(mac("mac-a", "mbp"));
+        let (mut link, _) = server.link(mac("mac-a", "mac"));
         link.send_line(bad);
         assert_eq!(link.bye(), "protocol", "{bad}");
     }
-    let (mut link, _) = server.link(mac("mac-a", "mbp"));
+    let (mut link, _) = server.link(mac("mac-a", "mac"));
     let mut writer = link.stream.try_clone().unwrap();
     let sender = thread::spawn(move || {
         // the server closes before it is all written
@@ -327,7 +327,7 @@ fn lines_that_are_no_frames_drop_the_link() {
         assert_eq!(line["code"], "protocol");
     }
     sender.join().unwrap();
-    let (mut link, info) = server.link(mac("mac-a", "mbp"));
+    let (mut link, info) = server.link(mac("mac-a", "mac"));
     assert_eq!(info["epoch"], 7);
     link.ping(1);
 }
@@ -335,7 +335,7 @@ fn lines_that_are_no_frames_drop_the_link() {
 #[test]
 fn nothing_is_served_before_there_is_a_browser() {
     let server = Server::start("");
-    let (mut link, _) = server.link(mac("mac-a", "mbp"));
+    let (mut link, _) = server.link(mac("mac-a", "mac"));
     link.send(
         &json!({ "t": "file", "id": 9, "token": "a".repeat(24), "path": "x.html", "offset": 0 }),
     );
@@ -368,7 +368,7 @@ fn nothing_is_served_before_there_is_a_browser() {
 fn an_open_is_refused_by_its_parameters() {
     let server = Server::start("");
     let with = |key: &str, value: Value| {
-        let mut params = mac("mac-a", "mbp");
+        let mut params = mac("mac-a", "mac");
         params[key] = value;
         server.refusal(params).0
     };
@@ -377,13 +377,13 @@ fn an_open_is_refused_by_its_parameters() {
     assert_eq!(with("instance", json!("")), "invalid_request");
     assert_eq!(with("ready", json!(null)), "invalid_request");
     // a newer helper's value is one to this server
-    let mut params = mac("mac-a", "mbp");
+    let mut params = mac("mac-a", "mac");
     params["ready"] = json!("updating");
     let (_link, info) = server.link(params);
     assert_eq!(info["epoch"], 1);
 
     let off = Server::start("[browser]\nenabled = false\n");
-    assert_eq!(off.refusal(mac("mac-a", "mbp")).0, "browser_disabled");
+    assert_eq!(off.refusal(mac("mac-a", "mac")).0, "browser_disabled");
 }
 
 #[test]
@@ -394,7 +394,7 @@ fn a_link_taken_before_the_config_arrives_ends_when_it_does() {
     ] {
         let server = Server::spawn(config);
         // at once: before or after the server read its config
-        let (mut conn, answer) = server.open(mac("mac-a", "mbp"));
+        let (mut conn, answer) = server.open(mac("mac-a", "mac"));
         if answer["result"]["type"] == "browser_link_opened" {
             assert_eq!(conn.bye(), "disabled", "{config}");
         } else {
@@ -410,7 +410,7 @@ fn a_link_taken_before_the_config_arrives_ends_when_it_does() {
         } else {
             "link_disabled"
         };
-        assert_eq!(server.refusal(mac("mac-a", "mbp")).0, expected);
+        assert_eq!(server.refusal(mac("mac-a", "mac")).0, expected);
     }
 }
 
@@ -430,7 +430,7 @@ fn the_local_companion_still_registers_over_loopback_only() {
 #[test]
 fn a_server_that_stops_says_goodbye() {
     let server = Server::start("");
-    let (mut link, _) = server.link(mac("mac-a", "mbp"));
+    let (mut link, _) = server.link(mac("mac-a", "mac"));
     link.ping(1);
     server.request("server.stop", json!({}));
     let mut last = None;
@@ -453,7 +453,7 @@ fn a_server_that_stops_says_goodbye() {
 #[test]
 fn the_companions_calls_run_here_with_the_links_own_lease() {
     let server = Server::start("");
-    let (mut link, _) = server.link(mac("mac-a", "mbp"));
+    let (mut link, _) = server.link(mac("mac-a", "mac"));
     let mut next = 0;
     let mut call = |link: &mut Conn, method: &str, params: Value| {
         next += 1;
@@ -571,7 +571,7 @@ fn the_companions_calls_run_here_with_the_links_own_lease() {
     let linked = &info["result"]["browser"]["link"];
     assert_eq!(
         (&linked["state"], &linked["label"]),
-        (&json!("linked"), &json!("mbp")),
+        (&json!("linked"), &json!("mac")),
         "{info}"
     );
 }

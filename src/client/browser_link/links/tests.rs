@@ -207,7 +207,19 @@ fn no_capability_no_feature_or_no_machine_means_no_helper() {
 
     let mut off = self::rig(false);
     poll(&mut off, &mut shell, &registry(&[LINK_CAPABILITY]));
-    assert_eq!(*off.starts.lock().unwrap(), 0, "remote_machines is off");
+    assert_eq!(
+        *off.starts.lock().unwrap(),
+        0,
+        "herdr --remote, or not macOS"
+    );
+
+    let mut config = crate::config::Config::default();
+    config.browser.remote_machines = false;
+    let mut shell_off = ClientShellState::new(
+        crate::client::shell::ClientShellConfig::from_config(&config),
+    );
+    poll(&mut rig, &mut shell_off, &registry(&[LINK_CAPABILITY]));
+    assert_eq!(*rig.starts.lock().unwrap(), 0, "remote_machines is off");
 
     let registry = registry(&[LINK_CAPABILITY]);
     shell.show_endpoint_for_test(endpoint());

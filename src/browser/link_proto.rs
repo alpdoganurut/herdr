@@ -1259,7 +1259,7 @@ pub mod code {
 }
 
 /// The exact texts of the link's errors and notes. `label` is A's name
-/// (`mbp`), `machine` B's (`buildbox`).
+/// (`mac`), `machine` B's (`devhost1`).
 pub mod text {
     /// `host_unavailable`: no link; `last` is the Mac that had it and the
     /// seconds since.
@@ -2075,46 +2075,46 @@ mod tests {
     #[test]
     fn the_texts_are_the_contracts() {
         assert_eq!(
-            text::not_connected(Some(("mbp", 12 * 60))),
-            "no browser: the user's herdr+ client is not connected (last: mbp, 12 min ago). Nothing was sent. Continue without the browser, or ask the user to open herdr+ there."
+            text::not_connected(Some(("mac", 12 * 60))),
+            "no browser: the user's herdr+ client is not connected (last: mac, 12 min ago). Nothing was sent. Continue without the browser, or ask the user to open herdr+ there."
         );
         assert_eq!(
             text::not_connected(None),
             "no browser: the user's herdr+ client is not connected. Nothing was sent. Continue without the browser, or ask the user to open herdr+ on their machine."
         );
         assert_eq!(
-            text::reconnecting("mbp"),
-            "the connection to the browser on mbp dropped and is reconnecting; nothing was sent; call again in a few seconds"
+            text::reconnecting("mac"),
+            "the connection to the browser on mac dropped and is reconnecting; nothing was sent; call again in a few seconds"
         );
         assert_eq!(
-            text::not_installed("mbp"),
-            "the browser is not installed on mbp; ask the user to run \"herdr browser setup --companion\" there"
+            text::not_installed("mac"),
+            "the browser is not installed on mac; ask the user to run \"herdr browser setup --companion\" there"
         );
         assert_eq!(
-            text::start_failed("mbp", " exited 5 times in 5 minutes\n"),
-            "the browser on mbp did not start (exited 5 times in 5 minutes); nothing was sent"
+            text::start_failed("mac", " exited 5 times in 5 minutes\n"),
+            "the browser on mac did not start (exited 5 times in 5 minutes); nothing was sent"
         );
         assert_eq!(
-            text::start_failed("mbp", ""),
-            "the browser on mbp did not start; nothing was sent"
+            text::start_failed("mac", ""),
+            "the browser on mac did not start; nothing was sent"
         );
-        let happened = "the connection to mbp dropped while OP ran: it may or may not have happened. Check with browser_read or browser_snapshot before repeating it.";
+        let happened = "the connection to mac dropped while OP ran: it may or may not have happened. Check with browser_read or browser_snapshot before repeating it.";
         for op in [
             "open", "show", "navigate", "history", "act", "eval", "dialog", "close",
         ] {
-            assert_eq!(text::link_lost("mbp", op), happened.replace("OP", op));
+            assert_eq!(text::link_lost("mac", op), happened.replace("OP", op));
         }
         assert_eq!(
-            text::link_lost("mbp", "show_remote"),
+            text::link_lost("mac", "show_remote"),
             happened.replace("OP", "show")
         );
         assert_eq!(
-            text::link_lost("mbp", "read"),
-            "the connection to mbp dropped while read ran; it changed nothing, call it again"
+            text::link_lost("mac", "read"),
+            "the connection to mac dropped while read ran; it changed nothing, call it again"
         );
         // an op this build does not know may have done anything
         assert_eq!(
-            text::link_lost("mbp", "future"),
+            text::link_lost("mac", "future"),
             happened.replace("OP", "future")
         );
         assert_eq!(
@@ -2122,20 +2122,20 @@ mod tests {
                 rule: RefuseRule::Url,
                 what: "open url".into()
             }
-            .error("mbp"),
+            .error("mac"),
             LinkError::new(
                 "host_refused",
-                "mbp refuses open url for remote machines (only http, https and about:blank pages)"
+                "mac refuses open url for remote machines (only http, https and about:blank pages)"
             )
         );
         assert_eq!(text::busy(), "32 browser ops are already running");
         assert_eq!(
-            text::control_there("mbp"),
-            "the browser runs on mbp; control it there"
+            text::control_there("mac"),
+            "the browser runs on mac; control it there"
         );
         assert_eq!(
-            text::link_in_use("buildbox", "mbp", "14:02"),
-            "the browser of buildbox is on mbp (since 14:02); quit herdr+ there"
+            text::link_in_use("devhost1", "mac", "14:02"),
+            "the browser of devhost1 is on mac (since 14:02); quit herdr+ there"
         );
         assert_eq!(text::LOADS_ONCE, "loads once; show it again after changes");
         assert_eq!(

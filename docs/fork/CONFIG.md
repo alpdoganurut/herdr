@@ -152,6 +152,17 @@ The companion browser can sit inside herdr's window: docked on the right of a ta
 
 While the browser is not over its area, the area says why: starting (a spinner), not running (`[ Start companion ]`), not installed (the setup command), stopped after 5 crashes (`[ Restart ]`), "Click here once to dock the browser to this window" (several terminal windows could be this one), or the reason it cannot dock here. In Browser view herdr's notices, toasts and notifications from agents show as one line on the session header, between the name and the view tabs (the view strip in the `spaces` layout; the browser covers the rest of the tab). Tabs with browser pages wear a dim `◎` on their row (lit while an agent uses the browser, `◉` while a page needs you). In the companion's bar, the count pill (`3 · 12`: pages in this session · in all sessions) lists every session with pages; picking one focuses that herdr tab. In the companion, `ctrl+tab` / `ctrl+shift+tab` (and `cmd+shift+]` / `cmd+shift+[` on macOS) step to the next / previous page of the shown session, wrapping around, like a click on its tab in the bar (built in, not configurable).
 
+### Remote browser (`[browser]`, macOS)
+
+Agents on a saved machine (`herdr machine add`) use a companion browser on your Mac: one per machine, with its own profile and logins, started by a helper (`herdr browser-link <machine>`) that your client runs while it is connected to that machine. The window and its dialogs name the machine; the browser docks beside that machine's tabs and hides when you switch machines. Your Mac checks every command the machine sends (http and https pages only, a fixed set of keys, no file choosers, no permissions, no DevTools). Not over `herdr --remote`. Details: the docs page Connecting machines, section Remote browser.
+
+| Feature | Default | Where to change | In Settings? |
+|---|---|---|---|
+| This Mac runs the browser of the saved machines it is connected to | on | `[browser] remote_machines = false` (applies after a config reload) | Yes, browser, while a machine is shown ("this Mac: run saved machines' browsers here") |
+| Where a machine's pages load from: public sites from this Mac, the machine's localhost and private networks through the machine | `"split"` | `[browser] egress = "remote"` (everything through the machine; applies when the machine's helper starts again) | Yes, browser, while a machine is shown ("this Mac: their public sites load …") |
+| Forget a machine's logins (removes that machine's browser profile only) | – | Settings → Browser on that machine, `forget <machine>'s logins…`, then ↵ again | Yes |
+| On the machine: may the Mac connected to it serve its browser | `"auto"` (else its own companion) | `[browser] link = "only"` (never its own) or `"off"` | No, config only |
+
 Legacy keys: `wrap_agents` is only read as a fallback for `[agents] wrap` (a Settings change to wrap removes it), and `shell_hook` is inert. The commented default file still says `stop_with_server` is not honoured; it is, for the herdr+ window.
 
 ## Notes pane (`[notes]`)

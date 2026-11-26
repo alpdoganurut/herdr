@@ -193,6 +193,8 @@ impl ClientShellConfig {
             idle_reminder_minutes: config.ui.effective_idle_reminder_minutes(),
             daily_reminder_minutes: config.ui.effective_daily_reminder_minutes(),
             browser_active_glyph_secs: config.browser.active_glyph_secs,
+            browser_remote_machines: config.browser.remote_machines,
+            browser_egress_remote: config.browser.egress_remote(),
             copy_on_select: config.ui.copy_on_select,
             clipboard_toast_enabled: config.ui.toast.clipboard.enabled,
             clipboard_toast_position: config.ui.toast.clipboard.position,
@@ -459,6 +461,11 @@ impl ClientShellConfig {
             self.theme_runtime = crate::app::client_theme_runtime_from_config(config);
             self.theme_name = self.theme_runtime.manual_name.clone();
             self.palette = crate::app::client_palette_from_config(config);
+        }
+        // Fork (remote browser): this Mac's side of saved machines' browsers.
+        if !invalid_section("browser") {
+            self.browser_remote_machines = config.browser.remote_machines;
+            self.browser_egress_remote = config.browser.egress_remote();
         }
         if !invalid_section("experimental") {
             self.switch_ascii_input_source_in_prefix =

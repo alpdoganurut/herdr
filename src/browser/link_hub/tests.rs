@@ -79,7 +79,7 @@ fn read(hub: &BrowserHub) -> Result<BrowserRunResult, BrowserError> {
 /// no page yet.
 fn linked(name: &str) -> (BrowserHub, Shared, FakeMac) {
     let (hub, _home, shared) = companion_hub(name, false);
-    let mac = FakeMac::open(&hub, "mac-a", "mbp").expect("linked");
+    let mac = FakeMac::open(&hub, "mac-a", "mac").expect("linked");
     mac.up("i1", &[]);
     wait_for("its lease", || !mac.state.lock().unwrap().leases.is_empty());
     (hub, shared, mac)
@@ -158,18 +158,18 @@ fn a_link_drop_in_the_middle_of_an_op_says_whether_it_may_have_happened() {
     let [acted, looked] = calls.map(|call| call.join().unwrap().unwrap_err());
     assert!(dropped.elapsed() < Duration::from_secs(1));
     assert_eq!(acted.code, "host_link_lost");
-    assert_eq!(acted.message, "the connection to mbp dropped while act ran: it may or may not have happened. Check with browser_read or browser_snapshot before repeating it.");
+    assert_eq!(acted.message, "the connection to mac dropped while act ran: it may or may not have happened. Check with browser_read or browser_snapshot before repeating it.");
     assert_eq!(looked.code, "host_link_lost");
     assert_eq!(
         looked.message,
-        "the connection to mbp dropped while read ran; it changed nothing, call it again"
+        "the connection to mac dropped while read ran; it changed nothing, call it again"
     );
     // the lease lives on for a while: nothing is sent, nothing starts here
     let spawner = FakeSpawner::new(&hub, true);
     for call in [open, click, read] {
         let err = call(&hub).unwrap_err();
         assert_eq!(err.code, "host_unavailable");
-        assert_eq!(err.message, "the connection to the browser on mbp dropped and is reconnecting; nothing was sent; call again in a few seconds");
+        assert_eq!(err.message, "the connection to the browser on mac dropped and is reconnecting; nothing was sent; call again in a few seconds");
     }
     hub.with_state(|state| {
         assert!(state.tabs.values().all(|record| record.is_open()));
@@ -179,7 +179,7 @@ fn a_link_drop_in_the_middle_of_an_op_says_whether_it_may_have_happened() {
     hub.supervise();
     let err = open(&hub).unwrap_err();
     assert_eq!(err.code, "host_unavailable");
-    assert_eq!(err.message, "no browser: the user's herdr+ client is not connected (last: mbp, just now). Nothing was sent. Continue without the browser, or ask the user to open herdr+ there.");
+    assert_eq!(err.message, "no browser: the user's herdr+ client is not connected (last: mac, just now). Nothing was sent. Continue without the browser, or ask the user to open herdr+ there.");
     hub.with_state(|state| {
         assert!(state.tabs.values().all(|record| !record.is_open()));
     });
@@ -197,7 +197,7 @@ fn the_same_mac_comes_back_to_the_same_tabs_and_cursors() {
     assert!(hub.lease_matches(&lease));
     hub.accept_host_sync_seq(&lease, 5).unwrap();
     mac.close(LinkEnd::Lost("test".into()));
-    let back = FakeMac::open(&hub, "mac-a", "mbp").expect("back");
+    let back = FakeMac::open(&hub, "mac-a", "mac").expect("back");
     back.up("i1", &["V1"]);
     wait_for("host_ok", || !back.state.lock().unwrap().leases.is_empty());
     // one lease: the companion's sync sequence goes on
@@ -216,7 +216,7 @@ fn the_same_mac_comes_back_to_the_same_tabs_and_cursors() {
     back.close(LinkEnd::Silent);
     hub.expire_host_lease_for_test();
     hub.supervise();
-    let again = FakeMac::open(&hub, "mac-a", "mbp").expect("again");
+    let again = FakeMac::open(&hub, "mac-a", "mac").expect("again");
     again.up("i1", &["V1"]);
     hub.with_state(|state| {
         let record = &state.tabs[&TabKey::new("companion", "V1")];
@@ -270,7 +270,7 @@ fn what_an_old_epoch_says_is_dropped() {
         std::thread::spawn(move || read(&hub))
     };
     old.got("read");
-    let new = FakeMac::open(&hub, "mac-a", "mbp").expect("replaced");
+    let new = FakeMac::open(&hub, "mac-a", "mac").expect("replaced");
     assert_eq!(new.link.epoch, old.link.epoch + 1);
     assert_eq!(pending.join().unwrap().unwrap_err().code, "host_link_lost");
     // nothing goes over the new link before its browser is up there
@@ -384,7 +384,7 @@ fn the_browser_there_is_started_by_the_op_that_needs_it() {
         (err.code.as_str(), err.message.as_str()),
         (
             "host_unavailable",
-            "the browser on mbp did not start (gave up after 5 crashes); nothing was sent"
+            "the browser on mac did not start (gave up after 5 crashes); nothing was sent"
         )
     );
     // the link drops while it starts
@@ -413,17 +413,17 @@ fn a_mac_without_the_browser_is_named_with_its_fix() {
         (
             BrowserLinkReady::NotInstalled,
             None,
-            "the browser is not installed on mbp; ask the user to run \"herdr browser setup --companion\" there",
+            "the browser is not installed on mac; ask the user to run \"herdr browser setup --companion\" there",
         ),
         (
             BrowserLinkReady::Failed,
             Some("no Electron"),
-            "the browser on mbp did not start (no Electron); nothing was sent",
+            "the browser on mac did not start (no Electron); nothing was sent",
         ),
         (
             BrowserLinkReady::Unknown,
             None,
-            "the browser on mbp did not start; nothing was sent",
+            "the browser on mac did not start; nothing was sent",
         ),
     ];
     for (at, (ready, detail, text)) in cases.into_iter().enumerate() {
@@ -435,7 +435,7 @@ fn a_mac_without_the_browser_is_named_with_its_fix() {
             BrowserLinkOpenParams {
                 ready,
                 detail: detail.map(str::to_string),
-                ..mac_params("mac-a", "mbp")
+                ..mac_params("mac-a", "mac")
             },
         )
         .unwrap();
@@ -487,7 +487,7 @@ fn only_the_ops_of_the_table_are_ever_sent() {
         assert_eq!(err.code, "host_refused", "{op}");
         assert_eq!(
             err.message,
-            format!("mbp refuses {op} for remote machines (only herdr+ on that machine may do it)")
+            format!("mac refuses {op} for remote machines (only herdr+ on that machine may do it)")
         );
     }
     // the housekeeping that goes to a local sidecar
@@ -543,7 +543,7 @@ fn a_link_and_a_local_companion_never_both_serve() {
     for instance in ["a", "i1"] {
         let err = hub.host_register(&register(instance)).unwrap_err();
         assert_eq!(err.code, "host_in_use");
-        assert_eq!(err.message, "the browser runs on mbp; control it there");
+        assert_eq!(err.message, "the browser runs on mac; control it there");
     }
     // its lease is the link's alone
     let lease = mac.state.lock().unwrap().leases[0].clone();
@@ -562,7 +562,7 @@ fn a_link_and_a_local_companion_never_both_serve() {
         hub.companion_restart(StartReason::User),
     ] {
         let err = control.unwrap_err();
-        assert_eq!(err.message, "the browser runs on mbp; control it there");
+        assert_eq!(err.message, "the browser runs on mac; control it there");
     }
     // another Mac, linked and while the first reconnects
     let refused = |hub: &BrowserHub| {
@@ -572,7 +572,7 @@ fn a_link_and_a_local_companion_never_both_serve() {
         assert_eq!(err.code, "link_in_use");
         err.message
     };
-    let text = "the browser of buildbox is on mbp (since 14:02); quit herdr+ there";
+    let text = "the browser of devhost1 is on mac (since 14:02); quit herdr+ there";
     assert_eq!(refused(&hub), text);
     mac.close(LinkEnd::Lost("test".into()));
     assert_eq!(refused(&hub), text);
@@ -584,13 +584,13 @@ fn a_link_and_a_local_companion_never_both_serve() {
     hub.expire_host_lease_for_test();
     hub.supervise();
     hub.host_register(&register("a")).expect("registered");
-    let err = FakeMac::open(&hub, "mac-a", "mbp").map(|_| ()).unwrap_err();
+    let err = FakeMac::open(&hub, "mac-a", "mac").map(|_| ()).unwrap_err();
     assert_eq!(err.code, "link_in_use");
     // and one that is still attaching holds it too
     hub.expire_host_lease_for_test();
     hub.supervise();
     hub.install_pending_registration_for_test("a", Duration::ZERO);
-    let err = FakeMac::open(&hub, "mac-a", "mbp").map(|_| ()).unwrap_err();
+    let err = FakeMac::open(&hub, "mac-a", "mac").map(|_| ()).unwrap_err();
     assert_eq!(err.code, "link_in_use");
 }
 
@@ -606,7 +606,7 @@ fn the_helpers_goodbye_ends_the_lease_at_once() {
     let err = open(&hub).unwrap_err();
     assert!(err
         .message
-        .starts_with("no browser: the user's herdr+ client is not connected (last: mbp, "));
+        .starts_with("no browser: the user's herdr+ client is not connected (last: mac, "));
     // another Mac need not wait
     FakeMac::open(&hub, "mac-b", "other").expect("free");
 }
@@ -715,7 +715,7 @@ fn the_link_key_says_who_may_serve() {
     hub.apply_config(&config(&hub, "off"));
     assert_eq!(mac.link.ended(), Some(LinkEnd::Off));
     mac.close(LinkEnd::Off);
-    let err = FakeMac::open(&hub, "mac-a", "mbp").map(|_| ()).unwrap_err();
+    let err = FakeMac::open(&hub, "mac-a", "mac").map(|_| ()).unwrap_err();
     assert_eq!(err.code, "link_disabled");
     // only: this machine's companion is never started for an agent
     let (hub, _home, _shared) = companion_hub("link-only", true);
@@ -729,7 +729,7 @@ fn the_link_key_says_who_may_serve() {
     hub.apply_config(&config(&hub, "auto"));
     open(&hub).expect("the local companion");
     assert_eq!(spawner.spawns(), 1);
-    let err = FakeMac::open(&hub, "mac-a", "mbp").map(|_| ()).unwrap_err();
+    let err = FakeMac::open(&hub, "mac-a", "mac").map(|_| ()).unwrap_err();
     assert_eq!(err.code, "link_in_use");
 }
 
@@ -853,7 +853,7 @@ fn a_token_of_an_older_link_reads_nothing() {
         .to_string();
     assert_eq!(pull(&mac, &old, "index.html").status, 200);
     mac.close(LinkEnd::Lost("test".into()));
-    let back = FakeMac::open(&hub, "mac-a", "mbp").expect("back");
+    let back = FakeMac::open(&hub, "mac-a", "mac").expect("back");
     back.up("i1", &["V1"]);
     wait_for("host_ok", || !back.state.lock().unwrap().leases.is_empty());
     assert_eq!(pull(&back, &old, "index.html").status, 403);
@@ -936,7 +936,7 @@ fn fork_smoke_a_linked_screenshot_lands_here_whole() {
     assert_eq!(err.code, "host_failed");
     assert_eq!(
         err.message,
-        "the screenshot did not arrive from mbp; nothing was saved"
+        "the screenshot did not arrive from mac; nothing was saved"
     );
     assert_eq!(files_in(&site.0), ["app.js", "index.html", "mine.png"]);
 }
@@ -1073,7 +1073,7 @@ fn browser_get_names_the_mac_linked_reconnecting_and_gone() {
     let status = hub.get(None).link.expect("linked");
     assert_eq!(
         (status.state.as_str(), status.label.as_str()),
-        ("linked", "mbp")
+        ("linked", "mac")
     );
     assert_eq!(status.since_unix, mac.link.opened_unix);
     mac.close(LinkEnd::Lost("test".into()));
@@ -1084,7 +1084,7 @@ fn browser_get_names_the_mac_linked_reconnecting_and_gone() {
     let status = hub.get(None).link.expect("gone");
     assert_eq!(
         (status.state.as_str(), status.label.as_str()),
-        ("gone", "mbp")
+        ("gone", "mac")
     );
     // a server that never had one says nothing
     let (fresh, _home, _shared) = companion_hub("link-status-none", false);

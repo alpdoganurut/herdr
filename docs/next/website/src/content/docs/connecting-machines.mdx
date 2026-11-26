@@ -123,6 +123,32 @@ For Git authentication or SSH signing inside remote panes, enable `ForwardAgent 
 
 This requires an updated remote server, not just an updated local client. Local sessions started without an agent leave `SSH_AUTH_SOCK` alone. Panes created before the server update, or before an agent was first supplied to the session, keep their original environment and need to be recreated once to inherit the stable address. Older compatible servers and connections without agent forwarding can still attach normally.
 
+## Remote browser
+
+Agents on a saved machine can use a browser on the Mac you connect from. herdr+ only, macOS only in this version, and not over `herdr --remote`.
+
+While your client is connected to a machine whose server offers it, the client starts one helper per machine (`herdr browser-link <machine>`). The helper runs that machine's own companion browser, with its own profile and logins, the first time one of the machine's agents opens a page, and links it to the machine over your SSH connection. Agents there use the browser as they do locally: open, read, click, type, screenshot, and show files from the machine. Every window and dialog names the machine.
+
+- Install the companion on your Mac once: `herdr browser setup --companion`. If it is missing, agents on the machine are told to ask you.
+- Public sites load from your Mac. The machine's `localhost`, its private networks, and your Mac's own networks load through the machine, so a dev server on the machine opens as `http://localhost:3000`.
+- The browser docks beside that machine's tabs like the local one, and hides when you switch to another machine.
+- Settings → Browser, while a machine is shown, has this Mac's two settings and "Forget *machine*'s logins" (a second ↵ confirms; only that machine's profile is removed).
+
+The machine cannot reach your Mac's files, local network, clipboard, or other browsers. Your Mac checks every command it gets: only `http`, `https` and `about:blank` pages, a fixed set of keys (no paste by key), no file choosers or save paths, every permission denied, no client certificates, and no DevTools. A site you sign in to in that browser is usable by the machine's agents, like any browser you hand to an agent.
+
+```toml
+# on your Mac
+[browser]
+remote_machines = true   # false: no helper starts; agents on your machines are told so
+egress = "split"         # "remote": every page's traffic goes through the machine
+
+# on the machine
+[browser]
+link = "auto"            # "only": never this machine's own companion; "off": no link
+```
+
+`remote_machines` applies after a config reload; `egress` when a machine's helper starts again (it ends 30 seconds after your last client leaves).
+
 ## Settings and automation
 
 The UI uses the client's local theme, sidebar settings, and keybindings by default. Custom commands and plugins advertised by the selected server still run there. Herdr does not copy local command plugins, configuration, executables, or secrets onto SSH hosts. Missing remote commands fail visibly. Use the UI's `reload config` action after editing client settings; see [Configuration](/docs/configuration/#reload-config). With several machines the settings panel says whether a section belongs to this client or to the selected machine's server.

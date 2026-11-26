@@ -958,3 +958,181 @@ fn a_short_terminal_scrolls_the_section_to_the_selected_live_row() {
         Some(ClientShellOverlay::Browser(_))
     ));
 }
+
+// ---------------------------------------------------------------------------
+// Fork (remote browser): a saved machine whose browser runs on this Mac
+
+fn linked_machine(state: &mut ClientShellState, companion: &str) -> ClientEndpointId {
+    let machine = ClientEndpointId::Ssh(
+        crate::client::endpoint::ProfileId::parse("0123456789abcdef0123456789abcdef")
+            .expect("profile id"),
+    );
+    state.active_endpoint_id = machine.clone();
+    state.browser_link.set(
+        &machine,
+        Some(super::super::browser_link::LinkedBrowser {
+            link: "linked".into(),
+            companion: crate::api::schema::BrowserCompanionAppInfo {
+                state: companion.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }),
+        None,
+    );
+    machine
+}
+
+/// Settings → Browser with a record (a saved machine's server in a test
+/// has no methods to pull one).
+#[cfg(target_os = "macos")]
+fn open_section_with_record(state: &mut ClientShellState) {
+    state.open_settings_overlay();
+    if let Some(ClientShellOverlay::Settings(settings)) = state.overlay.as_mut() {
+        settings.section = ClientSettingsSection::Browser;
+        settings.browser.info = Some(info());
+    }
+    state.sync_browser_settings_live();
+}
+
+/// On a linked machine the Browser row and the Browser overlay show the
+/// companion of this Mac's helper, not the machine's server's.
+#[test]
+fn a_linked_machine_shows_its_helpers_companion_in_the_row_and_overlay() {
+    use crate::api::schema::{BrowserCompanionAppInfo, BrowserGetInfo};
+    let mut state = tabs_state();
+    state.browser.info = Some(BrowserGetInfo {
+        seq: 1,
+        enabled: true,
+        companion_app: Some(BrowserCompanionAppInfo {
+            state: "not_installed".into(),
+            ..Default::default()
+        }),
+        window_off: true,
+        ..Default::default()
+    });
+    linked_machine(&mut state, "running");
+    let row = state.browser_row().expect("a row");
+    assert_eq!(row.companion.as_deref(), Some("running"));
+    assert!(row.status.starts_with("companion"), "{}", row.status);
+    state.open_browser_overlay(&mut ClientShellInput::default());
+    let Some(ClientShellOverlay::Browser(overlay)) = state.overlay.as_ref() else {
+        panic!("the overlay");
+    };
+    assert!(overlay.local, "the companion runs on this Mac");
+    assert!(overlay.rows.iter().any(|row| matches!(
+        row,
+        super::super::browser::BrowserOverlayRow::Companion(row) if row.state == "running"
+    )));
+}
+
+/// Settings → Browser on a linked machine: this Mac's two settings, and
+/// "Forget <machine>'s logins" that only a second ↵ sends to the helper;
+/// another row in between disarms it.
+#[cfg(target_os = "macos")]
+#[test]
+fn forgetting_a_machines_logins_needs_a_second_enter() {
+    use crate::client::shell::settings_browser::ROWS;
+    let mut state = tabs_state();
+    state.browser.info = Some(crate::api::schema::BrowserGetInfo {
+        seq: 1,
+        enabled: true,
+        window_off: true,
+        ..Default::default()
+    });
+    let machine = linked_machine(&mut state, "running");
+    open_section_with_record(&mut state);
+    let labels = |state: &ClientShellState| match &state.overlay {
+        Some(ClientShellOverlay::Settings(settings)) => settings
+            .browser
+            .actions
+            .iter()
+            .map(|row| row.label.clone())
+            .collect::<Vec<_>>(),
+        _ => panic!("settings"),
+    };
+    let rows = labels(&state);
+    let label = state.endpoint_label(&machine).to_string();
+    assert!(
+        rows.iter()
+            .any(|row| row == "this Mac: run saved machines' browsers here: on"),
+        "{rows:?}"
+    );
+    assert!(
+        rows.iter()
+            .any(|row| row == "this Mac: their public sites load from this Mac (egress split)"),
+        "{rows:?}"
+    );
+    let forget = rows
+        .iter()
+        .position(|row| *row == format!("forget {label}'s logins…"))
+        .expect("the forget row");
+    let mut outcome = ClientShellInput::default();
+    state.apply_browser_choice(ROWS + forget, &mut outcome);
+    assert!(state.take_browser_link_intents().is_empty(), "armed only");
+    assert!(labels(&state)[forget].starts_with("↵ again to forget"));
+    // another row disarms it
+    state.apply_browser_choice(
+        crate::client::shell::settings_browser::ROW_INSTALL,
+        &mut outcome,
+    );
+    assert_eq!(labels(&state)[forget], format!("forget {label}'s logins…"));
+    let mut outcome = ClientShellInput::default();
+    state.apply_browser_choice(ROWS + forget, &mut outcome);
+    state.apply_browser_choice(ROWS + forget, &mut outcome);
+    assert_eq!(
+        state.take_browser_link_intents(),
+        [super::super::browser_link::LinkIntent::ForgetLogins { endpoint: machine }]
+    );
+    assert!(
+        endpoint_requests(&outcome).is_empty(),
+        "nothing to the machine's server"
+    );
+}
+
+/// This Mac's settings are written to this Mac's config, whichever machine
+/// is shown, and the shell follows them at once.
+#[cfg(target_os = "macos")]
+#[test]
+fn this_macs_remote_browser_settings_go_to_this_macs_config() {
+    use crate::client::shell::settings_browser::ROWS;
+    let dir = std::env::temp_dir().join(format!("herdr-rb-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, "[ui]\n").unwrap();
+    // nextest runs each test in its own process
+    std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &path);
+    let mut state = tabs_state();
+    state.browser.info = Some(crate::api::schema::BrowserGetInfo {
+        seq: 1,
+        enabled: true,
+        window_off: true,
+        ..Default::default()
+    });
+    linked_machine(&mut state, "running");
+    open_section_with_record(&mut state);
+    let index = |state: &ClientShellState, prefix: &str| match &state.overlay {
+        Some(ClientShellOverlay::Settings(settings)) => settings
+            .browser
+            .actions
+            .iter()
+            .position(|row| row.label.starts_with(prefix))
+            .expect(prefix),
+        _ => panic!("settings"),
+    };
+    let mut outcome = ClientShellInput::default();
+    let remote = index(&state, "this Mac: run saved");
+    state.apply_browser_choice(ROWS + remote, &mut outcome);
+    let egress = index(&state, "this Mac: their public sites");
+    state.apply_browser_choice(ROWS + egress, &mut outcome);
+    let written: crate::config::Config =
+        toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert!(!written.browser.remote_machines);
+    assert!(written.browser.egress_remote());
+    assert!(!state.browser_remote_machines(), "followed at once");
+    assert!(endpoint_requests(&outcome)
+        .iter()
+        .all(|(_, method)| !matches!(method, Method::BrowserSettingsSet(_))));
+    std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
+    let _ = std::fs::remove_dir_all(dir);
+}
