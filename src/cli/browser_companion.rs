@@ -80,6 +80,13 @@ fn act(
             caller: super::caller(pane),
         }),
     })?;
+    // Fork (remote browser): while a Mac serves the browser, its text alone
+    if !json && response["error"]["code"] == "host_in_use" {
+        if let Some(message) = response["error"]["message"].as_str() {
+            eprintln!("{message}");
+            return Ok(1);
+        }
+    }
     if response.get("error").is_some() || json {
         return super::super::print_response(&response);
     }
@@ -90,6 +97,11 @@ fn act(
     match (action, note) {
         // the status, then why the config keeps the companion off
         (BrowserCompanionAction::Status, note) => {
+            // Fork (remote browser): the browser of a Mac, not this machine's
+            if let Some(link) = browser_link()?.filter(link_serves) {
+                println!("{}", link_line(&link, now));
+                return Ok(0);
+            }
             println!("{}", status_line(&info, now));
             for line in detail_lines(&info) {
                 println!("  {line}");
@@ -120,6 +132,50 @@ fn act(
         (BrowserCompanionAction::Unknown, None) => {}
     }
     Ok(0)
+}
+
+/// Fork (remote browser): `browser.get`'s `link`, when there is one.
+fn browser_link() -> std::io::Result<Option<crate::api::schema::BrowserLinkStatus>> {
+    let response = super::super::send_request(&Request {
+        id: "cli:browser:companion:link".into(),
+        method: Method::BrowserGet(Default::default()),
+    })?;
+    Ok(serde_json::from_value(response["result"]["browser"]["link"].clone()).ok())
+}
+
+/// Fork (remote browser): a Mac serves this machine's browser now (or is
+/// reconnecting to).
+pub(crate) fn link_serves(link: &crate::api::schema::BrowserLinkStatus) -> bool {
+    matches!(link.state.as_str(), "linked" | "reconnecting")
+}
+
+/// Fork (remote browser): `browser on mbp · linked for 2h 3m · herdr 0.9.5`,
+/// `browser on mbp · reconnecting for 5s`, `browser link: none (last: mbp,
+/// 12 min ago)`.
+pub(crate) fn link_line(link: &crate::api::schema::BrowserLinkStatus, now: u64) -> String {
+    let since = now.saturating_sub(link.since_unix);
+    let herdr = if link.herdr.is_empty() {
+        String::new()
+    } else {
+        format!(" · herdr {}", link.herdr)
+    };
+    match link.state.as_str() {
+        "linked" => format!(
+            "browser on {} · linked for {}{herdr}",
+            link.label,
+            duration_text(since)
+        ),
+        "reconnecting" => format!(
+            "browser on {} · reconnecting for {}",
+            link.label,
+            duration_text(since)
+        ),
+        _ => format!(
+            "browser link: none (last: {}, {})",
+            link.label,
+            crate::browser::link_proto::text::ago(since)
+        ),
+    }
 }
 
 /// `companion running · pid 51234 · up 2h 3m · 0 restarts · v0.2.0 (update ready: 0.2.1)`.
@@ -333,5 +389,34 @@ mod tests {
             status_line(&external, 0),
             "companion running (started by hand) · pid 7 · v0.2.0"
         );
+    }
+
+    /// Fork (remote browser): the Mac a server's browser runs on, in words.
+    #[test]
+    fn the_link_line_names_the_mac_and_how_long() {
+        let link = |state: &str, herdr: &str| crate::api::schema::BrowserLinkStatus {
+            state: state.into(),
+            label: "mbp".into(),
+            herdr: herdr.into(),
+            since_unix: 1000,
+        };
+        assert_eq!(
+            link_line(&link("linked", "0.9.5"), 1000 + 2 * 3600 + 3 * 60),
+            "browser on mbp · linked for 2h 3m · herdr 0.9.5"
+        );
+        assert_eq!(
+            link_line(&link("linked", ""), 1005),
+            "browser on mbp · linked for 5s"
+        );
+        assert_eq!(
+            link_line(&link("reconnecting", "0.9.5"), 1005),
+            "browser on mbp · reconnecting for 5s"
+        );
+        assert_eq!(
+            link_line(&link("gone", "0.9.5"), 1000 + 12 * 60),
+            "browser link: none (last: mbp, 12 min ago)"
+        );
+        assert!(link_serves(&link("linked", "")) && link_serves(&link("reconnecting", "")));
+        assert!(!link_serves(&link("gone", "")));
     }
 }

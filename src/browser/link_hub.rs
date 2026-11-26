@@ -19,12 +19,12 @@ use super::companion_host::{
     CompanionLease, LinkLease, ShowRequest, COMPANION_PROFILE, REPORT_RATE_PER_S,
 };
 use super::{is_companion, BrowserHub, HostEvent, HostReply, TabKey, ACTIVITY, REPLY_GRACE};
-use crate::api::schema::BrowserRunResult;
+use crate::api::schema::{BrowserLinkStatus, BrowserRunResult};
 use crate::browser::link::{self, CallError, Link, LinkEnd, LinkHandler, LinkSlot, OpenFacts};
 use crate::browser::link_proto::{
     bye, code, op_rule, text, BlobName, BrowserLinkOpenParams, BrowserLinkReady, EnsureReply,
-    FileReply, FileRequest, HostUp, OpGate, RefuseRule, ServerFrame, ENSURE_MS, RELEASE_MAX_KEYS,
-    REPLY_EXTRA_MS,
+    FileReply, FileRequest, HostUp, LinkError, OpGate, RefuseRule, ServerFrame, ENSURE_MS,
+    RELEASE_MAX_KEYS, REPLY_EXTRA_MS,
 };
 use crate::browser::state::ProfileStatus;
 use crate::browser::{unix_now, BrowserError};
@@ -40,6 +40,69 @@ pub(crate) enum LinkRoute {
     Reconnecting { label: String },
     /// No link: this machine's companion, if any.
     Local,
+}
+
+/// One entry of the Mac's `host_sync`: a page of a shown file names its
+/// file here again (from its token alone: a path, a page API or an opener
+/// the Mac sends is dropped); one whose token is none is a blank page.
+fn entry_from_mac(files: &crate::browser::link_files::FileGrants, entry: &mut Value) {
+    let Some(fields) = entry.as_object_mut() else {
+        return;
+    };
+    for key in ["file", "serve", "page_api", "opener"] {
+        fields.remove(key);
+    }
+    let url = fields
+        .get("url")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let scheme = crate::browser::link_proto::FILE_SCHEME;
+    if !url
+        .get(..scheme.len())
+        .is_some_and(|start| start.eq_ignore_ascii_case(scheme))
+    {
+        return;
+    }
+    let file = files.to_file_path(url);
+    let file_url = files.to_file_url(url);
+    let html_view = fields.get("kind").and_then(Value::as_str) == Some("html_view");
+    match (file, file_url) {
+        (Some(file), Some(file_url)) => {
+            fields.insert("url".into(), json!(file_url));
+            if html_view {
+                fields.insert("file".into(), json!(file.display().to_string()));
+            }
+        }
+        _ => {
+            fields.insert("url".into(), json!("about:blank"));
+        }
+    }
+}
+
+/// One entry of `host_state` for the Mac: a shown file is its page under
+/// this epoch's token; the path, page API and opener stay here.
+fn entry_for_mac(files: &crate::browser::link_files::FileGrants, entry: &mut Value, epoch: u64) {
+    let Some(fields) = entry.as_object_mut() else {
+        return;
+    };
+    for key in ["page_api", "opener", "serve"] {
+        fields.remove(key);
+    }
+    let Some(file) = fields.remove("file") else {
+        return;
+    };
+    let shown = file
+        .as_str()
+        .and_then(|file| files.shown(std::path::Path::new(file), epoch));
+    match shown {
+        Some(shown) => {
+            fields.insert("url".into(), json!(shown.url()));
+            fields.insert("serve".into(), json!(shown.token));
+        }
+        None => {
+            fields.insert("url".into(), json!("about:blank"));
+        }
+    }
 }
 
 /// A screenshot's `path` and `inline_path`, taken out of its arguments.
@@ -473,13 +536,41 @@ impl BrowserHub {
         answer
     }
 
+    /// `browser.get`'s `link`: the Mac the browser is on, was on, or none.
+    pub(crate) fn link_status(&self) -> Option<BrowserLinkStatus> {
+        let status = |state: &str, label: &str, herdr: &str, since_unix: u64| BrowserLinkStatus {
+            state: state.into(),
+            label: label.into(),
+            herdr: herdr.into(),
+            since_unix,
+        };
+        let last = self.inner.link.last();
+        match self.link_route() {
+            LinkRoute::Up(link) | LinkRoute::Down(link) => {
+                Some(status("linked", &link.label, &link.herdr, link.opened_unix))
+            }
+            LinkRoute::Reconnecting { label } => Some(status(
+                "reconnecting",
+                &label,
+                last.as_ref().map_or("", |last| last.herdr.as_str()),
+                last.as_ref().map_or(0, |last| last.closed_unix),
+            )),
+            LinkRoute::Local => {
+                last.map(|last| status("gone", &last.label, &last.herdr, last.closed_unix))
+            }
+        }
+    }
+
     /// Why there is no browser on a server whose browser is a Mac's; `None`:
     /// this machine's own companion is the answer, as without a link.
     pub(crate) fn no_link_error(&self) -> Option<BrowserError> {
         let last = self.inner.link.last();
-        let last = last
-            .as_ref()
-            .map(|(label, closed)| (label.as_str(), unix_now().saturating_sub(*closed)));
+        let last = last.as_ref().map(|last| {
+            (
+                last.label.as_str(),
+                unix_now().saturating_sub(last.closed_unix),
+            )
+        });
         (last.is_some() || self.config().link_only())
             .then(|| unavailable(text::not_connected(last)))
     }
@@ -607,6 +698,69 @@ impl LinkHandler for BrowserHub {
         link.answer(&ServerFrame::HostOk { lease_id });
         self.companion_changed();
         self.flush();
+    }
+
+    /// The companion's call with this link's lease in it; what the Mac says
+    /// about this machine's files is its own token mapping, never a path.
+    fn api_params(
+        &self,
+        link: &Arc<Link>,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, LinkError> {
+        let Some(lease_id) = self
+            .with_link_lease(link, |lease| lease.lease_id.clone())
+            .flatten()
+        else {
+            return Err(LinkError::new(
+                "lease_unknown",
+                "no browser is up over this link",
+            ));
+        };
+        let mut params = match params {
+            Value::Null => json!({}),
+            Value::Object(_) => params,
+            _ => {
+                return Err(LinkError::new(
+                    code::INVALID_REQUEST,
+                    "params must be an object",
+                ))
+            }
+        };
+        params["lease_id"] = json!(lease_id);
+        let files = self.inner.link.files();
+        match method {
+            "browser.host_sync" => {
+                let groups = params["groups"].as_array_mut().into_iter().flatten();
+                for entry in
+                    groups.flat_map(|group| group["entries"].as_array_mut().into_iter().flatten())
+                {
+                    entry_from_mac(files, entry);
+                }
+            }
+            "browser.send_page" => {
+                if let Some(url) = params["url"]
+                    .as_str()
+                    .and_then(|url| files.to_file_url(url))
+                {
+                    params["url"] = json!(url);
+                }
+            }
+            _ => {}
+        }
+        Ok(params)
+    }
+
+    /// `browser.host_state` for the Mac: a shown file is its token's page.
+    fn api_result(&self, link: &Arc<Link>, method: &str, mut result: Value) -> Value {
+        if method == "browser.host_state" {
+            let files = self.inner.link.files();
+            let tabs = result["state"]["tabs"].as_array_mut().into_iter().flatten();
+            for entry in tabs.flat_map(|tab| tab["entries"].as_array_mut().into_iter().flatten()) {
+                entry_for_mac(files, entry, link.epoch);
+            }
+        }
+        result
     }
 
     /// A page of a shown file pulls the next piece of it.

@@ -128,17 +128,26 @@ impl FileGrants {
     /// `herdr-file://<token>/<rel>` as the `file://` URL it is here, for a
     /// token of any epoch of this process; `None` for every other URL.
     pub fn to_file_url(&self, url: &str) -> Option<String> {
+        let (file, suffix) = self.resolve(url)?;
+        Some(format!(
+            "file://{}{suffix}",
+            encode_path(&file.display().to_string())
+        ))
+    }
+
+    /// The file a `herdr-file://` URL names here (not checked on disk).
+    pub fn to_file_path(&self, url: &str) -> Option<PathBuf> {
+        self.resolve(url).map(|(file, _)| file)
+    }
+
+    fn resolve<'a>(&self, url: &'a str) -> Option<(PathBuf, &'a str)> {
         let (token, rest) = split_file_url(url)?;
         let root = self.grants().by_token.get(token)?.root.clone();
         let (path, suffix) = match rest.find(['?', '#']) {
             Some(at) => rest.split_at(at),
             None => (rest, ""),
         };
-        let rel = decode_rel(path)?;
-        Some(format!(
-            "file://{}{suffix}",
-            encode_path(&root.join(rel).display().to_string())
-        ))
+        Some((root.join(decode_rel(path)?), suffix))
     }
 
     /// A file shown here, as its page on the Mac in `epoch`.
@@ -155,7 +164,6 @@ impl FileGrants {
 
 impl Shown {
     /// `herdr-file://<token>/<rel>`.
-    #[cfg(test)]
     pub fn url(&self) -> String {
         format!("{FILE_SCHEME}://{}/{}", self.token, self.rel)
     }

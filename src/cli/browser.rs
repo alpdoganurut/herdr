@@ -729,11 +729,22 @@ pub(crate) fn format_status(status: &BrowserStatusInfo, now: u64) -> String {
         if status.autostart { "on" } else { "off" }
     ));
     // Fork (companion launcher): the companion app, then the window (off by default).
-    if let Some(companion) = get.companion_app.as_ref() {
-        out.push_str(&format!(
-            "{}\n",
-            browser_companion::status_line(companion, now)
-        ));
+    // Fork (remote browser): a Mac's browser instead, while it serves this one.
+    match get.link.as_ref() {
+        Some(link) if browser_companion::link_serves(link) => {
+            out.push_str(&format!("{}\n", browser_companion::link_line(link, now)));
+        }
+        link => {
+            if let Some(companion) = get.companion_app.as_ref() {
+                out.push_str(&format!(
+                    "{}\n",
+                    browser_companion::status_line(companion, now)
+                ));
+            }
+            if let Some(link) = link {
+                out.push_str(&format!("{}\n", browser_companion::link_line(link, now)));
+            }
+        }
     }
     if get.window_off {
         out.push_str("window: off ([browser] window = false)\n");
@@ -1852,11 +1863,47 @@ mod tests {
             closed_at: None,
         });
         let text = format_status(&status, 100);
+        assert!(!text.contains("browser on") && !text.contains("browser link"));
         assert!(text.contains("browser: enabled · default profile main"));
         assert!(text.contains("sidecar: running · playwright-core 1.63.0"));
         assert!(text.contains("profile main: running · pid 7 · port 9 · 1 tabs · 1 agents"));
         assert!(text.contains("main:t1   github.com/x"));
         assert!(text.contains("planner · claude read 10s ago · user since"));
         assert!(text.contains("runtime: not installed"));
+    }
+
+    /// Fork (remote browser): a Mac's browser takes the companion's line;
+    /// a link that ended is a line of its own.
+    #[test]
+    fn status_text_names_the_mac_the_browser_runs_on() {
+        let mut status = BrowserStatusInfo::default();
+        status.get.companion_app = Some(crate::api::schema::BrowserCompanionAppInfo {
+            state: "external".into(),
+            ..Default::default()
+        });
+        status.get.link = Some(crate::api::schema::BrowserLinkStatus {
+            state: "linked".into(),
+            label: "mbp".into(),
+            herdr: "0.9.5".into(),
+            since_unix: 40,
+        });
+        let text = format_status(&status, 100);
+        assert!(
+            text.contains("browser on mbp · linked for 1m · herdr 0.9.5\n"),
+            "{text}"
+        );
+        assert!(!text.contains("companion running"), "{text}");
+        if let Some(link) = status.get.link.as_mut() {
+            link.state = "gone".into();
+        }
+        let text = format_status(&status, 100);
+        assert!(
+            text.contains("companion running (started by hand)"),
+            "{text}"
+        );
+        assert!(
+            text.contains("browser link: none (last: mbp, 1 min ago)"),
+            "{text}"
+        );
     }
 }

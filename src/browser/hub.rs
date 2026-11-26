@@ -491,6 +491,8 @@ impl BrowserHub {
         // Fork (companion launcher): the host's reports on the clients'
         // placements, always current like the companion's state.
         info.placements = super::placements::board().statuses();
+        // Fork (remote browser): the Mac the browser is on.
+        info.link = self.link_status();
         info
     }
 
