@@ -96,6 +96,12 @@ impl Harness {
         let session = root.join("config").join(app).join("sessions/fleet");
         fs::create_dir_all(&state).unwrap();
         fs::create_dir_all(&session).unwrap();
+        // Fork (remote browser): no machine's browser helper in this test.
+        fs::write(
+            root.join("config").join(app).join("config.toml"),
+            "[browser]\nremote_machines = false\n",
+        )
+        .unwrap();
         fs::create_dir_all(root.join("bin")).unwrap();
         fs::write(root.join("bin/ssh"), SSH).unwrap();
         fs::set_permissions(root.join("bin/ssh"), fs::Permissions::from_mode(0o700)).unwrap();

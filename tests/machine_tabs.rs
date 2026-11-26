@@ -95,7 +95,8 @@ impl Machine {
             "onboarding = false\n\
              [ui]\nsidebar_layout = \"tabs\"\n\
              [ui.toast]\ndelivery = \"herdr\"\n\
-             [keys]\ntoggle_info_pane = \"prefix+i\"\n",
+             [keys]\ntoggle_info_pane = \"prefix+i\"\n\
+             [browser]\nremote_machines = false\n",
         )
         .unwrap();
         let mut machine = Self {

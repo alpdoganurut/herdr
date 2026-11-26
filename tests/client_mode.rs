@@ -149,6 +149,10 @@ fn spawn_client_process_with_args_and_env(
     }
 }
 
+// Fork (remote browser): no test starts a machine's browser helper unless it
+// asks for one (`[browser] remote_machines`, on by default).
+const NO_BROWSER_HELPERS: &str = "[browser]\nremote_machines = false\n";
+
 fn spawn_server(
     config_home: &PathBuf,
     runtime_dir: &PathBuf,
@@ -174,7 +178,11 @@ fn spawn_server_with_config(
     fs::create_dir_all(config_home.join(app_dir_name())).unwrap();
     fs::create_dir_all(runtime_dir).unwrap();
     register_runtime_dir(runtime_dir);
-    fs::write(config_home.join(app_dir_name()).join("config.toml"), config).unwrap();
+    fs::write(
+        config_home.join(app_dir_name()).join("config.toml"),
+        format!("{config}\n{NO_BROWSER_HELPERS}"),
+    )
+    .unwrap();
 
     let pair = native_pty_system()
         .openpty(PtySize {
@@ -370,7 +378,7 @@ fn direct_attach_initial_mouse_capture_follows_config() {
 
     fs::write(
         &config_path,
-        "onboarding = false\n[ui]\nmouse_capture = true\n",
+        format!("onboarding = false\n[ui]\nmouse_capture = true\n{NO_BROWSER_HELPERS}"),
     )
     .unwrap();
     let attach = spawn_client_process_with_args(
@@ -494,7 +502,7 @@ fn server_unreachable_shows_clear_error() {
     register_runtime_dir(&runtime_dir);
     fs::write(
         config_home.join("herdr/config.toml"),
-        "onboarding = false\n",
+        format!("onboarding = false\n{NO_BROWSER_HELPERS}"),
     )
     .unwrap();
 
@@ -916,7 +924,7 @@ fn federated_launch_opens_local_directly_while_saved_ssh_is_unavailable() {
         fs::create_dir_all(config_home.join(app_dir_name())).unwrap();
         fs::write(
             config_home.join(app_dir_name()).join("config.toml"),
-            "onboarding = false\n",
+            format!("onboarding = false\n{NO_BROWSER_HELPERS}"),
         )
         .unwrap();
         let catalog_dir = runtime_dir
@@ -1029,7 +1037,7 @@ fn federated_client_starts_without_local_and_survives_its_restart() {
     // machine (tests/machine_tabs.rs); this is the machine list's client.
     fs::write(
         config_home.join(app_dir_name()).join("config.toml"),
-        "onboarding = false\n[ui]\nsidebar_layout = \"spaces\"\n",
+        format!("onboarding = false\n[ui]\nsidebar_layout = \"spaces\"\n{NO_BROWSER_HELPERS}"),
     )
     .unwrap();
     let catalog_dir = runtime_dir
@@ -2088,7 +2096,9 @@ fn client_receives_notify_on_agent_state_change() {
     fs::create_dir_all(config_home.join(app_dir_name())).unwrap();
     fs::write(
         config_home.join(app_dir_name()).join("config.toml"),
-        "onboarding = false\n[ui.toast]\nenabled = true\n[ui.sound]\nenabled = true\n",
+        format!(
+            "onboarding = false\n[ui.toast]\nenabled = true\n[ui.sound]\nenabled = true\n{NO_BROWSER_HELPERS}"
+        ),
     )
     .unwrap();
     fs::create_dir_all(&runtime_dir).unwrap();

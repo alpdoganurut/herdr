@@ -13,10 +13,6 @@
 //! feature string ([`BrowserLinkOpenParams::features`]), a changed one a new
 //! [`LINK_PROTOCOL`].
 
-// the users of these types (server, helper, shell) land after them; X1 takes
-// this out
-#![allow(dead_code)]
-
 use std::collections::HashSet;
 use std::sync::OnceLock;
 
@@ -37,6 +33,9 @@ pub const LINK_CAPABILITY: &str = "browser-link.v1";
 /// The API method that turns its connection into the link.
 pub const LINK_OPEN_METHOD: &str = "browser.link_open";
 /// Reserved, unused in version 1.
+// reserved by the contract (2.1) so no other method takes the name; nothing
+// sends it in version 1
+#[allow(dead_code)]
 pub const LINK_DATA_METHOD: &str = "browser.link_data";
 /// The features this build offers and accepts (none in version 1).
 pub const LINK_FEATURES: &[&str] = &[];

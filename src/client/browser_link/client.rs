@@ -40,6 +40,10 @@ pub(crate) struct LinkClientConfig {
     pub(crate) proto_retry: Duration,
     /// A started helper has this long to listen.
     pub(crate) start_wait: Duration,
+    /// A helper that did not come up is started again after this, doubled
+    /// per failure up to `respawn_max`.
+    pub(crate) respawn_first: Duration,
+    pub(crate) respawn_max: Duration,
 }
 
 impl LinkClientConfig {
@@ -73,6 +77,8 @@ impl LinkClientConfig {
             retry: Duration::from_millis(500),
             proto_retry: Duration::from_secs(30),
             start_wait: Duration::from_secs(5),
+            respawn_first: Duration::from_secs(1),
+            respawn_max: Duration::from_secs(60),
         }
     }
 }
@@ -195,14 +201,52 @@ fn pause(shared: &Shared, wait: Duration) {
     }
 }
 
-/// Connects, starting the helper when nothing listens.
-fn connect(config: &LinkClientConfig, shared: &Shared) -> Option<UnixStream> {
+/// The wait before the next start after `failures` helpers in a row did
+/// not come up: `first`, doubled per failure, at most `max`.
+pub(crate) fn respawn_delay(failures: u32, first: Duration, max: Duration) -> Duration {
+    if failures == 0 {
+        return Duration::ZERO;
+    }
+    first
+        .saturating_mul(1u32 << (failures - 1).min(16))
+        .min(max)
+}
+
+/// Helpers started in a row that did not come up, and when the next may.
+#[derive(Default)]
+struct Respawn {
+    failures: u32,
+    not_before: Option<Instant>,
+}
+
+impl Respawn {
+    fn failed(&mut self, config: &LinkClientConfig) {
+        self.failures = self.failures.saturating_add(1);
+        let wait = respawn_delay(self.failures, config.respawn_first, config.respawn_max);
+        self.not_before = Some(Instant::now() + wait);
+    }
+}
+
+/// Connects, starting the helper when nothing listens (not again before
+/// the backoff of a helper that did not come up).
+fn connect(
+    config: &LinkClientConfig,
+    shared: &Shared,
+    respawn: &mut Respawn,
+) -> Option<UnixStream> {
     if let Ok(stream) = UnixStream::connect(&config.socket) {
         return Some(stream);
+    }
+    if respawn
+        .not_before
+        .is_some_and(|not_before| Instant::now() < not_before)
+    {
+        return None;
     }
     if let Err(err) = (config.spawn)() {
         tracing::warn!(%err, "the browser link's helper did not start");
         lock(&shared.news).notice = Some(format!("the browser link did not start: {err}"));
+        respawn.failed(config);
         return None;
     }
     let deadline = Instant::now() + config.start_wait;
@@ -212,6 +256,7 @@ fn connect(config: &LinkClientConfig, shared: &Shared) -> Option<UnixStream> {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
+    respawn.failed(config);
     None
 }
 
@@ -220,8 +265,9 @@ fn send(stream: &mut UnixStream, message: &ClientMessage) -> io::Result<()> {
 }
 
 fn run(config: &LinkClientConfig, shared: &Arc<Shared>, inbox: &mpsc::Receiver<ClientMessage>) {
+    let mut respawn = Respawn::default();
     while !stopped(shared) {
-        let Some(stream) = connect(config, shared) else {
+        let Some(stream) = connect(config, shared, &mut respawn) else {
             pause(shared, config.retry);
             continue;
         };
@@ -229,7 +275,15 @@ fn run(config: &LinkClientConfig, shared: &Arc<Shared>, inbox: &mpsc::Receiver<C
             Some(BYE_PROTO_CODE) => config.proto_retry,
             _ => config.retry,
         };
-        lock(&shared.news).connected = false;
+        // a helper that said how it is came up: the backoff starts over
+        let mut news = lock(&shared.news);
+        if news.view.is_some() || news.notice.as_deref() == Some(OTHER_VERSION) {
+            respawn = Respawn::default();
+        }
+        // the next helper says its own
+        news.view = None;
+        news.connected = false;
+        drop(news);
         pause(shared, wait);
     }
 }
@@ -511,5 +565,37 @@ mod tests {
             listener.accept().is_err(),
             "no new try before the proto retry"
         );
+    }
+
+    #[test]
+    fn a_helper_that_never_comes_up_is_started_again_ever_later() {
+        let (first, max) = (Duration::from_secs(1), Duration::from_secs(60));
+        let delays: Vec<u64> = (0..9)
+            .map(|failures| respawn_delay(failures, first, max).as_secs())
+            .collect();
+        assert_eq!(delays, [0, 1, 2, 4, 8, 16, 32, 60, 60]);
+        assert_eq!(respawn_delay(u32::MAX, first, max), max);
+
+        let dir = super::super::api_socket::tests::short_dir();
+        let spawns = Arc::new(AtomicUsize::new(0));
+        let spawn = {
+            let spawns = Arc::clone(&spawns);
+            Arc::new(move || {
+                spawns.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
+        };
+        let mut config =
+            LinkClientConfig::new(machine(), Vec::new(), dir.path().join("k.link"), spawn);
+        config.retry = Duration::from_millis(5);
+        config.start_wait = Duration::from_millis(10);
+        config.respawn_first = Duration::from_millis(100);
+        config.respawn_max = Duration::from_millis(400);
+        let client = LinkClient::start(config).unwrap();
+        std::thread::sleep(Duration::from_millis(900));
+        drop(client);
+        // 0, ~0.11, ~0.32, ~0.73 s: four starts, not one per retry
+        let spawned = spawns.load(Ordering::SeqCst);
+        assert!((3..=5).contains(&spawned), "{spawned} starts");
     }
 }

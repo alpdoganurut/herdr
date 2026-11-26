@@ -76,10 +76,47 @@ pub(crate) fn machine_key(state_dir: &Path, target: &str, session: &str) -> Stri
     format!("{:x}", hash.finalize())[..16].to_owned()
 }
 
+/// Tests (and only tests) put the helper's sockets in a directory of their
+/// own instead of the shared one: an absolute, short path, made 0700.
+pub(crate) const SOCKET_DIR_ENV: &str = "HERDR_BROWSER_LINK_SOCKET_DIR";
+
 /// The private directory of the helper's sockets (0700, ours, no symlink). The
 /// client's masters and other machines' sockets are in it too.
 pub(crate) fn socket_dir() -> io::Result<PathBuf> {
-    crate::platform::shared_ssh_dir()
+    match std::env::var_os(SOCKET_DIR_ENV).filter(|dir| !dir.is_empty()) {
+        Some(dir) => private_dir(Path::new(&dir)),
+        None => crate::platform::shared_ssh_dir(),
+    }
+}
+
+/// `dir`, made 0700 when missing; refused unless it is absolute, a
+/// directory (not a symlink), ours and 0700.
+fn private_dir(dir: &Path) -> io::Result<PathBuf> {
+    use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _};
+    if !dir.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{SOCKET_DIR_ENV} must be an absolute path"),
+        ));
+    }
+    match std::fs::DirBuilder::new().mode(0o700).create(dir) {
+        Ok(()) => {}
+        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(err) => return Err(err),
+    }
+    let meta = std::fs::symlink_metadata(dir)?;
+    // SAFETY: geteuid has no preconditions.
+    let uid = unsafe { libc::geteuid() };
+    if !meta.is_dir() || meta.uid() != uid || meta.mode() & 0o7777 != 0o700 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "{} must be ours, mode 0700, and not a symlink",
+                dir.display()
+            ),
+        ));
+    }
+    Ok(dir.to_owned())
 }
 
 /// Nanoseconds on the clock that goes on while the Mac sleeps: what pings are
@@ -1377,5 +1414,23 @@ esac
         drop(proxy);
         forwards.close();
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+    }
+
+    /// Fork (remote browser): the tests' own socket directory is made 0700
+    /// and refused when it is relative, open to others or a symlink.
+    #[test]
+    fn the_tests_socket_dir_is_private_or_refused() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = super::super::api_socket::tests::short_dir();
+        let dir = root.path().join("s");
+        assert_eq!(private_dir(&dir).unwrap(), dir);
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(mode, 0o700);
+        assert!(private_dir(Path::new("relative/dir")).is_err());
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(private_dir(&dir).is_err());
+        let link = root.path().join("l");
+        std::os::unix::fs::symlink(root.path(), &link).unwrap();
+        assert!(private_dir(&link).is_err());
     }
 }

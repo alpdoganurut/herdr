@@ -147,7 +147,7 @@ fn setup_options(
     fs::set_permissions(root.join("bin/ssh"), fs::Permissions::from_mode(0o700)).unwrap();
     fs::write(
         root.join("config").join(app).join("config.toml"),
-        "onboarding = false\n[remote]\nmanage_ssh_config = false\n",
+        "onboarding = false\n[remote]\nmanage_ssh_config = false\n[browser]\nremote_machines = false\n",
     )
     .unwrap();
     let status = Command::new(env!("CARGO_BIN_EXE_herdr"))
@@ -318,7 +318,7 @@ fn machine_add_accepts_help_argument_order() {
     fs::create_dir_all(root.join("config").join(app)).unwrap();
     fs::write(
         root.join("config").join(app).join("config.toml"),
-        "onboarding = false\n[remote]\nmanage_ssh_config = false\n",
+        "onboarding = false\n[remote]\nmanage_ssh_config = false\n[browser]\nremote_machines = false\n",
     )
     .unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_herdr"));
